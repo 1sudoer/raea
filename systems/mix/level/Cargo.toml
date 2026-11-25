@@ -1,0 +1,10 @@
+[package]
+name = "raea-sys-mix-level"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "raea's mix before its master: dialogue at one level, and the room's tone at a join into dead silence"
+
+[dependencies]
+raea-io-media = { path = "../../../io/media", default-features = false, features = ["soft-audio"] }

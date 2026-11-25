@@ -13,6 +13,7 @@ description = "A work folder's TypeScript, TSX and their imports bundled in proc
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+dunce = "1"
 serde_json = "1"
 raea-io-home = { path = "../../io/home" }
 rolldown = "=1.2.12"

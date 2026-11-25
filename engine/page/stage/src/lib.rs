@@ -4,13 +4,44 @@
 //! app renders on: main.rs) to Bevy, where it's copied on the GPU into the stage's image. The page shows that image in
 //! place of its `<img data-raea-stage>` (raea-page's ElementImages, H7), and drives the stage through host calls:
 //!
-//!   stage.show {src, w, h}     the composition at `src` (a .tsx), laid out at w x h; src null: nothing
+//!   stage.show {src, w, h, render?}
+//!                              the composition at `src` (a .tsx), laid out at w x h; src null: nothing. render: true
+//!                              draws it as `raea render` does (its own size, seed, clock and length, no live input:
+//!                              docs/realtime.feature RT4d), what an editor wants; a game leaves it out. A file beside
+//!                              the one shown that differs from it only in its <Composition defaultProps> values is
+//!                              taken in place, its frame and play kept, unless the 3D holds what they change (RT4f)
 //!   stage.play {on}            play or pause
 //!   stage.step {n}             paused: n frames on, the keys held as they are
+//!   stage.seek {frame}         to that frame, playing or not (a composition's editor, docs/editing.feature E4a: a
+//!                              composition is its frame, so the frame is drawn as it is; a game's input isn't replayed)
 //!   stage.key {key, down}      a key (DOM name) pressed or let go on the stage
 //!   stage.pointer {x, y, down} the pointer in the stage's pixels
-//!   stage.status               what it shows, its frame, whether it plays, frames painted, its size, the last error
-//!   stage.pick {x, y}          the element under that point of the stage (live.rs element_at), or null
+//!   stage.status               what it shows, its frame, whether it plays, frames painted, its size, the last error;
+//!                              render, opens and adopted (files opened and taken in place), last_show {how, ms},
+//!                              props {sent, drawn, dropped, ms}, held, and the composition's controls and the values
+//!                              its frame is drawn with (RT4b)
+//!   stage.pick {x, y}          what's under that point of the stage, the page and its 3D as one picture
+//!                              (docs/preview.feature PV1a): a 3D part ({part: true, key, name, rect, point,
+//!                              distance}) or an element ({id, kind, owner, key, rect, props, text, under?}), or null
+//!   stage.view {yaw, pitch, distance, target} | {free: false}
+//!                              the 3D drawn from that orbit (radians, metres) until free: false puts the
+//!                              composition's camera back (PV1c); with neither, only answers. Answers the view as it
+//!                              is now ({yaw, pitch, distance, target, radius?, free}), null with no 3D
+//!   stage.locate {keys, points}  where those parts (by key) and world points are on the stage now, px:
+//!                              {parts: [[x, y, w, h] | null], points: [[x, y] | null]} (a selection's box and a
+//!                              note's pin follow what they are on)
+//!   stage.props {props}        the composition's props set over its defaults as it plays (PV4b), replacing the last
+//!                              set: the frame it is on is drawn again with them, paused too (RT4e); nothing is
+//!                              reopened or written. Answers {frame, held: [{part, kind, cols}]}: what of the 3D the
+//!                              running world keeps from its first frame they change (RT4g; shown once the file is
+//!                              opened again), or {frame, dropped: true} when a newer set came first (newest wins)
+//!   stage.part {key}           the part that key names as it stands now ({entity_key, placed}), or null
+//!                              (docs/scene-feed.feature SF4c); a pick's part carries the same `placed`: {local,
+//!                              world: {translation, rotation [x, y, z, w], scale}, parent: 16 numbers | null}
+//!   stage.hold {key, translation, rotation, scale} | {key, release: true}
+//!                              that part drawn at a place in its parent's space until it is let go of: a drag
+//!                              as it looks while it is dragged; nothing is written
+//!   stage.wire {on}            every mesh drawn as its edges over its shading (SF3e); answers whether it can
 //!   stage.inspect {id}         that element as it is now (its owner, kind, box, props, text), or null once it's gone
 //!   stage.tweak {changes}      [{owner, kind, prop, value}]: the props written into the composition as its next
 //!                              version (raea-sys-tweak), which the stage then shows at the same frame, its input replayed
@@ -42,13 +73,27 @@ pub struct StagePage(pub Entity);
 
 /// What the page asks of the stage's thread.
 enum Cmd {
-    Show(Option<PathBuf>, (u32, u32)),
+    /// a file at a size, drawn as its render draws it or not
+    Show(Option<PathBuf>, (u32, u32), bool),
     Play(bool),
     Step(i64),
+    Seek(i64),
     Key(String, bool),
     Pointer(f64, f64, bool),
     /// the element under a point of the stage, answered from the thread
     Pick(f64, f64, Answer),
+    /// a free camera over the 3D (Some(None): the composition's own again; None: only asked), answered with the view
+    View(Option<Option<(f32, f32, f32, [f32; 3])>>, Answer),
+    /// where parts and world points are on the stage now
+    Locate(Vec<String>, Vec<[f32; 3]>, Answer),
+    /// props over the composition's defaults, from now, and when they were asked for
+    Props(Value, Answer, Instant),
+    /// a part by its key, as it stands now
+    Part(String, Answer),
+    /// a part held at a place in its parent's space (None: let go of)
+    Hold(String, Option<([f32; 3], [f32; 4], [f32; 3])>, Answer),
+    /// the scene as wireframe, or as it is
+    Wire(bool, Answer),
     /// an element as it is now, by id
     Inspect(u64, Answer),
     /// props written into the next version, which then plays from the same frame
@@ -62,18 +107,6 @@ struct Change {
     kind: String,
     prop: String,
     value: Value,
-}
-
-/// What the stage is doing, for the page's controls (stage.status).
-#[derive(Default, Clone)]
-struct Status {
-    showing: Option<String>,
-    frame: i64,
-    playing: bool,
-    fps: f64,
-    painted: u64,
-    size: (u32, u32),
-    error: Option<String>,
 }
 
 /// The latest frame painted, and how many have been.
@@ -109,12 +142,26 @@ impl Stage {
     }
 }
 
+mod calls;
+use calls::calls;
+mod open;
+mod status;
+use status::Status;
+
 pub struct StagePlugin;
 
 impl Plugin for StagePlugin {
     fn build(&self, app: &mut App) {
         let image = app.world_mut().resource_mut::<Assets<Image>>().add(Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None));
         let stage = Stage { image, slot: Default::default(), status: Default::default(), tx: Default::default() };
+        // what the stage opens is stamped with its place in the code (engine/bundle stamp.rs), so a pick's part or
+        // element has its key (docs/preview.feature PV1b); RAEA_SOURCE_STAMPS=0 in the environment keeps them off
+        if std::env::var_os("RAEA_SOURCE_STAMPS").is_none() {
+            // SAFETY: the app is being built on its main thread; the stage's thread starts at the first show
+            unsafe { std::env::set_var("RAEA_SOURCE_STAMPS", "1") };
+        }
+        // the stage's scenes can be drawn as wireframe (docs/scene-feed.feature SF3e): asked for before any opens
+        raea_runtime_live::want_wire();
         app.insert_resource(stage)
             .init_resource::<HostCalls>()
             .add_plugins(ExtractResourcePlugin::<Stage>::default())
@@ -124,76 +171,6 @@ impl Plugin for StagePlugin {
             r.add_systems(Render, copy.in_set(RenderSystems::PrepareResources));
         }
     }
-}
-
-fn settle(answer: raea_runtime_js::calls::Answer, r: Result<Value, String>) {
-    match r {
-        Ok(v) => answer.ok(v),
-        Err(e) => answer.err(e),
-    }
-}
-
-/// The page's host calls (the module's list).
-fn calls(mut calls: ResMut<HostCalls>) {
-    let num = |a: &Value, k: &str| a.get(k).and_then(Value::as_f64);
-    let send = |w: &mut World, c: Cmd| w.resource::<Stage>().send(c).map(|_| Value::Null);
-    calls
-        .on("stage.show", move |w, a, answer| {
-            if !raea_gpu_device::enabled() {
-                return answer.err("the stage needs the shared device (RAEA_SHARED_DEVICE=0 turned it off)");
-            }
-            // a feed item names its game as the app's host does (host/make.ts resolve): ~/ is the home
-            let src = a.get("src").and_then(Value::as_str).map(|s| match (s.strip_prefix("~/"), std::env::var_os("HOME")) {
-                (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-                _ => PathBuf::from(s),
-            });
-            let size = (num(&a, "w").unwrap_or(1280.0).round().max(1.0) as u32, num(&a, "h").unwrap_or(720.0).round().max(1.0) as u32);
-            settle(answer, send(w, Cmd::Show(src, size)));
-        })
-        .on("stage.play", move |w, a, answer| settle(answer, send(w, Cmd::Play(a.get("on").and_then(Value::as_bool).unwrap_or(true)))))
-        .on("stage.step", move |w, a, answer| settle(answer, send(w, Cmd::Step(num(&a, "n").unwrap_or(1.0).max(0.0) as i64))))
-        .on("stage.key", move |w, a, answer| {
-            let key = a.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
-            settle(answer, send(w, Cmd::Key(key, a.get("down").and_then(Value::as_bool).unwrap_or(true))));
-        })
-        .on("stage.pointer", move |w, a, answer| {
-            settle(answer, send(w, Cmd::Pointer(num(&a, "x").unwrap_or(0.0), num(&a, "y").unwrap_or(0.0), a.get("down").and_then(Value::as_bool).unwrap_or(false))));
-        })
-        .on("stage.pick", move |w, a, answer| {
-            let (x, y) = (num(&a, "x").unwrap_or(0.0), num(&a, "y").unwrap_or(0.0));
-            let tx = w.resource::<Stage>().tx.lock().unwrap().clone();
-            match tx {
-                Some(tx) => {
-                    let _ = tx.send(Cmd::Pick(x, y, answer));
-                }
-                None => answer.ok(Value::Null),
-            }
-        })
-        .on("stage.inspect", move |w, a, answer| {
-            let id = a.get("id").and_then(Value::as_u64).unwrap_or(0);
-            let tx = w.resource::<Stage>().tx.lock().unwrap().clone();
-            match tx {
-                Some(tx) => {
-                    let _ = tx.send(Cmd::Inspect(id, answer));
-                }
-                None => answer.ok(Value::Null),
-            }
-        })
-        .on("stage.tweak", move |w, a, answer| {
-            let s = |c: &Value, k: &str| c.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-            let changes: Vec<Change> = a.get("changes").and_then(Value::as_array).into_iter().flatten().map(|c| Change { owner: s(c, "owner"), kind: s(c, "kind"), prop: s(c, "prop"), value: c.get("value").cloned().unwrap_or_default() }).collect();
-            let tx = w.resource::<Stage>().tx.lock().unwrap().clone();
-            match tx {
-                Some(tx) => {
-                    let _ = tx.send(Cmd::Tweak(changes, answer));
-                }
-                None => answer.err("the stage shows nothing to change"),
-            }
-        })
-        .on("stage.status", |w, _a, answer| {
-            let s = w.resource::<Stage>().status.lock().unwrap().clone();
-            answer.ok(json!({"showing": s.showing, "frame": s.frame, "playing": s.playing, "fps": s.fps, "painted": s.painted, "size": [s.size.0, s.size.1], "error": s.error}));
-        });
 }
 
 /// Bevy's image the painted texture's size (made again when it changes: its GpuImage follows).
@@ -255,48 +232,77 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, slot: Arc<Mutex<Painted>>)
     };
     // paused: the frames asked for and not yet stepped (at most 4 a turn, as playing)
     let mut steps = 0i64;
+    // the scene shown as wireframe (stage.wire), and a file just opened that hasn't taken it yet
+    let (mut wire, mut rewire) = (false, false);
     // RAEA_STAGE_TRACE=1: each frame stepped and its keys, on stderr
-    let trace = std::env::var("RAEA_STAGE_TRACE").as_deref() == Ok("1");
+    let trace = raea_io_trace::stat("RAEA_STAGE_TRACE");
     // the stage's size, which the page's points are in
     let mut stage = (1u32, 1u32);
     // what it shows, and the input of each frame stepped since (a tweak's next version replays it)
-    let mut shown: Option<PathBuf> = None;
+    let mut shown: Option<open::Shown> = None;
     let mut log: Vec<(Vec<String>, Option<(f64, f64, bool)>)> = Vec::new();
+    // commands taken from the channel before their turn: a props change looks past itself for a newer one (newest
+    // wins: a drag sends values faster than a heavy frame draws them, and only the last is drawn; RT4e)
+    let mut ahead: std::collections::VecDeque<Cmd> = Default::default();
+    // the props drawn this turn: when they were asked for, until their frame is painted (status.props.ms)
+    let mut props_at: Option<Instant> = None;
     loop {
         // until the next frame is due while it plays (or a step is left); for the next command while it doesn't
         let due_in = if !playing && steps > 0 { Some(Duration::ZERO) } else { live.as_ref().filter(|_| playing).map(|l| (since + Duration::from_secs_f64((frame - base + 1).max(0) as f64 / l.fps)).saturating_duration_since(Instant::now())) };
-        let cmd = match due_in {
-            Some(d) => match rx.recv_timeout(d) {
+        let cmd = match (ahead.pop_front(), due_in) {
+            (Some(c), _) => Some(c),
+            (None, Some(d)) => match rx.recv_timeout(d) {
                 Ok(c) => Some(c),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,
             },
-            None => match rx.recv() {
+            (None, None) => match rx.recv() {
                 Ok(c) => Some(c),
                 Err(_) => return,
             },
         };
         let mut repaint = false;
         match cmd {
-            Some(Cmd::Show(src, size)) => {
+            Some(Cmd::Show(src, size, render)) => 'show: {
+                let t = Instant::now();
+                // a file written from the one shown with only its defaults' values changed: taken in place, its frame and
+                // play kept (RT4f)
+                if let (Some(p), Some(l), Some(was)) = (src.as_ref(), live.as_mut(), shown.as_ref())
+                    && frame >= 0
+                    && let Some(text) = open::adopt(l, was, p, size, render)
+                {
+                    let mut s = status.lock().unwrap();
+                    (s.showing, s.adopted, s.last_show) = (Some(p.display().to_string()), s.adopted + 1, Some(("adopted", t.elapsed().as_secs_f64() * 1e3)));
+                    (s.held, s.values, s.error) = (Vec::new(), l.values(), None);
+                    shown = Some(open::Shown { path: p.clone(), text, size, render });
+                    repaint = true;
+                    break 'show;
+                }
                 live = None;
                 stage = size;
                 keys.clear();
                 log.clear();
                 pointer = None;
-                shown = src.clone();
+                shown = None;
                 (playing, frame, base, since, steps) = (true, -1, 0, Instant::now(), 0);
-                *status.lock().unwrap() = Status { showing: src.as_ref().map(|p| p.display().to_string()), playing: true, size, ..default() };
+                {
+                    let mut s = status.lock().unwrap();
+                    *s = Status { showing: src.as_ref().map(|p| p.display().to_string()), playing: true, size, render, opens: s.opens, adopted: s.adopted, ..default() };
+                }
                 {
                     let mut p = slot.lock().unwrap();
                     p.texture = None;
                     p.n += 1;
                 }
                 if let Some(p) = src {
-                    match open(&p, size) {
+                    match open::open(&p, size, render) {
                         Ok(l) => {
-                            status.lock().unwrap().fps = l.fps;
+                            let mut s = status.lock().unwrap();
+                            (s.fps, s.opens, s.last_show) = (l.fps, s.opens + 1, Some(("opened", t.elapsed().as_secs_f64() * 1e3)));
+                            (s.controls, s.values) = (l.controls().clone(), l.values());
+                            shown = std::fs::read_to_string(&p).ok().map(|text| open::Shown { path: p, text, size, render });
                             live = Some(l);
+                            rewire = wire;
                         }
                         Err(e) => set_error(e),
                     }
@@ -309,6 +315,15 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, slot: Arc<Mutex<Painted>>)
             }
             Some(Cmd::Step(n)) if !playing => steps += n,
             Some(Cmd::Step(_)) => {}
+            // the frame before it stands as the last one drawn, and the loop steps to it: one step paused, the clock
+            // from there playing
+            Some(Cmd::Seek(n)) => {
+                frame = n - 1;
+                (base, since) = (n, Instant::now());
+                steps = if playing { 0 } else { 1 };
+                // the input log is a frame each, with nothing held on the frames jumped over
+                log.resize(n.max(0) as usize, (Vec::new(), None));
+            }
             Some(Cmd::Key(k, down)) => {
                 keys.retain(|x| x != &k);
                 if down {
@@ -317,19 +332,84 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, slot: Arc<Mutex<Painted>>)
             }
             // a point of the stage is the page's (a game that lays out at its own size is scaled to the stage)
             Some(Cmd::Pick(x, y, answer)) => match live.as_mut() {
-                Some(l) => answer.ok(l.element_at(x * l.w as f64 / stage.0.max(1) as f64, y * l.h as f64 / stage.1.max(1) as f64).map(|e| on_stage(e, l, stage)).unwrap_or(Value::Null)),
+                Some(l) => answer.ok(l.pick(x * l.w as f64 / stage.0.max(1) as f64, y * l.h as f64 / stage.1.max(1) as f64).map(|e| open::on_stage(e, l, stage)).unwrap_or(Value::Null)),
                 None => answer.ok(Value::Null),
             },
+            Some(Cmd::Locate(keys, points, answer)) => match live.as_mut() {
+                Some(l) => {
+                    // page px to the stage's
+                    let (sx, sy) = (stage.0 as f64 / l.w.max(1) as f64, stage.1 as f64 / l.h.max(1) as f64);
+                    let mut v = l.locate(&keys, &points);
+                    for list in ["parts", "points"] {
+                        for r in v[list].as_array_mut().into_iter().flatten() {
+                            for (i, n) in r.as_array_mut().into_iter().flatten().enumerate() {
+                                *n = json!(n.as_f64().unwrap_or(0.0) * if i % 2 == 0 { sx } else { sy });
+                            }
+                        }
+                    }
+                    answer.ok(v);
+                }
+                None => answer.ok(Value::Null),
+            },
+            Some(Cmd::Props(props, answer, asked)) => {
+                ahead.extend(rx.try_iter());
+                status.lock().unwrap().props.sent += 1;
+                match live.as_mut() {
+                    // a newer set is waiting: this one is passed over, never drawn
+                    Some(_) if ahead.iter().any(|c| matches!(c, Cmd::Props(..))) => {
+                        status.lock().unwrap().props.dropped += 1;
+                        answer.ok(json!({"frame": frame, "dropped": true}));
+                    }
+                    Some(l) if frame >= 0 => match l.set_props(props) {
+                        Ok(v) => {
+                            answer.ok(json!({"frame": frame, "held": v["held"]}));
+                            let mut s = status.lock().unwrap();
+                            (s.held, s.values) = (l.held().to_vec(), l.values());
+                            (repaint, props_at) = (true, Some(asked));
+                        }
+                        Err(e) => answer.err(e),
+                    },
+                    // before its first frame: they are there when it is stepped
+                    Some(l) => {
+                        l.props_before(props);
+                        status.lock().unwrap().values = l.values();
+                        answer.ok(json!({"frame": frame}));
+                    }
+                    None => answer.err("the stage shows nothing"),
+                }
+            }
+            Some(Cmd::View(set, answer)) => match live.as_mut() {
+                Some(l) => {
+                    if let Some(orbit) = set {
+                        repaint = l.set_view(orbit);
+                    }
+                    answer.ok(l.view().unwrap_or(Value::Null));
+                }
+                None => answer.ok(Value::Null),
+            },
+            Some(Cmd::Part(key, answer)) => answer.ok(live.as_mut().and_then(|l| l.part(&key)).unwrap_or(Value::Null)),
+            Some(Cmd::Hold(key, to, answer)) => {
+                let held = live.as_mut().is_some_and(|l| l.hold(&key, to));
+                repaint |= held;
+                answer.ok(json!(held));
+            }
+            Some(Cmd::Wire(on, answer)) => {
+                wire = on;
+                let can = live.as_mut().is_some_and(|l| l.wire(on));
+                repaint |= can;
+                answer.ok(json!(can));
+            }
             Some(Cmd::Inspect(id, answer)) => match live.as_mut() {
-                Some(l) => answer.ok(l.element(id).map(|e| on_stage(e, l, stage)).unwrap_or(Value::Null)),
+                Some(l) => answer.ok(l.element(id).map(|e| open::on_stage(e, l, stage)).unwrap_or(Value::Null)),
                 None => answer.ok(Value::Null),
             },
-            Some(Cmd::Tweak(changes, answer)) => match (shown.as_deref(), live.as_ref()) {
-                (Some(at), Some(_)) => match next_version(at, &changes, stage, &log[..(frame + 1).max(0) as usize]) {
+            Some(Cmd::Tweak(changes, answer)) => match (shown.as_ref(), live.as_ref()) {
+                (Some(at), Some(_)) => match open::next_version(&at.path, &changes, stage, &log[..(frame + 1).max(0) as usize]) {
                     Ok((next, l)) => {
                         answer.ok(json!({"written": next.display().to_string(), "frame": frame}));
                         status.lock().unwrap().showing = Some(next.display().to_string());
-                        shown = Some(next);
+                        let render = at.render;
+                        shown = std::fs::read_to_string(&next).ok().map(|text| open::Shown { path: next, text, size: stage, render });
                         live = Some(l);
                         repaint = true;
                     }
@@ -344,6 +424,12 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, slot: Arc<Mutex<Painted>>)
             None => {}
         }
         let Some(l) = live.as_mut() else { continue };
+        // a file opened again while the scene was shown as wireframe: its 3D is made on a thread, so it is asked each
+        // turn until it is there to take it
+        if rewire && l.wire(true) {
+            rewire = false;
+            repaint = true;
+        }
         let due = if playing { base + (since.elapsed().as_secs_f64() * l.fps) as i64 } else { frame + steps };
         let mut stepped = 0;
         while frame < due && stepped < 4 {
@@ -373,7 +459,11 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, slot: Arc<Mutex<Painted>>)
                     let mut p = slot.lock().unwrap();
                     p.texture = l.texture();
                     p.n += 1;
-                    status.lock().unwrap().painted += 1;
+                    let mut s = status.lock().unwrap();
+                    s.painted += 1;
+                    if let Some(t) = props_at.take() {
+                        (s.props.drawn, s.props.ms) = (s.props.drawn + 1, t.elapsed().as_secs_f64() * 1e3);
+                    }
                 }
                 Err(e) => set_error(e),
             }
@@ -381,45 +471,4 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, slot: Arc<Mutex<Painted>>)
         let mut s = status.lock().unwrap();
         (s.frame, s.playing) = (frame, playing);
     }
-}
-
-/// The composition at `p` opened to play, laid out at the stage's box, its sound on (RAEA_AUDIO_MUTE=1: off).
-fn open(p: &std::path::Path, size: (u32, u32)) -> Result<raea_runtime_live::Live, String> {
-    let mut l = raea_runtime_live::Live::open_with(p, size, true).map_err(|e| format!("{}: {e}", p.display()))?;
-    sound(&mut l);
-    Ok(l)
-}
-
-fn sound(l: &mut raea_runtime_live::Live) {
-    if std::env::var("RAEA_AUDIO_MUTE").as_deref() != Ok("1") {
-        l.open_mixer();
-    }
-}
-
-/// The changes written into the next version beside `at` (raea-sys-tweak), opened and stepped through the frames played so
-/// far with the input each had, so it stands where the old one did. The old one plays on when any of it fails.
-fn next_version(at: &std::path::Path, changes: &[Change], size: (u32, u32), log: &[(Vec<String>, Option<(f64, f64, bool)>)]) -> Result<(PathBuf, raea_runtime_live::Live), String> {
-    let src = std::fs::read_to_string(at).map_err(|e| format!("{}: {e}", at.display()))?;
-    let tweaks: Vec<raea_sys_tweak::Tweak> = changes.iter().map(|c| raea_sys_tweak::Tweak { owner: &c.owner, kind: &c.kind, prop: &c.prop, value: &c.value }).collect();
-    let out = raea_sys_tweak::tweak(&src, &tweaks)?;
-    let next = raea_sys_tweak::free_name(at);
-    std::fs::write(&next, out).map_err(|e| format!("{}: {e}", next.display()))?;
-    // its sound only from here on: the replay is silent
-    let mut l = raea_runtime_live::Live::open_with(&next, size, true).map_err(|e| format!("{}: {e}", next.display()))?;
-    for (f, (keys, pointer)) in log.iter().enumerate() {
-        l.step(f as i64, keys, *pointer).map_err(|e| format!("{} at frame {f}: {e}", next.display()))?;
-    }
-    l.draw()?;
-    sound(&mut l);
-    eprintln!("raea-page-host: stage: wrote {}, replayed {} frames", next.display(), log.len());
-    Ok((next, l))
-}
-
-/// An element's box in the stage's pixels (the page's scaled to the stage), beside its own in page px.
-fn on_stage(mut e: Value, l: &raea_runtime_live::Live, size: (u32, u32)) -> Value {
-    let (sx, sy) = (size.0 as f64 / l.w.max(1) as f64, size.1 as f64 / l.h.max(1) as f64);
-    if let Some(r) = e["rect"].as_array().map(|r| r.iter().filter_map(Value::as_f64).collect::<Vec<_>>()).filter(|r| r.len() == 4) {
-        e["stage"] = json!([r[0] * sx, r[1] * sy, r[2] * sx, r[3] * sy]);
-    }
-    e
 }

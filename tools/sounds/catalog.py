@@ -67,8 +67,9 @@ for p, _ in tree("nbrosowsky/tonejs-instruments", "master"):
 packs.append({
     "id": "tonejs-instruments",
     "name": "tonejs-instruments (nbrosowsky)",
-    "licence": "public domain and CC-BY sources (the repo's README; the cello is CC-BY 3.0 by flcellogrl on Freesound)",
-    "attribution": "Samples from github.com/nbrosowsky/tonejs-instruments (Nicholaus Brosowsky); cello by flcellogrl (freesound.org), CC-BY 3.0",
+    # its README gives the samples as CC-BY 3.0; sample-source-info.txt names where each instrument was recorded
+    "licence": "CC-BY 3.0",
+    "attribution": "Samples from tonejs-instruments by Nicholaus Brosowsky (github.com/nbrosowsky/tonejs-instruments), CC-BY 3.0; recorded from VSCO 2, the University of Iowa, Karoryfer and Freesound (cello by flcellogrl, nylon guitar by quartertone, harmonium by donyaquick), as its sample-source-info.txt lists",
     "source": "https://github.com/nbrosowsky/tonejs-instruments",
     "url": "https://nbrosowsky.github.io/tonejs-instruments/samples/{instrument}/{file}",
     "pitched": True,

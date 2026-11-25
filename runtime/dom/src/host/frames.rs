@@ -14,6 +14,16 @@ pub struct Frame {
     pub(crate) wid: u64,
     /// sandboxed without allow-same-origin: an opaque origin, and no host calls or app asks at all
     pub(crate) opaque: bool,
+    /// the document it was mounted for (`url_key`): its iframe's id can come back as another iframe's
+    pub(crate) url: u64,
+}
+
+/// A frame document's URL as a frame root keeps it.
+fn url_key(url: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut h);
+    h.finish()
 }
 
 /// The JS of every root while iframes are on (raea_sys_page::iframes()): its iframes' windows (contentWindow) and the messages they post it.
@@ -79,7 +89,7 @@ pub fn mount(world: &mut World, w: u32, h: u32, code: &str, preamble: &[String],
             });
         });
         raea_runtime_js::calls::on_sync("canvas.read", raea_sys_canvas::read);
-        raea_runtime_js::calls::on_sync("canvas.advances", raea_sys_canvas::advances);
+        raea_runtime_js::calls::on_sync("canvas.advances", |a| raea_sys_canvas::with_page_fonts(raea_sys_canvas::advances, a));
         raea_sys_canvas::fonts(blitz_dom::util::svg_fonts);
         raea_sys_canvas::videos(|src| Some(raea_sys_page::net::page_path(src.strip_prefix("http://localhost").unwrap_or(src)).into()));
     }
@@ -107,7 +117,7 @@ pub(crate) fn root_on(world: &mut World, page: Entity, nodes: Nodes, w: u32, h: 
     }
     scripts.extend(preamble.iter().enumerate().map(|(i, s)| (s.clone(), format!("preamble{i}.js"))));
     scripts.push((code.to_string(), "bundle.js".into()));
-    let mut root = Root { page, js, out, nodes, queue: Vec::new(), ticking: false, clicks: 1, capture: None, hover_frozen: None, medias: Default::default(), views: Default::default(), fonts_wait: None, bevy_ui: false, placed_videos: false, frame, frames_seen: Default::default(), synced: false };
+    let mut root = Root { page, js, out, nodes, queue: Vec::new(), ticking: false, clicks: 1, capture: None, hover_frozen: None, medias: Default::default(), views: Default::default(), fonts_wait: None, bevy_ui: false, placed_videos: false, frame, frames_seen: Default::default(), synced: false, upkeep: raea_runtime_js::js::Upkeep::from_env() };
     for (src, name) in &scripts {
         root.js(world, |js| js.eval(src, name)).map_err(|e| format!("{name}: {e}"))?;
     }
@@ -158,6 +168,27 @@ pub(crate) fn mount_frames(world: &mut World, roots: &mut Roots) {
             }
         }
     }
+    // a frame root whose iframe is gone, or whose iframe's id now holds another document, goes with its JS, its
+    // document and its entity: a page that opened and closed artifacts kept every one's engine running, and a stale
+    // root swapped its document into the next iframe given the same id
+    let alive: std::collections::HashSet<(Entity, NodeId, u64)> = roots.0.iter().filter(|r| r.frame.is_none()).flat_map(|r| r.frames_seen.iter().map(move |(n, u)| (r.page, *n, url_key(u)))).collect();
+    let stale: Vec<Entity> = roots.0.iter().filter(|r| r.frame.is_some_and(|f| !alive.contains(&(f.parent, f.node, f.url)))).map(|r| r.page).collect();
+    if !stale.is_empty() {
+        for i in (0..roots.0.len()).rev() {
+            if stale.contains(&roots.0[i].page) {
+                roots.0.remove(i);
+            }
+        }
+        let mut docs = world.non_send_mut::<Docs>();
+        for page in &stale {
+            docs.0.remove(page);
+        }
+        for page in stale {
+            if let Ok(e) = world.get_entity_mut(page) {
+                e.despawn();
+            }
+        }
+    }
     for (parent, node, wid, opaque, src, body, url, (w, h)) in found {
         let path = url::Url::parse(&url).and_then(|u| u.join(&src)).ok().and_then(|u| u.to_file_path().ok());
         let net = raea_sys_page::net::FrameNet { roots: raea_sys_page::net::page_roots() };
@@ -171,7 +202,7 @@ pub(crate) fn mount_frames(world: &mut World, roots: &mut Roots) {
         let page = world.spawn_empty().id();
         let held = BaseDocument::new(raea_sys_page::config(raea_sys_page::Page { size: UVec2::new(w, h), scale: 1.0 }));
         world.non_send_mut::<Docs>().0.insert(page, held);
-        let frame = Frame { parent, node, wid, opaque };
+        let frame = Frame { parent, node, wid, opaque, url: url_key(&url) };
         if !swap_frame(world, page, &frame) {
             continue;
         }

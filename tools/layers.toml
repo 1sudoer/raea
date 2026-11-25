@@ -12,6 +12,9 @@ raea-core-meshcheck = "core"
 raea-core-sdf = "core"
 raea-core-grow = "core"
 raea-core-review = "core"
+raea-core-zfight = "core"
+raea-core-modelbox = "core"
+raea-core-facts = "core"
 raea-core-solidinfo = "core"
 raea-core-place = "core"
 raea-shape-web = "runtime"
@@ -25,9 +28,11 @@ raea-io-os = "io"
 raea-io-trace = "io"
 raea-io-media = "io"
 raea-io-assets = "io"
+raea-io-clef = "io"
 raea-io-gen = "io"
 raea-io-gen-comfy = "io"
 raea-io-gen-core = "io"
+raea-io-gen-fit = "io"
 raea-io-home = "io"
 raea-io-codec = "io"
 raea-io-soft = "io"
@@ -35,6 +40,8 @@ raea-io-av1 = "io"
 raea-io-ffmpeg = "io"
 raea-io-apple = "io"
 raea-io-apple-coding = "io"
+raea-io-alpha = "io"
+raea-io-capcut = "io"
 raea-io-shell = "io"
 raea-core-animate = "core"
 raea-core-ease = "core"
@@ -44,24 +51,45 @@ raea-gpu-device = "gpu"
 raea-core-k = "core"
 raea-core-calls = "core"
 raea-core-brief = "core"
+raea-core-ask = "core"
 raea-sys-k = "systems"
 raea-sys-mix = "systems"
+raea-sys-mix-level = "systems"
 raea-sys-tone = "systems"
 raea-seedling = "systems"
 raea-sys-ml = "systems"
+# MLX on Apple silicon, beside raea-sys-ml's ONNX Runtime (empty on other systems)
+raea-sys-mlx = "systems"
+# Kimodo's text to SOMA motion on MLX (raea motion; docs/character.feature CH15c)
+raea-sys-kimodo = "systems"
 raea-sys-speech = "systems"
 raea-sys-layout = "systems"
 raea-sys-vision = "systems"
+# Index's fast pass (docs/index.feature): pictures embedded on the Neural Engine, searched by words
+raea-sys-index = "systems"
+# raea fix: raea's own fixes and the community library (SQLite FTS5), looked up by symptom
+raea-sys-fixes = "systems"
+# Fingerprint (docs/fingerprint.feature): the columns its heads read, and the heads
+raea-sys-columns = "systems"
+raea-sys-fingerprint = "systems"
+raea-sys-fingerprint-use = "systems"
+raea-sys-fingerprint-things = "systems"
 raea-sys-song = "systems"
 raea-sys-perceive = "systems"
 raea-sys-footage = "systems"
 raea-perceive = "tools"
 raea-bridge-bench = "tools"
 raea-bevy-parity = "tools"  # Bevy's own examples with the parity probe (docs/control.feature FC0a)
+raea-lightbench = "tools"  # LightBench (bench/lightbench): a test renderer on Bevy alone, proving lighting before it moves into raea
+raea-rerender-ios = "tools"  # RR0's film on the iPhone (bench/rerender/ios): a static library the bench app calls
 raea-sys-parity = "systems"  # the parity probe, in raea's App and the examples'
 raea-bench-swatch = "systems"  # a Blitz widget fixture (bench/bridge/swatch) the plugin catalog declares: a leaf on vendored crates, so a runtime crate may build it in
 raea-render = "runtime"
 raea-render-raytrace = "runtime"
+# `raea light check`: raealism's measures (docs/realism.feature LT1)
+raea-light = "runtime"
+# `raea bench denoise`: each denoiser against its converged truth (docs/denoise.feature DN0), on raea light's runner
+raea-denoise-bench = "runtime"
 raea-bevy-plugins = "runtime"
 raea-bevy-calls = "runtime"
 raea-bevy-adapters = "runtime"
@@ -76,37 +104,59 @@ raea-sys-a11y = "systems"
 raea-sys-bake = "systems"
 raea-sys-contact = "systems"
 raea-sys-light-meter = "systems"
+raea-sys-stage = "systems"  # SG10-SG14: 3D type that reads, parts that don't snap, a camera that settles, a composed frame
+raea-sys-measure = "systems"
 raea-sys-canvas = "systems"
 raea-sys-tweak = "systems"
 raea-sys-filters = "systems"
-raea-sys-wear = "systems"
+raea-sys-weathering = "systems"
+raea-sys-atlas = "systems"
+raea-sys-runoff = "systems"
+raea-sys-touch = "systems"
+raea-sys-exposure = "systems"
+raea-sys-damage = "systems"
+raea-sys-glb = "systems"
 raea-sys-procmat = "systems"
 raea-sys-grass = "systems"
 raea-sys-page = "systems"
 raea-sys-page-net = "systems"
 raea-sys-page-ops = "systems"
 raea-sys-frame = "systems"
+raea-sys-shots = "systems"
+raea-sys-hold = "systems"
+raea-sys-body = "systems"
+raea-sys-grab = "systems"
 raea-sys-splat = "systems"
 raea-sys-sprite = "systems"
 raea-sys-rt = "systems"
+raea-sys-gi = "systems"
+raea-sys-engine-shaders = "systems"
+raea-sys-lod = "systems"
+raea-sys-foliage = "systems"
 raea-sys-text3d = "systems"
 raea-runtime-gpuframe = "runtime"
 raea-runtime-scene3d = "runtime"
 raea-sys-screen = "systems"
 raea-sys-matchmove = "systems"
 raea-sys-grid = "systems"
+raea-sys-viewbox = "systems"
+raea-sys-rendermap = "systems"
 raea-sys-meshseq = "systems"
 raea-sys-environment = "systems"
 raea-sys-look = "systems"
 raea-sys-compose = "systems"
 raea-sys-material = "systems"
 raea-sys-mesh = "systems"
+raea-sys-layers = "systems"
 raea-sys-framepass = "systems"
 raea-sys-compute = "systems"
 raea-sys-phase = "systems"
 raea-sys-sampler = "systems"
 raea-sys-shader = "systems"
 raea-sys-shader-wgsl = "systems"
+raea-sys-copies = "systems"
+# equal parts share one mesh and material, let go once no part holds them (runtime/scene3d re-exports it)
+raea-sys-share = "systems"
 raea-sys-three-shader = "systems"
 raea-sys-post = "systems"
 raea-sys-fog = "systems"
@@ -116,17 +166,28 @@ raea-sys-fonts = "systems"
 raea-sys-image = "systems"
 raea-runtime-twins = "runtime"
 raea-runtime-dom = "runtime"
+raea-runtime-dom-media = "runtime"
 raea-runtime-edit = "runtime"
 raea-runtime-input = "runtime"
 raea-runtime-bake = "runtime"
 raea-runtime-bundle = "runtime"
 raea-runtime-bundle-lib = "runtime"
 raea-runtime-calls = "runtime"
+raea-runtime-shots = "runtime"
+raea-runtime-segments = "runtime"
+raea-runtime-canvas = "runtime"
+raea-runtime-wear = "runtime"
 raea-runtime-export = "runtime"
+raea-runtime-pagestore = "runtime"
+raea-runtime-cssurls = "runtime"
+raea-runtime-pid = "runtime"
 raea-runtime-page = "runtime"
+raea-runtime-appscreen = "runtime"
 raea-runtime-sound = "runtime"
 raea-runtime-view = "runtime"
+raea-runtime-world = "runtime"
 raea-runtime-encode = "runtime"
+raea-runtime-endchecks = "runtime"
 raea-runtime-plugins = "runtime"
 raea-runtime-live = "runtime"
 raea-runtime-look = "runtime"
@@ -135,13 +196,36 @@ raea-runtime-scene2d = "runtime"
 raea-runtime-shared = "runtime"
 raea-page = "runtime"
 raea-app-check = "apps"
+raea-app-check-cause = "apps"
+raea-app-check-flash = "apps"
+raea-app-check-inbox = "apps"
+raea-app-check-make = "apps"
+raea-app-check-read = "apps"
+raea-app-check-text = "apps"
+raea-app-direction = "apps"
+raea-app-notes = "apps"
+# `raea fingerprint`: its verbs and the resident service that keeps the encoders loaded
+raea-app-fingerprint = "apps"
+raea-app-sound = "apps"
 raea-app-ci = "apps"
 raea-app-tools = "apps"
+raea-app-motion = "apps"
+raea-app-engines = "apps"
+raea-app-interchange = "apps"
 raea-app-judge = "apps"
+raea-app-make = "apps"
+raea-app-scene = "apps"  # raea scene lint|explain|light|stage
+raea-app-voice = "apps"  # raea voice: speech to speech on this computer, as lines of JSON
+raea-app-ask = "apps"
+raea-app-lightbake = "apps"  # raea bake light (docs/bake.feature)
+raea-sys-lightbake = "systems"  # light baked over raea/wear's atlas on raea's ray tracer (docs/bake.feature)
+raea-app-double = "apps"
 raea-app-solid = "apps"
 raea-app-media = "apps"
 raea-app-targets = "apps"
 raea-app-game = "apps"
+raea-app-capcut = "apps"
+raea-app-layers = "apps"
 raea-app-play = "apps"
 raea-page-host = "runtime"
 raea-rune-host = "runtime"
@@ -155,9 +239,13 @@ raea-rune-layer = "runtime"
 raea-rune-slots = "runtime"
 raea-page-stage = "runtime"
 raea-page-window = "runtime"
+raea-page-ax = "runtime"
+raea-page-sound = "runtime"
 raea-runtime-react = "runtime"
+raea-runtime-track = "runtime"
 raea-cli = "apps"
 raea-neural = "runtime"
+raea-app-registry = "apps"
 raea-app-workspace = "apps"
 raea-bundle = "apps"
 raea-sdk-props = "tools"
@@ -168,16 +256,23 @@ conformance-fake = "tools"
 rtools = "tools"
 skillcheck = "tools"
 seetool = "tools"
+raea-hands-audit = "tools"
 
 # systems that hold only a facility another system may build on (docs/overhaul.md: the mixer graph, ONNX sessions,
 # Vision requests, K kernels on the GPU)
 [facility]
 # the frame's rows every pass reads (FrameRows, the edit, the clock, row helpers)
 raea-sys-frame = true
+# cuts between cameras: the frames that start a shot and the last cut drawn (raea-sys-frame re-exports it)
+raea-sys-shots = true
+# the layer pass's keys, table, raster and NAME.layers (raea-sys-frame records the 3D through it)
+raea-sys-layers = true
 # a row's standard material and its maps (meshseq builds its mesh's on it)
 raea-sys-material = true
 # a row's mesh from JSON, Bevy's primitives by name (materials and reflected Mesh handles build on it)
 raea-sys-mesh = true
+# the character's rig, poses, forward kinematics, IK and joint limits (what the hands do with things builds on it)
+raea-sys-body = true
 # how a texture is read (materials, shaders and models set it the same way)
 raea-sys-sampler = true
 # a shader's inputs, accessors and registration (surface shaders and frame passes share them)
@@ -195,14 +290,24 @@ raea-sys-volume = true
 # the scene's ray tracing (the traced-light pass reads its scene)
 raea-sys-rt = true
 raea-sys-mix = true
+# the mix before the master: dialogue at one level, room tone at the joins (the mix masters what it gives)
+raea-sys-mix-level = true
 raea-sys-tone = true
 raea-sys-ml = true
+raea-sys-mlx = true
 raea-sys-layout = true
 raea-sys-vision = true
+# a file's encoder columns (Fingerprint's heads read them)
+raea-sys-columns = true
+# a fingerprint's taxonomy, evidence and heads (raea-sys-fingerprint-use scores, compares and picks with them)
+raea-sys-fingerprint = true
+# grow, profile and the heads' readings over a file (raea-sys-fingerprint-things reads things on them)
+raea-sys-fingerprint-use = true
 raea-sys-song = true
 raea-sys-k = true
-raea-sys-wear = true
 raea-sys-procmat = true
+# trees grown by species as meshes: crowns, leaves, bark and roots (the city's tree LODs build on them)
+raea-sys-foliage = true
 raea-sys-canvas = true
 raea-sys-filters = true
 raea-sys-page = true
@@ -212,3 +317,15 @@ raea-sys-page-net = true
 raea-sys-page-ops = true
 raea-sys-fonts = true
 raea-sys-image = true
+# rain's run-off over a model's surfaces (the weathering bake builds its flow and stains on it)
+raea-sys-runoff = true
+# where hands, feet and wheels wear a model, and where things belong (the weathering bake's touch and spots)
+raea-sys-touch = true
+# what a model is exposed to through the year: the sun by date, driven snow, where blown things settle (the weathering bake's causes3)
+raea-sys-exposure = true
+# where a building breaks: cracks from its openings' corners, how readily a coat comes off, debris under the losses (the weathering bake's causes3 a and debris)
+raea-sys-damage = true
+# a .glb read as JSON and bytes and written back (the weathering bake reads and rewrites models through it)
+raea-sys-glb = true
+# the atlas raea's bakes share: charts, packing, each texel's point (the cause maps and the light bake lie over it)
+raea-sys-atlas = true

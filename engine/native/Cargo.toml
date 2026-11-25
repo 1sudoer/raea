@@ -18,7 +18,9 @@ modules = ["dep:raea-modules"]
 portable = ["raea-runtime-jsengine/portable"]
 
 [dependencies]
+dunce = "1"
 raea-core-calls = { path = "../../core/calls" }
+raea-io-home = { path = "../../io/home" }
 # the shell's natives (fs, net, sql, archive)
 raea-io-shell = { path = "../../io/shell", default-features = false }
 serde_json = "1"

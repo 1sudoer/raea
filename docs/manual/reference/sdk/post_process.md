@@ -29,13 +29,13 @@ const Glow = () => (
 import { AntiAliasing, Bloom, Compute, DepthOfField } from "raea/post_process"
 ```
 
-`raea/post_process` exports 12 components, 14 types. Bevy's counterpart: `bevy_post_process, bevy_anti_alias`. Source: [sdk/raea/src/post_process.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/post_process.ts).
+`raea/post_process` exports 12 components, 1 function, 1 value, 15 types. Bevy's counterpart: `bevy_post_process, bevy_anti_alias`. Source: [sdk/raea/src/post_process.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/post_process.ts).
 
 ## Components
 
 ### `AntiAliasing`
 
-How the 3D's edges are smoothed. Put it inside the Canvas3D, once; the first frame's holds for the piece.
+How the 3D's edges are smoothed. Put it inside the Canvas3D, once; each frame's is its own.
 
 Bevy: `bevy_anti_alias::smaa::Smaa`, `bevy_anti_alias::fxaa::Fxaa`.
 
@@ -54,8 +54,6 @@ Takes [`BloomProps`](3d.md#bloomprops)'s props.
 A compute over the frame, in the 3D beside the camera; several run in the order written, before the cameras draw.
 
 Rust: `raea_sys_compute::Computes`.
-
-Takes [`ComputeProps`](3d.md#computeprops)'s props.
 
 ### `DepthOfField`
 
@@ -136,13 +134,28 @@ Bevy: `bevy_render::view::Tonemapping`, `bevy_camera::camera::Exposure`.
 
 Takes [`ToneMappingProps`](3d.md#tonemappingprops)'s props.
 
+## Functions
+
+### `gradeLook`
+
+A grade look's props, with your changes over it: `<Grade {...gradeLook("cinematic", { vignette: 0.1 })} />`.
+
+```ts
+function gradeLook(look: GradeLook, over?: GradeProps): GradeProps
+```
+
+## Values
+
+### `GRADES`
+
 ## Types
 
 ### `AntiAliasingProps`
 
 | Field | Type | What it is |
 | --- | --- | --- |
-| `mode` (required) | `"msaa" \| "smaa" \| "fxaa" \| "none"` | "msaa" (4x multisampling, the default), "smaa" (morphological, high preset: the default with AmbientOcclusion, which can't multisample), "fxaa" (cheapest, softest) or "none". Each draws a frame from that frame alone, so a render equals its play (temporal anti-aliasing isn't offered: it needs the frames before) |
+| `mode` (required) | `"msaa" \| "smaa" \| "fxaa" \| "none" \| "steady"` | "msaa" (4x multisampling, the default), "smaa" (morphological, high preset: the default with AmbientOcclusion, which can't multisample), "fxaa" (cheapest, softest), "none", or "steady": raea's temporal filter, each frame drawn from a slightly different place inside its pixels and blended with the frames before it, so what one frame can only draw as a pattern of pixels (levels cross-fading by distance, far detail a pixel wide, noisy light) settles to its true share; single-sampled, with depth and motion prepasses (on Berlin's fly, faster than msaa). The others draw a frame from that frame alone, so a render equals its play; "steady" needs the frames before, so a render that starts partway through differs from its play for its first few frames |
+| `steady` | `{ still?: number; moving?: number; px?: number }` | "steady"'s rates: the frames a still pixel's history averages (32), a moving one's (8), and the motion in pixels at which a pixel counts as moving (4). Fewer frames follow change sooner and settle less |
 
 ### `BloomProps`
 
@@ -152,6 +165,7 @@ Takes [`ToneMappingProps`](3d.md#tonemappingprops)'s props.
 | `threshold` | `number` | only what's brighter than this glows (0 = everything a little; 1 = only emissive parts and highlights) |
 | `skip` | `string[]` | composition passes (a part's `pass`) left out of it: they neither glow nor take the glow |
 | `passes` | `Record<string, number>` | each named pass's share of it, 0 (as skip) to 1 (all of it, as "scene" has) |
+| `additive` | `boolean` | the glow added on top of the frame, brightening it, as three.js's and postprocessing's bloom do; by default it takes its light from around the bright parts (Bevy's energy-conserving bloom) |
 
 ### `ComputeProps`
 
@@ -208,11 +222,17 @@ A shader over the whole frame. Its source defines
 | `samplers` | `Record<string, SamplerSpec>` | a file's samplers by name |
 | `wesl` | `string` | the source in WESL (a superset of WGSL) |
 | `wgsl` | `string` | the same in plain WGSL |
-| `uniforms` | `Record<string, number \| number[] \| string \| StorageValue>` | up to 16, as a surface shader's (a file's: each var<uniform>, a struct's { field: value }) |
-| `textures` | `Record<string, string \| Record<string, unknown>>` | up to 4, as a surface shader's, each read with its own sampler |
+| `uniforms` | `Record<string, number \| number[] \| string \| StorageValue>` | up to 16, as a surface shader's (a file's: each var<uniform>, a struct's { field: value }); each frame's own, so a camera's matrices, a time or a frame index handed in move through a render (each keeps its first frame's type) |
+| `textures` | `Record<string, string \| Record<string, unknown>>` | up to 4, as a surface shader's, each read with its own sampler; the first frame's for the whole render (pick a layer of a texture array with a uniform to change what's read frame by frame) |
 | `defs` | `ShaderDefs` | shader defs, as a surface shader's |
 | `at` | `"before-tonemap" \| "after-tonemap"` | "after-tonemap" (display colours; the default) or "before-tonemap" (the HDR frame, after bloom) |
 | `prepass` | `boolean \| { depth?: boolean; normal?: boolean }` | the camera's depth and normal prepasses, for depth(uv) and normal(uv) (turns its multisampling off) |
+
+### `GradeLook`
+
+```ts
+type GradeLook = "clean" | "cinematic" | "gritty" | "vintage"
+```
 
 ### `GradeProps`
 
@@ -221,6 +241,7 @@ A shader over the whole frame. Its source defines
 | `temperature` | `number` | warmer (+) or cooler (-): a shift of the CIE x chromaticity, about -0.3 to 0.3 |
 | `tint` | `number` | magenta (+) or green (-) |
 | `saturation` | `number` | the whole frame's saturation after tone mapping (1 keeps it) |
+| `exposure` | `number` | stops of exposure on every pixel just before tone mapping, unlit colours and emission included (0 keeps it): <ToneMapping exposure> is the camera's, which brightens only what lights shade |
 | `shadows` | `GradeSection` | the grade on the shadows: saturation, contrast, gamma, gain, lift |
 | `midtones` | `GradeSection` | the grade on the midtones |
 | `highlights` | `GradeSection` | the grade on the highlights |
@@ -264,6 +285,7 @@ A shader over the whole frame. Its source defines
 | --- | --- | --- |
 | `shutterAngle` | `number` | the fraction of a frame the shutter is open (0.5 by default, a 180-degree shutter); above 1 smears further |
 | `samples` | `number` | samples each way per pixel (4 by default) |
+| `kind` | `"shutter" \| "bevy"` | "shutter" (the default: raea's, two taps a pixel for each sample each way) or "bevy" (Bevy's MotionBlur, to compare against) |
 | `animate` | `Animate3d` | declared animation of its numbers |
 
 ### `OutlineProps`

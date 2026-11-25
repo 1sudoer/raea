@@ -23,6 +23,12 @@ type Ctx = { cwd: string; fs: Fs };
 const out = (stdout: string, exitCode = 0, stderr = "") => ({ stdout, stderr, exitCode });
 // `raea library` (library.ts), kept apart from the imports above
 import { libraryVerb } from "./library";
+// `raea show` (show.ts): what a session shows the person, in the raea app
+import { absolute, fromCwd, labelsIn, showVerb } from "./show";
+// `raea clothes` (clothes.ts): garments for SOMA's body from words
+import { clothesVerb } from "./clothes";
+// `raea bug` (bug.ts): an agent's report of a bug in raea, to raea's server
+import { bugVerb } from "./bug";
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -39,19 +45,21 @@ export interface Cut {
   from: number;
   to: number;
   line: string;
+  /** a sound-only take's clip plays as <Audio> (#89); absent means video */
+  kind?: "video" | "audio";
 }
 
 /** cuts.ts from the clips: data the edit imports (each take's file as a module, so the bundler finds the media). */
 export function cutsModule(clips: Cut[], edit: { width: number; height: number; fps: number }): string {
   const files = [...new Set(clips.map((c) => c.file))];
   const id = (f: string) => "m_" + f.replace(/\W/g, "_");
-  const rows = clips.map((c) => `  { take: ${JSON.stringify(c.take)}, src: ${id(c.file)}, from: ${c.from.toFixed(3)}, to: ${c.to.toFixed(3)}, line: ${JSON.stringify(c.line)} },`);
+  const rows = clips.map((c) => `  { take: ${JSON.stringify(c.take)}, src: ${id(c.file)}, from: ${c.from.toFixed(3)}, to: ${c.to.toFixed(3)}, line: ${JSON.stringify(c.line)}, kind: ${JSON.stringify(c.kind ?? "video")} },`);
   return `// written by \`raea cut\`: the clips, in order, in each take's own seconds. Re-run raea cut to change them, or edit
 // by hand (the edit reads only this file). cuts.json beside it is the same list for raea's checks.
 ${files.map((f) => `import ${id(f)} from ${JSON.stringify("./" + f)};`).join("\n")}
 
 export const edit = ${JSON.stringify(edit)};
-export type Cut = { take: string; src: string; from: number; to: number; line: string };
+export type Cut = { take: string; src: string; from: number; to: number; line: string; kind: "video" | "audio" };
 export const cuts: Cut[] = [
 ${rows.join("\n")}
 ];
@@ -68,7 +76,7 @@ A video edit as a React + TypeScript project, rendered by raea.
 
 - edit.tsx: the composition. Change anything: layout, timing, which component plays when.
 - cuts.ts: the clips (\`raea cut\` writes it, with cuts.json and words.json beside it; re-run it rather than editing
-  by hand, or captions and checks lose their timing). components/: parts you added (\`raea part add\`), yours to change.
+  by hand, or captions and checks lose their timing). components/: components you added (\`raea component add\`), yours to change.
 - brand/brand.css: the brand's tokens (\`raea brand DOMAIN\` reads them from the brand's site). edit.tsx loads them with the project's
   Tailwind: \`<style>{css}</style>\`, css from "./styles.gen" (raea render writes it). Style only with the brand
   classes: colour text-brand-accent, bg-brand-accent, bg-brand-surface (bg-brand-bg), text-brand-on-surface,
@@ -89,9 +97,11 @@ Layout: <AbsoluteFill>, <Sequence from durationInFrames>, <Series><Series.Sequen
 Media: <Video src startFrom endAt volume playbackRate muted framing="face" punchIn style> (framing="face" keeps the
 eyes 38% down as the speaker moves; an objectPosition or transform turns it off), <Audio src startFrom endAt volume={n | (f) => n} gainDb fadeIn fadeOut>,
 <Img src>. Media files import as modules: import take from
-"./media/x.mov". Sound: music in Tone.js (import * as Tone from "raea/tone"): instruments in a Tone.Sampler
-playing a Part or Sequence, the instrument's notes from Tone.tokensynth("a warm upright bass", ["C2", "C3", "C4"]) or a
-sample library (\`raea sounds\`); sao("prompt", {seconds}) for an effect, as an <Audio src>; narration
+"./media/x.mov". Sound: decide what each scene is heard as first (silence, its own sound, score, effects); music,
+where there is some, in Tone.js (import * as Tone from "raea/tone"), composed for the cut (a motif, chords that move,
+a part with rhythm, ending on a cut; never a pad or drone by default): instruments in a Tone.Sampler playing Parts and
+Sequences, the notes from a sample library (\`raea sounds\`, \`raea guide sources\`) or, for a timbre no library has,
+Tone.tokensynth("a bowed saw, close", ["C3", "C4", "C5"]); sao("prompt", {seconds}) for an effect, as an <Audio src>; narration
 is <Speech text start> from raea/speech (Pocket TTS). All of it local. <Mix lufs ceiling> masters the sound.
 Words: useWords() -> [{text, from, to}] (frames, the cuts' words), word("phrase") -> the frame it's said,
 findPhrase(words, "phrase", {occurrence, edge: "start" | "end"}).
@@ -101,11 +111,23 @@ Composition: registerRoot(() => <Composition id component width height fps durat
 Not there: React hooks come from "react" (useMemo, useState), not from raea.
 `;
 
+/** The workspace a folder is in: the nearest folder at or above it holding .raea/workspace, through the shell's fs. */
+async function workspaceAbove(c: Ctx, from: string): Promise<string | undefined> {
+  // up to the root, / or on Windows C:
+  for (let d = from.replace(/[\\/]+$/, ""); d; ) {
+    if (await c.fs.exists(`${d}/.raea/workspace`)) return d;
+    const up = Math.max(d.lastIndexOf("/"), d.lastIndexOf("\\"));
+    if (up < 0) break;
+    d = d.slice(0, up);
+  }
+  return undefined;
+}
+
 /** The `raea` command's handler (the shell wraps it with just-bash's defineCommand, so this package needs no dependency). */
 export function raeaHandler(host?: Host, engine?: Engine) {
   return async (args: string[], ctx: unknown) => {
     const c = ctx as unknown as Ctx;
-    const p = (rel: string) => (rel.startsWith("/") ? rel : `${c.cwd.replace(/\/$/, "")}/${rel}`);
+    const p = (rel: string) => fromCwd(c.cwd, rel);
     const ask = (op: string, a: Record<string, unknown> = {}) => {
       if (!host) throw new Error(`raea ${op} needs a host (the native raea's src/native.ts); this shell has none`);
       return host(op, a);
@@ -115,10 +137,10 @@ export function raeaHandler(host?: Host, engine?: Engine) {
       if (!engine) throw new Error(`raea ${a[0]} is the engine's (the native raea), and this shell has none`);
       return engine(a, ctx);
     };
-    // a set is a folder of examples/parts (`raea part add reel` copies it whole); a part is one file of a set that says
-    // `// raea part add NAME: ...` at its top, and copies alone
-    const said = (src: string) => (/^\/\/ raea part add [\w-]+: (.*)$/m.exec(src)?.[1] ?? "").split(". ")[0];
-    const single = (n: string) => Object.values(REGISTRY).map((set) => set[`${n}.tsx`]).find((src) => src && new RegExp(`^// raea part add ${n}:`, "m").test(src));
+    // a set is a folder of examples/components (`raea component add reel` copies it whole); a component is one file of a
+    // set that says `// raea component add NAME: ...` at its top (`raea part add`, before 11-12), and copies alone
+    const said = (src: string) => (/^\/\/ raea (?:component|part) add [\w-]+: (.*)$/m.exec(src)?.[1] ?? "").split(". ")[0];
+    const single = (n: string) => Object.values(REGISTRY).map((set) => set[`${n}.tsx`]).find((src) => src && new RegExp(`^// raea (?:component|part) add ${n}:`, "m").test(src));
     const parts = () =>
       Object.entries(REGISTRY)
         .flatMap(([set, files]) => [
@@ -145,7 +167,7 @@ export function raeaHandler(host?: Host, engine?: Engine) {
           if (args.includes("--layout") && args[args.indexOf("--layout") + 1] !== "feature") return out("", 2, "raea init [--layout feature]\n");
           if (args.includes("--layout")) {
             for (const d of FEATURE_DIRS) await c.fs.mkdir(p(d), { recursive: true });
-            const name = c.cwd.replace(/\/$/, "").split("/").pop() || "project";
+            const name = c.cwd.replace(/[\\/]$/, "").split(/[\\/]/).pop() || "project";
             for (const [f, body] of Object.entries(featureLayout(name, shape))) await put(f, body);
             return out(made.length ? `made ${made.join(", ")}; render it with raea render src/main.tsx\n` : "nothing to make: the project's files are here\n");
           }
@@ -165,42 +187,57 @@ export function raeaHandler(host?: Host, engine?: Engine) {
           } else await put("AGENTS.md", NOTES);
           return out(made.length ? `made ${made.join(", ")}\n` : "nothing to make: the project's files are here\n");
         }
-        case "part": {
-          if (args[1] === "list" || args[1] === undefined) return out(parts());
-          if (args[1] !== "add") return out("", 2, "raea part list | raea part add NAME ... [--force]\n");
+        // `raea component` copies raea's sets and components into the project's components/ (docs/layout.feature LY4),
+        // or with --shared into the workspace's shared/components/, which every project imports as @shared/components/
+        // `raea part` was its name until 11-12, and still works, saying so
+        case "part":
+        case "component": {
+          const was = args[0] === "part" ? "(raea part is raea component now)\n" : "";
+          if (args[1] === "list" || args[1] === undefined) return out(parts(), 0, was);
+          if (args[1] !== "add") return out("", 2, `${was}raea component list | raea component add NAME ... [--shared] [--force]\n`);
           const names = clean(args.slice(2));
-          if (!names.length) return out("", 2, "raea part add NAME ...  (raea part list shows them)\n");
+          if (!names.length) return out("", 2, `${was}raea component add NAME ...  (raea component list shows them)\n`);
           const force = args.includes("--force");
-          await c.fs.mkdir(p("components"), { recursive: true });
+          let home = "components";
+          // what imports it: a composition in compositions/ reaches ../components/, one at the root ./components/
+          let from = (await c.fs.exists(p("compositions"))) ? "../components" : "./components";
+          if (args.includes("--shared")) {
+            const ws = await workspaceAbove(c, c.cwd);
+            if (!ws) return out("", 1, `${was}raea component add --shared: no workspace above ${c.cwd} (no .raea/workspace): add it to the project instead\n`);
+            home = `${ws}/shared/components`;
+            from = "@shared/components";
+          }
+          await c.fs.mkdir(p(home), { recursive: true });
           const done: string[] = [];
+          const shown = (rel: string) => (absolute(home) ? `shared/components/${rel.slice(home.length + 1)}` : rel);
           for (const n of names) {
             const set = REGISTRY[n];
             if (set) {
               // a set is the project's own once copied: never overwritten unasked, and said so loudly
-              const dir = `components/${n}`;
-              if (!force && (await c.fs.exists(p(dir)))) return out(done.join(""), 1, `raea part add: ${dir}/ is already here (yours now; --force replaces its files)\n`);
+              const dir = `${home}/${n}`;
+              if (!force && (await c.fs.exists(p(dir)))) return out(done.join(""), 1, `raea component add: ${shown(dir)}/ is already here (yours now; --force replaces its files)\n`);
               await c.fs.mkdir(p(dir), { recursive: true });
               for (const [f, src] of Object.entries(set)) await c.fs.writeFile(p(`${dir}/${f}`), src);
-              done.push(`${dir}/  ${Object.keys(set).length} files; import from "./${dir}"\n`);
+              done.push(`${shown(dir)}/  ${Object.keys(set).length} files; import from "${from}/${n}"\n`);
               continue;
             }
             const src = single(n);
-            if (!src) return out(done.join(""), 1, `raea part add: no part or set "${n}" (raea part list shows them)\n`);
-            const dest = p(`components/${n}.tsx`);
+            if (!src) return out(done.join(""), 1, `raea component add: no component or set "${n}" (raea component list shows them)\n`);
+            const dest = p(`${home}/${n}.tsx`);
             if (!force && (await c.fs.exists(dest))) {
-              done.push(`components/${n}.tsx is already here (yours now; --force replaces it)\n`);
+              done.push(`${shown(`${home}/${n}.tsx`)} is already here (yours now; --force replaces it)\n`);
               continue;
             }
             await c.fs.writeFile(dest, src);
-            done.push(`components/${n}.tsx  import it: import ${n.replace(/(^|-)(\w)/g, (_, __, ch) => ch.toUpperCase())} from "./components/${n}";\n`);
+            done.push(`${shown(`${home}/${n}.tsx`)}  import it: import ${n.replace(/(^|-)(\w)/g, (_, __, ch) => ch.toUpperCase())} from "${from}/${n}";\n`);
           }
-          return out(done.join(""));
+          return out(done.join(""), 0, was);
         }
-        // `add` is npm packages (the engine's package manager); a registry part's name is pointed at `raea part add`
+        // `add` is npm packages (the engine's package manager); a registry component's name is pointed at `raea component add`
         case "add": {
           const r = await native();
           const part = clean(args.slice(1)).find((n) => REGISTRY[n] || single(n));
-          return r.exitCode && part ? { ...r, stderr: r.stderr + `(a raea part? raea part add ${part})\n` } : r;
+          return r.exitCode && part ? { ...r, stderr: r.stderr + `(a raea component? raea component add ${part})\n` } : r;
         }
         case "cut": {
           const spans: number[][] = [];
@@ -234,6 +271,22 @@ export function raeaHandler(host?: Host, engine?: Engine) {
         }
         case "library":
           return out(libraryVerb(ask, args.slice(1), (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {}));
+        case "show": {
+          // --labels FILE.json: read here, where the shell's files are (show.ts labelsIn)
+          const at = args.lastIndexOf("--labels");
+          const file = at > 0 ? args[at + 1] : undefined;
+          let listed: unknown[] | undefined;
+          try {
+            listed = file === undefined ? undefined : labelsIn(await c.fs.readFile(p(file), "utf8"), file);
+          } catch (e) {
+            return out("", 2, `raea show: ${(e as Error).message.startsWith("--labels") ? (e as Error).message : `--labels ${file}: ${(e as Error).message}`}\n`);
+          }
+          return out(showVerb(ask, args.slice(1), c.cwd, (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {}, listed));
+        }
+        case "clothes":
+          return out(clothesVerb(ask, args.slice(1)));
+        case "bug":
+          return out(bugVerb(ask, args.slice(1), (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {}));
         default:
           return await native();
       }

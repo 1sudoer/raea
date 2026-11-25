@@ -44,11 +44,9 @@ impl Model {
     }
 }
 
-/// The models folder: $RAEA_MODELS, else ~/.local/share/raea-models.
+/// The models folder: $RAEA_MODELS, else raea's (raea_io_home::models: ~/.local/share/raea-models on the Mac).
 pub fn models_dir() -> PathBuf {
-    std::env::var_os("RAEA_MODELS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/raea-models"))
+    std::env::var_os("RAEA_MODELS").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(raea_io_home::models)
 }
 
 fn modified(p: &Path) -> std::time::SystemTime {
@@ -75,7 +73,7 @@ impl Model {
         if !package.exists() {
             return Err(format!("{}: not installed", package.display()));
         }
-        let caches = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Library/Caches/raea-perception");
+        let caches = raea_io_home::user_home().unwrap_or_default().join("Library/Caches/raea-perception");
         std::fs::create_dir_all(&caches).map_err(|e| e.to_string())?;
         let compiled = caches.join(format!("{name}.mlmodelc"));
         if !compiled.exists() || modified(&compiled) < modified(&package) {

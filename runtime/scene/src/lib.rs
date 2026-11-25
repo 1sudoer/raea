@@ -12,7 +12,7 @@ use raea_core_program::ir::{Program, V};
 use serde_json::{Map, Value};
 
 use raea_core_scene::*;
-pub use raea_runtime_look::{camera, column};
+pub use raea_runtime_look::{camera, column, rgba_of};
 use raea_runtime_look::*;
 
 mod parts;
@@ -21,13 +21,11 @@ mod models;
 use models::*;
 mod live;
 pub use live::{LiveScene, Shot};
-use live::*;
+pub use raea_core_scene::{LIVE_GROUPS, cam_keyed, live_dynamic};
 mod fast;
 
 /// Gaussian splats' rows (<Splat>).
 mod splat;
-/// 2D parts' rows (<Sprite>, <Shape2D>).
-/// <Instances>: a mesh or model row's placements (its `inst` column).
 /// Baked simulations' and glitches' rows (<MeshSequence>, <Goo>, glitch props).
 mod meshseq;
 /// Fields of grass' rows (<Grass>).
@@ -39,7 +37,7 @@ const BY_PARENT: [(&str, &str); 19] = [("AmbientLight", "ambient"), ("Bloom", "b
     ("AmbientOcclusion", "ssao"), ("AntiAliasing", "aa"), ("Shadows", "shadows"), ("Look", "framelook"), ("Outline", "outline"), ("Fisheye", "fisheye"), ("LensDistortion", "distortion"), ("MotionBlur", "mblur"), ("BevyResource", "resource")];
 
 fn walk(n: &Node3, parent: Mat4, out: &mut Vec<Item>) {
-    let item = |kind: &'static str, world: Mat4, material: Option<Node3>| Item { kind, props: n.props.clone(), shape: n.shape.clone(), material, world };
+    let item = |kind: &'static str, world: Mat4, material: Option<Node3>| Item { kind, props: n.props.clone(), shape: n.shape.clone(), at: n.at.clone(), material, world };
     match &*n.kind {
         "Group" => {
             let w = parent * local(&n.props);
@@ -128,15 +126,20 @@ fn walk(n: &Node3, parent: Mat4, out: &mut Vec<Item>) {
             bevy_parts(n, &mut it);
             out.push(it)
         }
-        "ImagePlane" => out.push(item("panel", parent * local(&n.props), None)),
+        // a picture in space or a live picture on a quad (<Screen>, raea-render screen.rs: a panel with a `screen`
+        // column), with its layer key (bevy_parts)
+        "ImagePlane" | "Screen" => {
+            let mut it = item("panel", parent * local(&n.props), None);
+            bevy_parts(n, &mut it);
+            out.push(it)
+        }
         // a picture pressed onto whatever surface its box crosses (<Decal>: raea-render's forward decal, its +y out of the surface)
         "Decal" => out.push(item("decal", parent * local(&n.props), None)),
-        // a live picture on a quad (<Screen>): a panel with a `screen` column (raea-render's screen.rs)
-        "Screen" => out.push(item("panel", parent * local(&n.props), None)),
         // footage behind the 3D, filling the camera's view (<Plate>, <Matchmove>): not moved by groups
         "Plate" => out.push(item("plate", Mat4::IDENTITY, None)),
         "PerspectiveCamera" | "DirectionalLight" | "PointLight" | "SpotLight" | "RectAreaLight" => {
             let kind = match &*n.kind {
+                "PerspectiveCamera" if n.props.get("target").is_some_and(Value::is_string) => "rendercam", // into an image (R3F23a)
                 "PerspectiveCamera" => "camera",
                 "DirectionalLight" => "directional",
                 "PointLight" => "point",
@@ -183,16 +186,24 @@ fn name_column(row: &mut BTreeMap<String, V>, props: &Map<String, Value>) {
 /// The <BevyComponent> children of a part (a Mesh, a Model, a light, the camera) onto its item as `components`: Bevy's
 /// own reflected components, or a compiled-in plugin's, applied by raea-render through the TypeRegistry (plugins.rs).
 fn bevy_parts(n: &Node3, it: &mut Item) {
-    let comps: Vec<Value> = n.kids.iter().filter(|k| &*k.kind == "BevyComponent").map(|k| Value::Object((*k.props).clone())).collect();
+    let mut comps: Vec<Value> = n.kids.iter().filter(|k| &*k.kind == "BevyComponent").map(|k| Value::Object((*k.props).clone())).collect();
+    // its source stamp as its layer key (docs/review.feature R2a), a component on the part, not a column its kind reads
+    if let Some(key) = raea_sys_frame::layer::key_from_props(&n.props) {
+        // RAEA_HIDE_LAYERS names it: drawn hidden, for the layer pass's oracle (bench/layers; a page element's: page_css)
+        if std::env::var("RAEA_HIDE_LAYERS").is_ok_and(|h| h.split([',', '\n']).any(|k| k.trim() == key)) {
+            comps.push(serde_json::json!({ "type": "bevy_camera::visibility::Visibility", "value": "Hidden" }));
+        }
+        comps.push(serde_json::json!({ "type": "raea_sys_frame::layer::LayerKey", "value": key }));
+    }
     if !comps.is_empty() {
         std::sync::Arc::make_mut(&mut it.props).insert("components".into(), Value::Array(comps));
     }
 }
 
-/// A scene with a <Compute> whose state carries from frame to frame (a file's images, or buffers of its own), so a
-/// still steps every frame before it (raea-runtime-export's scene_frames).
+/// A scene with a <Compute> whose state carries from frame to frame (a file's images, or buffers of its own), or a camera
+/// into a render image (R3F23c: what it drew lasts, a ping-pong's start drawn at frame 0), so a still steps every frame before it (raea-runtime-export's scene_frames).
 pub fn carries_state(scene: &[Node3]) -> bool {
-    scene.iter().any(|n| (&*n.kind == "Compute" && n.props.get("shader").is_some_and(|s| s.get("file").is_some() || s.get("buffers").and_then(Value::as_object).is_some_and(|b| !b.is_empty()))) || carries_state(&n.kids))
+    scene.iter().any(|n| (&*n.kind == "Compute" && n.props.get("shader").is_some_and(|s| s.get("file").is_some() || s.get("buffers").and_then(Value::as_object).is_some_and(|b| !b.is_empty()))) || (&*n.kind == "PerspectiveCamera" && n.props.get("target").is_some_and(Value::is_string)) || carries_state(&n.kids))
 }
 
 /// A frame's scene walked into its parts, each placed in the world.
@@ -201,28 +212,17 @@ pub fn items_of(scene: &[Node3]) -> Vec<Item> {
     for n in scene {
         walk(n, Mat4::IDENTITY, &mut out);
     }
+    // the cameras not drawing this frame (<Camera3d is_active={false}>) out, the piece's stamped with its shot (RR2)
+    active_cameras(&mut out);
     // a camera's own AmbientLight (<Camera3d>'s <AmbientLight> child, Bevy 0.20's component) lights its view in place of
     // the scene's others (GlobalAmbientLight)
     let own = |i: &Item| i.kind == "ambient" && i.props.get("camera") == Some(&Value::Bool(true));
-    if out.iter().any(own) {
-        out.retain(|i| i.kind != "ambient" || own(i));
-    }
+    if out.iter().any(own) { out.retain(|i| i.kind != "ambient" || own(i)); }
     raea_core_review::camera_override(&mut out); // a review's fixed camera in place of the scene's own (RAEA_CAMERA)
+    out.retain(|i| raea_sys_layers::draws_part(std::env::var("RAEA_LAYER").ok().as_deref(), i.kind)); // an export's layer (LA2a)
     out
 }
 
-
-/// A part's composition pass on each frame (`pass`: 0 "scene", from 1 the piece's passes), stepped.
-fn pass_column(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, its: &[Item], names: &[String]) {
-    if names.is_empty() || !its.iter().any(|i| i.props.contains_key("pass")) {
-        return;
-    }
-    let ids: Vec<f64> = its.iter().map(|i| i.props.get("pass").and_then(Value::as_str).and_then(|n| names.iter().position(|x| x == n)).map_or(0.0, |k| (k + 1) as f64)).collect();
-    row.insert("pass".into(), V::N(ids[0]));
-    if !ids.iter().all(|v| *v == ids[0]) {
-        p.keys.insert((id.to_string(), "pass".to_string()), ids.iter().enumerate().map(|(f, v)| (f as i64, *v, "step".to_string())).collect());
-    }
-}
 
 /// World position, rotation (Bevy's quaternion, q_x q_y q_z q_w: no Euler round trip, docs/control.feature FC1d) and
 /// scale of each frame; each frame's quaternion takes the sign nearer the frame before's, so keys turn the short way.
@@ -244,29 +244,6 @@ fn placement(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, its: &[It
             exact(p, row, id, name, &sc.iter().map(|s| s[k]).collect::<Vec<_>>());
         }
     }
-}
-
-/// A screen's columns (<Screen>, <Model screens>): its spec (a panel's `screen`) or a model's `screens` and `hide`,
-/// JSON, from the first frame; the tube's power keyed when it changes.
-fn screen_columns(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, its: &[Item]) {
-    let first = &its[0].props;
-    for (k, col) in [("screen", "screen"), ("screens", "screens"), ("hide", "hide")] {
-        if let Some(v) = first.get(k).filter(|v| !v.is_null()) {
-            row.insert(col.into(), V::S(v.to_string()));
-        }
-    }
-    if its.iter().any(|i| i.props.contains_key("screenPower")) {
-        column(p, row, id, "screen_power", &its.iter().map(|i| n(&i.props, "screenPower", 1.0)).collect::<Vec<_>>());
-    }
-    // a flat screen's brightness over the frames (the spec holds the first; engine/screen.rs's sync_screens reads this)
-    if its.iter().any(|i| screen_bright(&i.props).is_some()) {
-        column(p, row, id, "screen_bright", &its.iter().map(|i| screen_bright(&i.props).unwrap_or(1.0)).collect::<Vec<_>>());
-    }
-}
-
-/// A flat screen's `brightness`, from its spec (Screen's prop)
-fn screen_bright(props: &Map<String, Value>) -> Option<f64> {
-    props.get("screen")?.get("brightness")?.as_f64()
 }
 
 /// The lights, meshes, models and pictures in space, as rows, from each frame's parts.
@@ -309,20 +286,21 @@ impl Tracks {
     fn of(all: &[Vec<Item>]) -> Tracks {
         Tracks {
             lights: tracks_of(all, &["directional", "point", "spot", "rect"]),
-            meshes: tracks_of(all, &["mesh"]),
-            models: tracks_of(all, &["model"]),
-            panels: tracks_of(all, &["panel"]),
-            decals: tracks_of(all, &["decal"]),
-            fogs: tracks_of(all, &["fogvolume"]),
-            fires: tracks_of(all, &["fire"]),
-            grasses: tracks_of(all, &["grass"]),
-            splats: tracks_of(all, &["splat"]),
+            // cut where a part's shape, words, file or size change (SG1): a row keeps its first frame's
+            meshes: split_kept(tracks_of(all, &["mesh"])),
+            models: split_kept(tracks_of(all, &["model"])),
+            panels: split_kept(tracks_of(all, &["panel"])),
+            decals: split_kept(tracks_of(all, &["decal"])),
+            fogs: split_kept(tracks_of(all, &["fogvolume"])),
+            fires: split_kept(tracks_of(all, &["fire"])),
+            grasses: split_kept(tracks_of(all, &["grass"])),
+            splats: split_kept(tracks_of(all, &["splat"])),
             sprites: tracks_of(all, &["sprite"]),
             shapes2d: tracks_of(all, &["shape2d"]),
-            plates: tracks_of(all, &["plate"]),
-            meshseqs: tracks_of(all, &["meshseq"]),
+            plates: split_kept(tracks_of(all, &["plate"])),
+            meshseqs: split_kept(tracks_of(all, &["meshseq"])),
             entities: tracks_of(all, &["entity"]),
-            texts: tracks_of(all, &["text"]),
+            texts: split_kept(tracks_of(all, &["text"])),
         }
     }
 }
@@ -352,4 +330,5 @@ fn rows_into_of(all: &[Vec<Item>], tr: &Tracks, p: &mut Program) {
     raea_runtime_scene2d::shapes(&tr.shapes2d, p);
     // baked simulations (<MeshSequence>, <Goo>): meshseq.rs
     meshseq::rows(&tr.meshseqs, p);
+    render_cameras(all, &tracks_of(all, &["rendercam"]), p); // cameras into images (R3F23a): raea-runtime-look rendercam.rs
 }

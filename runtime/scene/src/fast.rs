@@ -9,15 +9,15 @@ const PLACE: [&str; 10] = ["x", "y", "z", "q_x", "q_y", "q_z", "q_w", "scale_x",
 
 impl LiveScene {
     /// `diff(current(f))` for a frame whose parts are all known, without the rows: each known part's changing values worked out into a fixed array and held
-    /// against what was sent in place, as diff holds a row (the same rules: recoloured meshes keyed, the emissive strength
-    /// only where the first frame glows, opacity once seen-through, visible and scale back to 1, lights without visible),
+    /// against what was sent in place, as diff holds a row (the same rules: recoloured meshes keyed, the emissive colour when it
+    /// changes and its strength where the sent colour glows, opacity once seen-through, visible and scale back to 1, lights without visible),
     /// so a frame allocates only for what it changes. None, with nothing changed, when a part is new.
     pub(crate) fn frame_fast(&mut self, f: Shot) -> Option<(Vec<raea_core_program::eval::Tup>, Vec<(String, String)>)> {
         if self.rows.is_empty() {
             return None;
         }
-        // rows of other kinds (components, entities, fires...): the full path, which diffs them (G15)
-        if self.rows.values().any(|r| !LIVE_GROUPS.contains(&r.kind.as_str())) {
+        // rows of other kinds (entities, fires...): the full path, which diffs them (G15); components stay as sent (scene_sig)
+        if self.rows.values().any(|r| !LIVE_GROUPS.contains(&r.kind.as_str()) && r.kind != "component") {
             return None;
         }
         // a lens, motion blur or a toon surface's keyed values: the full path, which keys them (camera_of, rows_into_of)
@@ -25,6 +25,10 @@ impl LiveScene {
             return None;
         }
         let its = items_of(f.scene);
+        // a light's colour, shadows or shafts (its set, as_table) or a part's components changed: the full path, which makes them
+        if scene_sig(&its) != self.light_sig {
+            return None;
+        }
         // pass 1: every part's id (as tracks_of names it on one frame), or None before anything changes
         let mut parts: Vec<(usize, &String)> = Vec::with_capacity(its.len());
         // each group's (kind, name) counts and the key, borrowed and written in place (ZeroHeap)
@@ -53,9 +57,16 @@ impl LiveScene {
                 if it.kind == "mesh" && it.shape.is_none() {
                     continue;
                 }
-                if !self.rows.contains_key(id) {
+                // a part whose kept inputs changed (its shape, a map, a picture's size): the full path, which spawns it again (SG1)
+                if !self.rows.get_mut(id).is_some_and(|r| matches!(it.kind, "directional" | "point" | "spot" | "rect") || r.kept.as_mut().is_some_and(|k| k.same(it))) {
                     return None;
                 }
+                // a panel showing another picture (`current` kept the last): the full path, which sends the new src
+                if it.kind == "panel" && self.panel_srcs.get(key.as_str()).map(|s| &**s) != it.props.get("src").and_then(Value::as_str) { return None }
+                // an <Instances> placed elsewhere (`current` sent its list): the full path, which sends the new one (#85)
+                if let Some(at) = &it.at && self.panel_srcs.get(key.as_str()).is_none_or(|s| !std::sync::Arc::ptr_eq(s, at) && s != at) { return None }
+                // a mesh glowing in another colour than sent (none is black): the full path, which keys it (#106)
+                if it.kind == "mesh" && it.material.as_ref().and_then(|m| m.props.get("emissive")).and_then(Value::as_str).and_then(hex_cow).filter(|e| e != "#000000").as_deref() != self.rows[id].sent.get("emissive").and_then(|v| if let V::S(s) = v { Some(s.as_str()) } else { None }) { return None }
                 parts.push((i, id));
             }
         }
@@ -193,6 +204,11 @@ impl LiveScene {
                     "decal"
                 }
                 _ => {
+                    // a sprite sheet's grid and cell, as parts::sheet keys them
+                    if let Some([c, r]) = it.props.get("grid").and_then(Value::as_array).map(Vec::as_slice) {
+                        let cell = [("sheet_cols", c.as_f64().unwrap_or(1.0)), ("sheet_rows", r.as_f64().unwrap_or(1.0)), ("sheet_frame", n(&it.props, "frame", 0.0).floor())];
+                        cell.into_iter().for_each(|(k, v)| put(k, v));
+                    }
                     if it.props.contains_key("screenPower") {
                         put("screen_power", n(&it.props, "screenPower", 1.0));
                     }
@@ -230,7 +246,7 @@ impl LiveScene {
                         set(&mut want, &mut nw, name, Some(c[k]), false);
                     }
                 }
-                if !r.first.contains_key("emissive") {
+                if !r.sent.contains_key("emissive") || r.sent.get("emissive") == Some(&V::S("#000000".into())) {
                     set(&mut want, &mut nw, "emissive_k", None, false);
                 } else {
                     set(&mut want, &mut nw, "emissive_k", Some(1.0), true);
@@ -270,12 +286,12 @@ impl LiveScene {
         // missing this frame: hidden (a light dark); dropped once it's been gone long enough
         let mut gone = Vec::new();
         for (id, r) in self.rows.iter_mut() {
-            if r.seen {
+            if r.seen || (r.kind == "component" && r.missing == 0) {
                 continue;
             }
             r.missing += 1;
-            if r.missing > LIVE_FORGET {
-                gone.push((r.kind.clone(), id.clone()));
+            if r.missing > LIVE_FORGET || r.kind == "component" {
+                gone.extend((r.missing > LIVE_FORGET).then(|| (r.kind.clone(), id.clone())));
                 continue;
             }
             let (k, v) = match r.kind.as_str() {

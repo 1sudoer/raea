@@ -10,6 +10,7 @@
 pub mod blender;
 mod glb;
 mod topo;
+pub use topo::find;
 
 pub use glb::Glb;
 use serde_json::{Value, json};
@@ -236,6 +237,19 @@ pub fn fix(g: &Glb, scale: f64, turn: f64, translate: [f64; 3]) -> Result<Vec<u8
     j["scenes"][scene]["nodes"] = json!([top]);
     j["asset"]["generator"] = json!(format!("{} + raea gen check", j["asset"]["generator"].as_str().unwrap_or("unknown")));
     g.with_json(&j)
+}
+
+/// A fix the fitted copy makes (`{"origin"}`, `{"scale"}`, `{"turn"}`, as JSON text), said as what to run.
+pub fn said_fix(fix: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(fix).ok()?;
+    let does = if v.get("origin").is_some() {
+        "puts its origin at the bottom centre".to_string()
+    } else if let Some(s) = v["scale"].as_f64() {
+        format!("scales it by {s}")
+    } else {
+        format!("turns it {}° about y", v["turn"].as_f64()?)
+    };
+    Some(format!("run this check again with -o FIXED.glb, which {does}"))
 }
 
 #[cfg(test)]

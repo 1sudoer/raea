@@ -1,0 +1,93 @@
+{
+  "about": "raea Light's reference scenes (docs/realism.feature LT1), for `raea light check bench/light/scenes.json -o DIR`",
+  "scenes": [
+    {
+      "name": "gambit-street",
+      "dir": "~/Studio/raea/projects/gambit",
+      "file": "compositions/people-ingame.tsx",
+      "composition": "people-ingame",
+      "stills": [
+        0,
+        1,
+        5,
+        6,
+        10,
+        11,
+        15,
+        16
+      ],
+      "reference": false,
+      "why": "its city is drawn by shader hooks the path tracer can't run and its people aren't traced (M3, M5): after LT2, LT3 and LT5",
+      "live": false,
+      "live_why": "a contact sheet: every frame cuts to another view or sky, so its live frames are scene changes and its frames 0-4 are cuts, not a moving shot; gambit-walk measures both"
+    },
+    {
+      "name": "gambit-walk",
+      "dir": "~/Studio/raea/projects/gambit",
+      "file": "compositions/light-walk.tsx",
+      "composition": "light-walk-day",
+      "stills": [
+        0,
+        96,
+        191
+      ],
+      "reference": false,
+      "why": "as gambit-street: the city's shader hooks and the people (M3, M5), after LT2, LT3 and LT5",
+      "live": true,
+      "shot": [
+        84,
+        107
+      ]
+    },
+    {
+      "name": "floor3-room",
+      "dir": "~/Studio/raea/projects/floor3",
+      "file": "compositions/floor3.tsx",
+      "composition": "floor3",
+      "stills": [
+        1500,
+        4000
+      ],
+      "shot": [
+        1500,
+        1504
+      ],
+      "live": true,
+      "spp": 2048
+    },
+    {
+      "name": "kitchen",
+      "dir": "~/Studio/raea/projects/gambit",
+      "file": "compositions/fp-lab-table.tsx",
+      "composition": "fp-lab-table-coat-gloves-day",
+      "stills": [
+        48,
+        200
+      ],
+      "shot": [
+        100,
+        104
+      ],
+      "live": true,
+      "spp": 1024,
+      "reference": false,
+      "why": "its daylight is RectLight panels (the window, the court's sky, a bounce panel), which neither Solari nor the path tracer draws (M9), and its hands are skinned (M3): after LT5b and LT5"
+    },
+    {
+      "name": "glade",
+      "dir": "~/Studio/raea/projects/stay",
+      "file": "v3/film.tsx",
+      "composition": "v3-wide",
+      "stills": [
+        0,
+        40
+      ],
+      "shot": [
+        10,
+        14
+      ],
+      "live_why": "raea play runs a file's first composition, and v3/film.tsx's isn't the wide shot",
+      "spp": 512
+    }
+  ]
+}

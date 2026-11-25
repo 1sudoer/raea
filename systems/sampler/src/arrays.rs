@@ -15,6 +15,15 @@ pub struct PendingArrays {
     pending: Vec<(Handle<Image>, Vec<Handle<Image>>, u32, String)>,
 }
 
+/// Arrays already made or reserved, by their spec (the `{src, layers}` or `{layers: [...]}` JSON, sampler included), so
+/// every material naming the same array shares one image. Without it each material made its own copy: a city whose
+/// every tile's window material names one 40-layer room atlas (768 x 30720, 94 MB) went past memguard's 24 GB cap on
+/// a single frame; with it the same frame peaked at 3.8 GB (gambit's trailer previz, act 1, frame 100).
+#[derive(Resource, Default)]
+pub struct ArrayCache {
+    by_spec: std::collections::HashMap<String, Handle<Image>>,
+}
+
 /// A texture spec that's an array: it has `layers`.
 pub fn is_array(v: &Value) -> bool {
     v.as_object().is_some_and(|o| o.contains_key("layers"))
@@ -22,6 +31,10 @@ pub fn is_array(v: &Value) -> bool {
 
 /// An array texture's handle, made once its layers load; `{sampler}` is set on the array as on any texture.
 pub fn array(world: &mut World, v: &Value, who: &str, image: &mut impl FnMut(&mut World, &Value) -> Result<Handle<Image>, String>) -> Result<Handle<Image>, String> {
+    let key = v.to_string();
+    if let Some(h) = world.get_resource::<ArrayCache>().and_then(|c| c.by_spec.get(&key)) {
+        return Ok(h.clone());
+    }
     let o = v.as_object().ok_or_else(|| format!("{who}: an array is {{layers: [picture, ...]}} or {{src, layers: N}}"))?;
     let (layers, n) = match (o.get("layers"), o.get("src")) {
         (Some(Value::Array(a)), None) if a.len() >= 2 => (a.iter().map(|x| image(world, x)).collect::<Result<Vec<_>, _>>()?, a.len() as u32),
@@ -32,6 +45,7 @@ pub fn array(world: &mut World, v: &Value, who: &str, image: &mut impl FnMut(&mu
         _ => return Err(format!("{who}: an array is {{layers: [picture, ...]}} (2 or more) or {{src, layers: N}} (a picture of N layers stacked top to bottom), got {v}")),
     };
     let h = world.resource::<Assets<Image>>().reserve_handle();
+    world.get_resource_or_insert_with(ArrayCache::default).by_spec.insert(key, h.clone());
     world.get_resource_or_insert_with(PendingArrays::default).pending.push((h.clone(), layers, n, who.to_string()));
     if let Some(s) = o.get("sampler") {
         PendingSamplers::give(world, h.clone(), Sampling::of(s)?, who.to_string());
@@ -53,8 +67,18 @@ pub fn sync_arrays(p: Option<ResMut<PendingArrays>>, mut images: ResMut<Assets<I
             continue;
         }
         match stack(&layers.iter().map(|l| images.get(l).unwrap()).collect::<Vec<_>>(), n) {
-            Ok(img) => {
+            Ok(mut img) => {
+                // the array lives on the GPU only (its pixels aren't kept on the CPU after the upload), and its layers'
+                // pictures never go to the GPU at all: a stack is one tall picture, and past 32768 pixels (43 layers
+                // of 768) it is taller than a GPU's 2D texture may be, which stopped the whole render. Changed in the
+                // frame they load, before the render world takes them.
+                img.asset_usage = RenderAssetUsages::RENDER_WORLD;
                 let _ = images.insert(&h, img);
+                for l in &layers {
+                    if let Some(mut src) = images.get_mut(l) {
+                        src.asset_usage = RenderAssetUsages::MAIN_WORLD;
+                    }
+                }
             }
             Err(e) => eprintln!("raea: {who}: {e}"),
         }
@@ -88,6 +112,7 @@ fn stack(layers: &[&Image], n: u32) -> Result<Image, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
     use bevy::render::render_resource::TextureFormat;
 
     fn pic(px: [u8; 4]) -> Image {
@@ -105,5 +130,37 @@ mod tests {
         assert!(stack(&[&tall], 4).is_err());
         let big = Image::new_fill(Extent3d { width: 4, height: 2, depth_or_array_layers: 1 }, TextureDimension::D2, &[0, 0, 0, 255], TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::all());
         assert!(stack(&[&a, &big], 2).is_err());
+    }
+
+    #[test]
+    fn the_same_array_named_twice_is_one_image() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let mut loads = 0;
+        let mut image = |w: &mut World, _: &Value| -> Result<Handle<Image>, String> {
+            loads += 1;
+            Ok(w.resource::<Assets<Image>>().reserve_handle())
+        };
+        let spec = serde_json::json!({ "src": "rooms.png", "layers": 40 });
+        let (a, b) = (array(&mut world, &spec, "t1", &mut image).unwrap(), array(&mut world, &spec, "t2", &mut image).unwrap());
+        assert_eq!(a.id(), b.id());
+        let other = array(&mut world, &serde_json::json!({ "src": "rooms.png", "layers": 20 }), "t3", &mut image).unwrap();
+        assert_ne!(a.id(), other.id());
+        assert_eq!(loads, 2);
+    }
+
+    #[test]
+    fn an_array_is_gpu_only_and_its_stack_never_goes_to_the_gpu() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let tall = Image::new_fill(Extent3d { width: 2, height: 6, depth_or_array_layers: 1 }, TextureDimension::D2, &[9, 9, 9, 255], TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::all());
+        let src = world.resource_mut::<Assets<Image>>().add(tall);
+        let s2 = src.clone();
+        let h = array(&mut world, &serde_json::json!({ "src": "stack.png", "layers": 3 }), "t", &mut |_: &mut World, _: &Value| Ok(s2.clone())).unwrap();
+        world.run_system_once(sync_arrays).unwrap();
+        let images = world.resource::<Assets<Image>>();
+        assert_eq!(images.get(&h).unwrap().texture_descriptor.size.depth_or_array_layers, 3);
+        assert_eq!(images.get(&h).unwrap().asset_usage, RenderAssetUsages::RENDER_WORLD);
+        assert_eq!(images.get(&src).unwrap().asset_usage, RenderAssetUsages::MAIN_WORLD);
     }
 }

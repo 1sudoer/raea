@@ -40,6 +40,21 @@ struct Paint {
     k8: vec4<f32>,
     haze: vec4<f32>,
     haze_sun: vec4<f32>,
+    // worlds (paint_world.wesl): up to four cuts, each a ball (its centre, its radius in m; 0: off)
+    cut: array<vec4<f32>, 4>,
+    // what's inside each cut: its style (0: the look's own), the style's scale, how much of it (0 to 1), -
+    style: array<vec4<f32>, 4>,
+    style_a: array<vec4<f32>, 4>,
+    style_b: array<vec4<f32>, 4>,
+    // this mesh's world (0: outside every cut; 1 to 4: inside that cut alone; -1: everywhere), the cuts' torn edge
+    // (m), their lit rim's width (m), -
+    kw: vec4<f32>,
+    // the rim's colour (a: on)
+    cut_rim: vec4<f32>,
+    // the eye-side rim's amount and power, the terminator's amount, -
+    k9: vec4<f32>,
+    rim: vec4<f32>,
+    term: vec4<f32>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100)

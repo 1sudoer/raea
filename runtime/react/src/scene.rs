@@ -34,14 +34,16 @@ pub use plugin::*;
 pub(crate) use contact::register as register_scene;
 // physics for compositions: rigid bodies (Rapier), parts cut from a glTF, goo (tools/goo): systems/bake, as native calls in scene/physics.rs
 pub mod physics;
-// matchmove: `track` and the matchmove.solve native call (scene/track.rs)
-pub mod track;
+// matchmove: `track` and the matchmove.solve native call (raea-runtime-track)
+pub use raea_runtime_track as track;
 
 thread_local! {
     /// each part's data-props as last parsed: its text and the props, and the scene it was last read in
     static PROPS3D: std::cell::RefCell<bevy::ecs::entity::EntityHashMap<(String, std::sync::Arc<Map<String, Value>>, u64)>> = std::cell::RefCell::new(Default::default());
     /// each part's data-3d and data-shape as last read, shared
     static NAMES3D: std::cell::RefCell<bevy::ecs::entity::EntityHashMap<(std::sync::Arc<str>, Option<std::sync::Arc<str>>)>> = std::cell::RefCell::new(Default::default());
+    /// each part's data-at (an <Instances>' placements) as last read, shared while its text is the same (issue 84)
+    static AT3D: std::cell::RefCell<bevy::ecs::entity::EntityHashMap<std::sync::Arc<str>>> = std::cell::RefCell::new(Default::default());
     /// scenes read (scene_of): what's in PROPS3D but not read in the last two is let go
     static SCENE3D: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }

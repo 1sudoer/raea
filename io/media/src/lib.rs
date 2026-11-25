@@ -45,6 +45,11 @@ pub fn probe_seconds(path: &Path) -> Option<f64> {
 
 /// The backends compiled into this build, by name.
 pub fn backends() -> Vec<Box<dyn Backend>> {
+    // an installed signer wraps each backend, so its encoders sign and mark what they write (sign.rs)
+    unsigned().into_iter().map(sign::wrap).collect()
+}
+
+fn unsigned() -> Vec<Box<dyn Backend>> {
     #[allow(unused_mut)] // with no backend features, nothing is pushed
     let mut v: Vec<Box<dyn Backend>> = vec![Box::new(ffmpeg::Ffmpeg)];
     #[cfg(feature = "soft-audio")]
@@ -53,8 +58,13 @@ pub fn backends() -> Vec<Box<dyn Backend>> {
     v.push(Box::new(apple::Apple));
     #[cfg(feature = "av1")]
     v.push(Box::new(av1::Av1));
-    // an installed signer wraps each backend, so its encoders sign and mark what they write (sign.rs)
-    v.into_iter().map(sign::wrap).collect()
+    v
+}
+
+/// The backend named, not wrapped by the signer: for an encoder whose parts are signed as one once they're put
+/// together (raea-runtime-segments' segments, the joined video signed).
+pub fn backend_unsigned(name: &str) -> R<Box<dyn Backend>> {
+    unsigned().into_iter().find(|b| b.name() == name).ok_or(format!("no backend {name:?} in this build"))
 }
 
 /// Signing what raea writes (Content Credentials, the watermark): a hook a signer installs from outside this crate
@@ -76,10 +86,8 @@ pub fn preferred() -> Vec<Box<dyn Backend>> {
     out
 }
 
+/// The backend named, wrapped by an installed signer as backends() wraps each.
 pub fn backend(name: &str) -> R<Box<dyn Backend>> {
-    backends()
-        .into_iter()
-        .find(|b| b.name() == name)
-        .ok_or(format!("no backend {name:?} in this build"))
+    backend_unsigned(name).map(sign::wrap)
 }
 

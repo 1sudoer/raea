@@ -84,6 +84,8 @@ pub struct TextInputData {
     pub placeholder: Option<Box<parley::PlainEditor<TextBrush>>>,
     /// raea: a password field's text as drawn, a bullet a character (Blitz drew a password as typed)
     pub mask: Option<Box<parley::PlainEditor<TextBrush>>>,
+    /// raea: what Cmd+Z puts back (undo.rs)
+    pub history: super::undo::History,
 }
 
 // FIXME: Implement Clone for PlainEditor
@@ -102,7 +104,40 @@ impl TextInputData {
             scroll_offset: 0.0,
             placeholder: None,
             mask: None,
+            history: super::undo::History::default(),
         }
+    }
+
+    /// raea: the field as it is now, for its history
+    pub fn snap(&self) -> super::undo::Snap {
+        let sel = self.editor.raw_selection();
+        super::undo::Snap { text: self.editor.raw_text().to_string(), anchor: sel.anchor().index(), focus: sel.focus().index() }
+    }
+
+    /// raea: a change was made (`before` is the field before it): kept for Cmd+Z when the words changed
+    pub fn note_change(&mut self, before: super::undo::Snap, run: Option<super::undo::Run>) {
+        if self.editor.raw_text() != before.text {
+            let after = self.editor.raw_selection().focus().index();
+            self.history.record(before, after, run);
+        }
+    }
+
+    /// raea: Cmd+Z (or with `redo`, Cmd+Shift+Z): the field as it was before its last step, caret and selection too;
+    /// None when there's nothing to go back to
+    pub fn step_history(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        redo: bool,
+    ) -> Option<GeneratedTextInputEvent> {
+        let now = self.snap();
+        let to = if redo { self.history.redo(now) } else { self.history.undo(now) }?;
+        self.editor.set_text(&to.text);
+        let mut driver = self.editor.driver(font_ctx, layout_ctx);
+        driver.refresh_layout();
+        driver.select_byte_range(to.anchor, to.focus);
+        self.sync_mask(font_ctx, layout_ctx);
+        Some(GeneratedTextInputEvent::Input)
     }
 
     /// raea: a password field's bullets made again for its text, when they've changed
@@ -122,6 +157,8 @@ impl TextInputData {
         text: &str,
     ) {
         if self.editor.text() != text {
+            // raea: a value a script sets is a new start (undo.rs)
+            self.history.clear();
             self.editor.set_text(text);
             // raea: a value set by script puts the caret at its end, as Chrome's value setter does (a combobox's
             // chosen option, written into its field)

@@ -35,7 +35,9 @@ pub fn signs() -> bool {
     SIGNER.get().is_some()
 }
 
-pub(crate) fn wrap(backend: Box<dyn Backend>) -> Box<dyn Backend> {
+/// `backend` wrapped by the signer when one is installed: each encoder it makes signs and marks what it finishes as one
+/// export (backends() wraps each of its own; raea-runtime-segments wraps its segmented encoder whole).
+pub fn wrap(backend: Box<dyn Backend>) -> Box<dyn Backend> {
     match SIGNER.get() {
         Some(s) => s.wrap(backend),
         None => backend,

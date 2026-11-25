@@ -6,7 +6,9 @@
 //! it, bevy_ui's kinds. --root: where the page's own-origin fetches are read from (RAEA_PAGE_ROOT). --size: the
 //! window, default 1440x900. RAEA_PAGE_BRP_PORT (default: a free one), RAEA_PAGE_MCP_PORT (default 7477; 0: none),
 //! RAEA_PAGE_PICK=0: the page's pointers and keys dispatched by the host (page::input) instead of through raea-page's
-//! picking route, the default. The page's `<img data-raea-stage>` plays a composition live (raea-page-stage).
+//! picking route, the default. RAEA_FINE_RESTYLE=0: an attribute change restyles its element's parent's whole subtree
+//! (Blitz's own way; the host's default is the fine restyle, docs/timeline.feature TL13a). The page's
+//! `<img data-raea-stage>` plays a composition live (raea-page-stage).
 //! --chrome inset: the page under a transparent title bar, its title area moving the window (raea-page-window).
 //! --window (built with the `window` feature): on screen, a window of its own that closes the app (raea's desktop app;
 //! RAEA_PAGE_HOST sends the page's /host/* to the feed's host: raea-page-net).
@@ -63,6 +65,14 @@ fn main() {
         eprintln!("raea-page-host: {e}");
         std::process::exit(2);
     });
+    // a page's attribute set or cleared restyles what Stylo's invalidation finds, and each ancestor itself, not the
+    // element's parent's whole subtree (vendor/blitz-dom mutator.rs): ui-parity's 271 cases come out the same case by
+    // case, and a 400-clip timeline drag in raea feed's window went from 38-41 to 48-50 frames a second
+    // (docs/timeline.feature TL13a). RAEA_FINE_RESTYLE=0 restyles the parent's whole subtree, as before. Set here,
+    // before any thread starts, as --root's RAEA_PAGE_ROOT is.
+    if std::env::var_os("RAEA_FINE_RESTYLE").is_none() {
+        unsafe { std::env::set_var("RAEA_FINE_RESTYLE", "1") }
+    }
     // headless (the benches, raea app check): the system's clipboard, files, dialogs and browser stay untouched (T2d)
     if !a.window {
         raea_io_os::set_headless();
@@ -95,13 +105,41 @@ fn main() {
             // each update draws its own frame: the frame `ui` reports is the one rendered
             .disable::<PipelinedRenderingPlugin>(),
     );
+    // every schedule on one thread: the window's ~290 systems a frame are each a few µs, and the multi-threaded executor
+    // spent more waking its workers for them than they took (35% of the window's busy time at rest). On one thread, the
+    // app's window used 34% less CPU at rest, 8% less through a drag and 4% less playing a film, its frames as long
+    // (11-16, three rounds each). Systems' own par_iter still use the task pools. On by default since 0.1.6 (the
+    // developer, 11-16); RAEA_ST=0 for Bevy's multi-threaded one, in the environment or raea's settings file
+    // (~/.raea/env: the app's window has no shell to set it in). Known: playback's "a seek while it plays" shows one more
+    // frame from where it was after the seek (3 runs of 3; the multi-threaded run shows two, as the spec allows)
+    if raea_io_home::setting("RAEA_ST").as_deref() != Some("0") {
+        // a schedule that's running is out of Schedules: First sets the rest, Last sets First (Main is one system)
+        app.add_systems(First, single_threaded).add_systems(Last, single_threaded);
+        app.sub_app_mut(bevy::render::RenderApp).add_systems(bevy::render::ExtractSchedule, single_threaded).add_systems(bevy::render::Render, single_threaded);
+    }
+    // on screen, a window with nothing changing waits for input (raea_page_host::idle): on by default since 0.1.6 (the
+    // developer, 11-16), RAEA_IDLE_GATE=0 (the environment or ~/.raea/env, as RAEA_ST) for every frame drawn
+    #[cfg(feature = "window")]
+    if a.window && raea_io_home::setting("RAEA_IDLE_GATE").as_deref() != Some("0") {
+        app.add_plugins(raea_page_host::idle::IdlePlugin);
+    }
+    // on screen, the page's accessibility tree is the OS's (VoiceOver, macOS accessibility clients: raea-page-ax)
+    #[cfg(feature = "window")]
+    if a.window {
+        app.add_plugins(raea_page_ax::AxPlugin(raea_page_ax::Host { page: page::shown, frame: raea_page_host::inject::frame, queue: raea_page_host::inject::queue }));
+    }
     // on screen, bevy_winit's event loop is the runner (a ScheduleRunner here replaced it: no window, 11-04)
     if !a.window && !app.is_plugin_added::<ScheduleRunnerPlugin>() {
-        app.add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)));
+        // 60 frames a second, as most screens; RAEA_PAGE_FPS stands in for another screen's rate (a 120 Hz one, to
+        // measure how a 60 fps video plays where the window draws twice a frame)
+        let fps = std::env::var("RAEA_PAGE_FPS").ok().and_then(|v| v.parse::<f64>().ok()).filter(|f| (1.0..=480.0).contains(f)).unwrap_or(60.0);
+        app.add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / fps)));
     }
     app.add_plugins(HostPlugin { size: a.size, double_click: Duration::from_millis(500), picking })
         .add_plugins(brp::plugins(brp::port(), |r| r))
         .add_plugins(stage::StagePlugin)
+        // a page's interaction sounds, fired on a mixer of its own (docs/hardware.feature HW0)
+        .add_plugins(raea_page_sound::PageSoundPlugin)
         // the clipboard, links, notifications, the dock badge, raea:// links and the chrome (raea-page-window)
         .add_plugins(raea_page_window::DesktopPlugin { chrome: a.chrome, live: a.window });
     raea_page_host::page_plugins(&mut app, picking);
@@ -112,9 +150,13 @@ fn main() {
     }
     let (css, size) = (a.css, a.size);
     let preamble = vec![a.chrome.preamble()];
+    // the page's code handed over once, not kept (the window's memory, 11-18: the feed's bundle is 21 to 26 MB, held
+    // all the app's life beside the JS engine's own copy)
+    let mut code = Some(code);
     let mount = move |world: &mut World| {
         chrome::install(world);
-        let m = page::Mount { code: code.clone(), preamble: preamble.clone(), css: css.clone(), styles: None, picking, size };
+        raea_page_host::scheme::install(world);
+        let m = page::Mount { code: code.take().unwrap_or_default(), preamble: preamble.clone(), css: css.clone(), styles: None, picking, size };
         if let Err(e) = page::mount(world, m) {
             eprintln!("raea-page-host: {e}");
             std::process::exit(1);
@@ -131,6 +173,19 @@ fn main() {
     } else {
         app.add_systems(Update, (page::read_input, page::input, page::size, page::step_dropping_asks, page::show).chain());
     }
+    app.add_systems(PreUpdate, raea_page_host::scheme::follow.run_if(resource_exists::<raea_page_host::scheme::Scheme>));
     app.add_systems(Last, page::tree.before(tree::answer));
     app.run();
+}
+
+/// Every schedule of this world that isn't running now, on the single-threaded executor (once, in each schedule it's in).
+fn single_threaded(world: &mut World, mut done: Local<bool>) {
+    if std::mem::replace(&mut *done, true) {
+        return;
+    }
+    if let Some(mut schedules) = world.get_resource_mut::<bevy::ecs::schedule::Schedules>() {
+        for (_, s) in schedules.iter_mut() {
+            s.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        }
+    }
 }

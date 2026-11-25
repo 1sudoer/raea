@@ -26,14 +26,17 @@
 //! `minus(frame(), slide(disc(200, 960, 150), 680, 0, 0, 150))` is the clip with a hole moving across it.
 
 
+mod buffer;
 mod build;
 mod glyphs;
 mod grown;
+mod kept;
 mod mesh;
 mod parse;
 mod sphere;
 pub use sphere::{SphereOf, cuboid_of, cylinder_of, plane_of, sphere_of};
 
+pub use buffer::{buffer_tris, export_tris};
 pub use mesh::{export, from_mesh, read_glb, read_obj, to_mesh};
 
 use std::collections::HashMap;
@@ -48,14 +51,22 @@ const SEGMENTS: i32 = 48;
 
 /// The solid an expression describes.
 pub fn solid(expr: &str) -> Result<Manifold, String> {
+    match solid_or_empty(expr)? {
+        m if !m.is_empty() => Ok(m),
+        _ => Err(format!("shape {expr}: empty (a boolean left nothing)")),
+    }
+}
+
+/// The solid for an expression, an empty one too: a script that holds solids by their expressions (raea-runtime-calls'
+/// `/3d` manifold) asks whether a boolean left nothing, which a mesh to draw can't be.
+pub fn solid_or_empty(expr: &str) -> Result<Manifold, String> {
     let mut p = P { t: lex(expr)?, i: 0 };
     let a = p.expr()?;
     if p.i < p.t.len() {
         return Err(format!("shape: unexpected {:?} after the shape", p.t[p.i]));
     }
     match a {
-        Arg::Shape(m) if !m.is_empty() => Ok(m),
-        Arg::Shape(_) => Err(format!("shape {expr}: empty (a boolean left nothing)")),
+        Arg::Shape(m) => Ok(m),
         _ => Err(format!("shape {expr}: not a shape")),
     }
 }
@@ -189,21 +200,128 @@ pub fn tris(m: &Manifold) -> Tris {
     Tris { positions, normals }
 }
 
+/// A shape made faster than this isn't kept on disk: a box is made in microseconds, and a part whose size changed each
+/// frame wrote a file a frame (2.4 million in 12 hours of long renders, 11-21); the disk is for the cuts that cost
+const KEEP_MS: f64 = 2.0;
+/// The bytes of triangles one generation of held shapes takes: past it, the generation before is let go and this one
+/// takes its place. A shape asked for again moves to the newest, so what a scene keeps asking for stays, and two
+/// generations at most are held. A long render's shapes that change each frame (a bar that grows, 3D words that count)
+/// are let go as it goes: held to 1 GB at once, a one-scene control grew by 100 MB in 4,000 frames (SG4a). Anything
+/// let go is made again, or read from disk when it took KEEP_MS to make: a part asks for its shape when it's spawned,
+/// and the end checks once more.
+const GEN_BYTES: usize = 16 << 20;
+
+/// The shapes held, the newest generation and the one before, and the newest's bytes.
+#[derive(Default)]
+struct Held {
+    now: HashMap<String, std::sync::Arc<Tris>>,
+    old: HashMap<String, std::sync::Arc<Tris>>,
+    bytes: usize,
+}
+
+impl Held {
+    fn get(&mut self, expr: &str) -> Option<std::sync::Arc<Tris>> {
+        if let Some(t) = self.now.get(expr) {
+            return Some(t.clone());
+        }
+        let t = self.old.remove(expr)?;
+        self.hold(expr, &t);
+        Some(t)
+    }
+
+    /// `t` held for `expr` in the newest generation, which becomes the one before when it would pass GEN_BYTES.
+    fn hold(&mut self, expr: &str, t: &std::sync::Arc<Tris>) {
+        let bytes = (t.positions.len() + t.normals.len()) * 12 + expr.len();
+        if self.bytes + bytes > GEN_BYTES && !self.now.is_empty() {
+            self.old = std::mem::take(&mut self.now);
+            self.bytes = 0;
+        }
+        self.bytes += bytes;
+        self.now.insert(expr.to_string(), t.clone());
+    }
+}
+
 /// The mesh for an expression, built once per expression (a re-cut or a key that doesn't change the shape costs nothing).
 pub fn cached(expr: &str) -> Result<std::sync::Arc<Tris>, String> {
-    static CACHE: OnceLock<Mutex<HashMap<String, std::sync::Arc<Tris>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<Held>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(t) = cache.lock().unwrap().get(expr) {
-        return Ok(t.clone());
+        return Ok(t);
     }
-    let t = std::sync::Arc::new(tris(&solid(expr)?));
-    cache.lock().unwrap().insert(expr.to_string(), t.clone());
+    // a buffer mesh's own triangles (buffer.rs): data already, so nothing is kept on disk for it
+    if let Some(b) = expr.strip_prefix("buffer:") {
+        let t = std::sync::Arc::new(buffer_tris(b)?.0);
+        cache.lock().unwrap().hold(expr, &t);
+        return Ok(t);
+    }
+    // made by this build before, on disk (kept.rs): read back as it was written
+    let kept = kept::place(expr);
+    let t = match kept.as_deref().and_then(kept::read) {
+        Some(t) => std::sync::Arc::new(t),
+        None => {
+            let made = std::time::Instant::now();
+            let t = std::sync::Arc::new(tris(&solid(expr)?));
+            if let Some(p) = kept.as_ref().filter(|_| made.elapsed().as_secs_f64() * 1e3 >= KEEP_MS) {
+                kept::write(p, &t);
+            }
+            t
+        }
+    };
+    cache.lock().unwrap().hold(expr, &t);
     Ok(t)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_shapes_go_a_generation_at_a_time_and_what_is_asked_again_stays() {
+        let mut h = Held::default();
+        // a shape of a quarter of a generation
+        let t = std::sync::Arc::new(Tris { positions: vec![[0.0; 3]; GEN_BYTES / 96], normals: vec![[0.0; 3]; GEN_BYTES / 96] });
+        h.hold("kept", &t);
+        for i in 0..12 {
+            h.hold(&format!("bar {i}"), &t);
+            assert!(h.get("kept").is_some(), "asked each time, it stays (after bar {i})");
+        }
+        assert!(h.get("bar 0").is_none(), "made once and never asked again, it went");
+        assert!(h.now.len() + h.old.len() <= 8, "two generations at most: {} + {}", h.now.len(), h.old.len());
+    }
+
+    #[test]
+    fn a_kept_mesh_reads_back_as_it_was_written() {
+        let dir = std::env::temp_dir().join(format!("raea-shape-kept-{}", std::process::id()));
+        let p = dir.join("a.tris");
+        let t = tris(&solid("minus(box(2, 2, 2), cylinder(0.5, 3))").unwrap());
+        assert!(kept::read(&p).is_none());
+        kept::write(&p, &t);
+        let back = kept::read(&p).unwrap();
+        assert_eq!(back.positions.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>(), t.positions.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>());
+        assert_eq!(back.normals.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>(), t.normals.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>());
+        // a file cut short isn't a mesh
+        let whole = std::fs::read(&p).unwrap();
+        std::fs::write(&p, &whole[..whole.len() - 5]).unwrap();
+        assert!(kept::read(&p).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mesh_file_written_again_is_kept_under_a_new_key() {
+        let dir = std::env::temp_dir().join(format!("raea-shape-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("scan.obj");
+        std::fs::write(&p, "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n").unwrap();
+        let expr = format!("minus(obj({:?}), box(0.1, 0.1, 0.1))", p.to_string_lossy());
+        let first = kept::files_read(&expr);
+        assert_eq!(first.len(), 24, "one file read: its length and modified time");
+        // the same file written again with other content (a larger mesh) reads as another file
+        std::fs::write(&p, "v 0 0 0\nv 2 0 0\nv 0 2 0\nv 0 0 2\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n# remeshed\n").unwrap();
+        assert_ne!(kept::files_read(&expr), first);
+        // an expression that reads no file adds nothing to its key
+        assert!(kept::files_read("box(1, 1, 1)").is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn csg_volumes_are_right() {

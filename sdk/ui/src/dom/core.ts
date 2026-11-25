@@ -16,7 +16,7 @@ export const STRIDE = 18;
 // innerWidth and media queries read in a first render are the page's
 const vp0 = (globalThis as { __ui_viewport?: { w: number; h: number; dpr: number } }).__ui_viewport;
 
-/** the module's state its files assign (each field was a top-level let) */ export const S: { vw: number; vh: number; dpr: number; frameNo: number; pointerCapture: Element_ | null; active: Element_ | null; wantFocus: Element_ | null | undefined; downTarget: Element_ | null; spaceDown: { t: Element_; ok: boolean } | null; focusVisible: boolean } = { vw: vp0?.w ?? 0, vh: vp0?.h ?? 0, dpr: vp0?.dpr ?? 1, frameNo: 0, pointerCapture: null, active: null, wantFocus: undefined, downTarget: null, spaceDown: null, focusVisible: false };
+/** the module's state its files assign (each field was a top-level let) */ export const S: { vw: number; vh: number; dpr: number; dark: boolean; frameNo: number; pointerCapture: Element_ | null; active: Element_ | null; wantFocus: Element_ | null | undefined; downTarget: Element_ | null; spaceDown: { t: Element_; ok: boolean } | null; focusVisible: boolean } = { vw: vp0?.w ?? 0, vh: vp0?.h ?? 0, dpr: vp0?.dpr ?? 1, dark: false, frameNo: 0, pointerCapture: null, active: null, wantFocus: undefined, downTarget: null, spaceDown: null, focusVisible: false };
 
 // ---------------------------------------------------------------- the runner (the mounted driver's batch)
 
@@ -289,6 +289,16 @@ function put(k: string, v: unknown) {
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36";
 
+/** The navigator's words for the system raea's window runs on (globalThis.__raea_window.os, std's name, set before the
+ *  page's bundle: raea engine/page/window chrome.rs); a Mac's when there's no window (a render). Until 0.1.8 a Windows
+ *  PC's page said MacIntel, and a library that picks ⌘ or Ctrl by navigator.platform (CodeMirror's and ProseMirror's
+ *  Mod-) took Ctrl+Z, Ctrl+C and Ctrl+V as a Mac's. Read when asked, so the window's word, set later than this, counts. */
+export function navigatorSystem(os = (globalThis as { __raea_window?: { os?: string } }).__raea_window?.os): { userAgent: string; platform: string; data: string } {
+  if (os === "windows") return { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36", platform: "Win32", data: "Windows" }
+  if (os === "linux") return { userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36", platform: "Linux x86_64", data: "Linux" }
+  return { userAgent: UA, platform: "MacIntel", data: "macOS" }
+}
+
 /** window and document as globals (window is the global object, as in a browser), the element and event
  *  classes, the observers, matchMedia, rAF and getComputedStyle. Must run before a library's modules evaluate
  *  (they check `typeof document` once): import "@raea/ui/dom-globals" first. With globalThis.__UI_DOM_SCAN set,
@@ -378,7 +388,21 @@ export function install() {
   const vv: any = new EventTarget_();
   Object.defineProperties(vv, { width: { get: () => S.vw }, height: { get: () => S.vh }, offsetLeft: { value: 0 }, offsetTop: { value: 0 }, pageLeft: { value: 0 }, pageTop: { value: 0 }, scale: { value: 1 } });
   put("visualViewport", vv);
-  put("navigator", { userAgent: UA, platform: "MacIntel", vendor: "Google Inc.", language: "en-US", languages: ["en-US", "en"], maxTouchPoints: 0, onLine: true, cookieEnabled: true, hardwareConcurrency: 8, userAgentData: { brands: [{ brand: "HeadlessChrome", version: "152" }], mobile: false, platform: "macOS" }, clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve("") } });
+  put("navigator", {
+    get userAgent() {
+      return navigatorSystem().userAgent;
+    },
+    get platform() {
+      return navigatorSystem().platform;
+    },
+    // the web's own fields, as a browser has them, on one line (taxonomy.sh S3b reads a line that starts with a
+    // processor's name as a raea prop)
+    vendor: "Google Inc.", language: "en-US", languages: ["en-US", "en"], maxTouchPoints: 0, onLine: true, cookieEnabled: true, hardwareConcurrency: 8,
+    get userAgentData() {
+      return { brands: [{ brand: "HeadlessChrome", version: "152" }], mobile: false, platform: navigatorSystem().data };
+    },
+    clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve("") },
+  });
   g.location ??= { href: "http://localhost/", origin: "http://localhost", protocol: "http:", host: "localhost", hostname: "localhost", port: "", pathname: "/", search: "", hash: "", assign() {}, replace() {}, reload() {} };
   put("CSS", { supports: (p: string, v?: string) => (v === undefined ? false : !/^-webkit-backdrop-filter$/.test(p) && /^[a-z-]+$/.test(p)), escape: cssEscape });
   g.AbortController ??= class {

@@ -1,5 +1,5 @@
 //! Specs written in TypeScript (docs/handoff/authoring.md, docs/projects.feature PJ0): brief.ts, script.ts, taste.ts
-//! and a workspace's controllers. A spec is a module whose default export is data; the engine evaluates it headless
+//! and NAME.parts.ts (an object's parts). A spec is a module whose default export is data; the engine evaluates it headless
 //! (bundle_module with PRINT_DEFAULT, run_bundle) and Rust reads the JSON against the schema in core/brief, so tsc's errors come first and
 //! these come second, naming the field.
 use super::*;
@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 /// The default export of a spec module, as the JSON it evaluates to.
 pub fn spec_json(ts: &Path) -> R<String> {
-    let ts = ts.canonicalize().map_err(|e| format!("{}: {e}", ts.display()))?;
+    let ts = dunce::canonicalize(&ts).map_err(|e| format!("{}: {e}", ts.display()))?;
     let out = std::env::temp_dir().join(format!("raea-spec-{}.js", std::process::id()));
     bundle_module(&ts, &out, PRINT_DEFAULT)?;
     // the JSON is ours to read, not the person's to see: the run prints nothing to the terminal
@@ -83,32 +83,20 @@ pub fn taste_file(dir: &Path, name: &str) -> Option<(PathBuf, String)> {
     })
 }
 
-/// The .ts files `--taste` names: the file, or every .ts in the folder.
-fn taste_ts_files(args: &[String]) -> Vec<PathBuf> {
-    let Some(t) = args.iter().position(|a| a == "--taste").and_then(|i| args.get(i + 1)).map(PathBuf::from) else { return vec![] };
-    if t.extension().is_some_and(|x| x == "ts") {
-        return vec![t];
-    }
-    let mut v: Vec<PathBuf> = std::fs::read_dir(&t).into_iter().flatten().filter_map(|e| e.ok().map(|e| e.path())).filter(|f| f.extension().is_some_and(|x| x == "ts")).collect();
-    v.sort();
-    v
-}
-
 /// `--taste`'s .ts files, each checked as Taste.
 pub fn tastes_ts(args: &[String]) -> R<Vec<schema::Taste>> {
-    taste_ts_files(args).iter().map(|f| read_spec(f)).collect()
+    raea_app_direction::check::taste_files(args).iter().map(|f| read_spec(f)).collect()
 }
 
 /// `raea spec FILE.ts [--as KIND]`: the default export as JSON, checked as KIND (by default from the file's name:
-/// brief, script, taste or plan in it, controller under controllers/; anything else is checked as Taste, the files in
+/// brief, script, taste or parts in it; anything else is checked as Taste, the files in
 /// ~/.raea/taste being named for their kind).
 pub fn spec_cli(args: &[String]) -> R<String> {
-    const USAGE: &str = "usage: raea spec FILE.ts [--as brief|script|taste|plan|controller]";
+    const USAGE: &str = "usage: raea spec FILE.ts [--as brief|script|taste|parts]";
     let file = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--as")).map(|(_, a)| PathBuf::from(a)).ok_or(USAGE)?;
-    let named = file.to_string_lossy().to_lowercase();
     let kind = args.iter().position(|a| a == "--as").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| {
         let base = file.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-        ["brief", "script", "plan"].iter().find(|k| base.contains(*k)).map(|k| k.to_string()).unwrap_or(if named.contains("controllers/") { "controller".into() } else { "taste".into() })
+        ["brief", "script", "parts"].iter().find(|k| base.contains(*k)).map(|k| k.to_string()).unwrap_or_else(|| "taste".into())
     });
     let json = spec_json(&file)?;
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -116,12 +104,8 @@ pub fn spec_cli(args: &[String]) -> R<String> {
         "brief" => serde_json::to_value(schema::read::<schema::Brief>(&name, &json)?),
         "script" => serde_json::to_value(schema::read::<schema::Script>(&name, &json)?),
         "taste" => serde_json::to_value(schema::read::<schema::Taste>(&name, &json)?),
-        "plan" => serde_json::to_value(schema::read::<schema::Plan>(&name, &json)?),
-        "controller" => {
-            let raw: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("{name}: {e}"))?;
-            serde_json::to_value(schema::controller::normalize(&raw).map_err(|e| format!("{name}: {e}"))?)
-        }
-        k => return Err(format!("raea spec can't check a {k:?}: brief, script, taste, plan or controller\n{USAGE}")),
+        "parts" => serde_json::to_value(schema::read::<schema::Parts>(&name, &json)?),
+        k => return Err(format!("raea spec can't check a {k:?}: brief, script, taste or parts\n{USAGE}")),
     }
     .map_err(|e| e.to_string())?;
     Ok(value.to_string())

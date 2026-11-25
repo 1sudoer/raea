@@ -3,9 +3,10 @@
 // composition from the R3F source the source export wrote for it. Each steps its clock to
 // the case's frame (1/fps a step, as raea's <R3F> does), waits for what it loads, draws once and says "drawn".
 import { Canvas, advance } from "@react-three/fiber"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import * as THREE from "three"
 import { INPUTS, OUTPUTS, SIZE } from "./fixtures"
+import { PROGRAMS } from "./programs"
 import type { ComponentType } from "react"
 import { Raea } from "@raea/r3f/output/Raea"
 import { loadShapes } from "@raea/r3f/three/geometry"
@@ -35,6 +36,32 @@ function Stepper({ frame, onDone }: { frame: number; onDone: () => void }) {
   return null
 }
 
+/** a plain three.js program (programs.ts) on a real canvas: requestAnimationFrame is the page's own queue while it runs,
+ *  stepped at i * 1000 / fps for i up to the case's frame, as raea's <Three> steps it */
+function ProgramCase({ name, onDone }: { name: string; onDone: () => void }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const c = PROGRAMS[name]
+    const queue = new Map<number, FrameRequestCallback>()
+    let id = 0
+    const was = [window.requestAnimationFrame, window.cancelAnimationFrame] as const
+    window.requestAnimationFrame = (cb) => (queue.set(++id, cb), id)
+    window.cancelAnimationFrame = (i) => void queue.delete(i)
+    try {
+      c.program(ref.current!)
+      for (let i = 0; i <= c.frame; i++) {
+        const due = [...queue.values()]
+        queue.clear()
+        for (const cb of due) cb((i * 1000) / SIZE.fps)
+      }
+    } finally {
+      ;[window.requestAnimationFrame, window.cancelAnimationFrame] = was
+    }
+    onDone()
+  }, [])
+  return <canvas ref={ref} width={SIZE.width} height={SIZE.height} style={{ width: SIZE.width, height: SIZE.height, display: "block" }} />
+}
+
 /** `sources`: the output cases as R3F source, each its module's <Scene> (the source export's, which tools/serve.ts writes
  * into test/parity/gen and hands to the page) */
 export default function R3FParityPage({ sources = {} }: { sources?: Record<string, ComponentType<{ frame?: number }>> }) {
@@ -47,6 +74,14 @@ export default function R3FParityPage({ sources = {} }: { sources?: Record<strin
   }, [])
   const done = () => setNote("drawn")
   const style = { width: SIZE.width, height: SIZE.height }
+  if (dir === "in" && PROGRAMS[name]) {
+    return (
+      <div style={{ background: "#000", ...style }}>
+        <ProgramCase name={name} onDone={done} />
+        <div className="font-mono" style={{ position: "fixed", left: 0, top: SIZE.height + 4, color: "#fff" }}>{note}</div>
+      </div>
+    )
+  }
   if (dir === "in") {
     const c = INPUTS[name]
     return (

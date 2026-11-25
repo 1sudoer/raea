@@ -168,6 +168,18 @@ describe("Mesh3d, Camera3d and StandardMaterial", () => {
     expect(() => html(<ExtendedMaterial base={<StandardMaterial unlit />} extension={<WearExtension amount={0.5} />} />)).toThrow(/unlit/);
   });
 
+  test("wear is a surface shader of raea's own (EX9): its uniforms, none at amount 0, alone", () => {
+    const out = html(<MeshStandardMaterial color="#d9c69c" wear={{ amount: 0.6, seed: 2, chipColor: "#333333" }} />);
+    expect(out).not.toContain("wear&quot;:{");
+    expect(out).toContain("fn surface(in: VertexOutput, pbr: ptr&lt;function, PbrInput&gt;)");
+    expect(out).toContain("&quot;wear&quot;:[0.6,0.08,0.6,0.5]");
+    expect(out).toContain("&quot;wear2&quot;:[0.25,2,0,0]");
+    expect(out).toContain("&quot;chip_color&quot;:&quot;#333333&quot;");
+    expect(html(<MeshStandardMaterial color="#d9c69c" wear={{ amount: 0 }} />)).toBe(html(<MeshStandardMaterial color="#d9c69c" />));
+    expect(() => html(<MeshStandardMaterial wear={{ amount: 0.5 }} shader={{ wesl: "fn surface(in: VertexOutput, pbr: ptr<function, PbrInput>) {}" }} />)).toThrow(/wear or shader/);
+    expect(() => html(<MeshStandardMaterial wear={{ amount: 0.5 }} grid={{ cell: 0.5 }} />)).toThrow(/grid or wear/);
+  });
+
   test("inside a Model a StandardMaterial re-covers with only the fields given, as the old material did", () => {
     const m = (el: React.ReactElement) => html(<Model src="chair.glb">{el}</Model>);
     expect(m(<StandardMaterial material="Fabric" base_color="#7a3b2e" />)).toBe(m(<MeshStandardMaterial color="#7a3b2e" material="Fabric" />));

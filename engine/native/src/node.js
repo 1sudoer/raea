@@ -76,7 +76,12 @@
       if (encoding === "base64") return toB64(u);
       if (encoding === "base64url") return toB64(u).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       if (encoding === "hex") return Array.from(u, (b) => b.toString(16).padStart(2, "0")).join("");
-      if (encoding === "latin1" || encoding === "binary") return String.fromCharCode(...u);
+      if (encoding === "latin1" || encoding === "binary") {
+        // a slice at a time: a spread of a whole buffer passes each byte as an argument and overflows the stack (#124)
+        let s = "";
+        for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+        return s;
+      }
       return dec.decode(u);
     }
     toJSON() { return { type: "Buffer", data: Array.from(this) }; }
@@ -92,7 +97,12 @@
     return encoding ? b.toString(encoding) : b;
   };
 
-  // ---- path (POSIX) -------------------------------------------------------------------------------------------------
+  // ---- path ---------------------------------------------------------------------------------------------------------
+  // POSIX's, and on Windows Windows' parsing: a drive's root (C:\), a share's (\\server\share\) and the cwd's drive's
+  // (\) start an absolute path, and \ separates as / does. A Windows path comes out with / (which Windows' calls all
+  // take), so the tools' own "a/b" joins, splits and prefix tests hold there too. Until 0.1.8 every Windows path was a
+  // relative one here: resolve(".") named "/C:\Users\...", no folder at all, and isAbsolute("C:\x") was false (#169).
+  const win = g.process.platform === "win32";
   const normalizeParts = (parts, abs) => {
     const out = [];
     for (const p of parts) {
@@ -102,48 +112,79 @@
     }
     return out;
   };
-  const path = {
-    sep: "/", delimiter: ":",
-    normalize(p) {
-      if (p === "") return ".";
-      const abs = p.startsWith("/"), trail = p.endsWith("/");
-      let s = normalizeParts(p.split("/"), abs).join("/");
-      if (!s && !abs) s = ".";
-      if (s && trail) s += "/";
-      return (abs ? "/" : "") + s;
-    },
-    join(...a) { const s = a.filter((x) => x !== "").join("/"); return s ? path.normalize(s) : "."; },
-    resolve(...a) {
-      let r = "";
-      for (let i = a.length - 1; i >= 0 && !r.startsWith("/"); i--) if (a[i]) r = a[i] + (r ? "/" + r : "");
-      if (!r.startsWith("/")) r = proc.cwd() + (r ? "/" + r : "");
-      const s = "/" + normalizeParts(r.split("/"), true).join("/");
-      return s;
-    },
-    isAbsolute: (p) => p.startsWith("/"),
-    dirname(p) {
-      if (!p) return ".";
-      const s = p.replace(/\/+$/, "");
-      if (!s) return "/";
-      const i = s.lastIndexOf("/");
-      return i < 0 ? "." : i === 0 ? "/" : s.slice(0, i);
-    },
-    basename(p, ext) {
-      let b = p.replace(/\/+$/, "");
-      b = b.slice(b.lastIndexOf("/") + 1);
-      return ext && b.endsWith(ext) && b !== ext ? b.slice(0, -ext.length) : b;
-    },
-    extname(p) { const b = path.basename(p); const i = b.lastIndexOf("."); return i <= 0 ? "" : b.slice(i); },
-    relative(from, to) {
-      const f = path.resolve(from).split("/").filter(Boolean), t = path.resolve(to).split("/").filter(Boolean);
-      let i = 0;
-      while (i < f.length && i < t.length && f[i] === t[i]) i++;
-      return [...Array(f.length - i).fill(".."), ...t.slice(i)].join("/");
-    },
-    parse(p) { const base = path.basename(p), ext = path.extname(p); return { root: p.startsWith("/") ? "/" : "", dir: path.dirname(p), base, ext, name: ext ? base.slice(0, -ext.length) : base }; },
-    format(o) { return (o.dir ? o.dir + "/" : o.root || "") + (o.base || (o.name || "") + (o.ext || "")); },
+  /** path for POSIX or (`windows`) Windows, its paths written with / */
+  const pathFor = (windows) => {
+    const slash = windows ? (x) => String(x).replace(/\\/g, "/") : (x) => String(x);
+    // the root an absolute path starts with, "" for a relative one: "/", and on Windows "C:/" or "//server/share/"
+    const rootOf = (x) => {
+      if (!windows) return x.startsWith("/") ? "/" : "";
+      const share = /^\/\/[^/]+\/[^/]+(?:\/|$)/.exec(x);
+      if (share) return share[0].endsWith("/") ? share[0] : share[0] + "/";
+      const drive = /^[A-Za-z]:\//.exec(x);
+      return drive ? drive[0] : x.startsWith("/") ? "/" : "";
+    };
+    // Windows' names don't care about case
+    const same = windows ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+    const P = {
+      sep: "/", delimiter: windows ? ";" : ":",
+      normalize(x) {
+        x = slash(x);
+        if (x === "") return ".";
+        const root = rootOf(x), trail = x.endsWith("/") && x.length > root.length;
+        let s = normalizeParts(x.slice(root.length).split("/"), !!root).join("/");
+        if (!s && !root) s = ".";
+        if (s && trail) s += "/";
+        return root + s;
+      },
+      join(...a) { const s = a.filter((x) => x !== "").join("/"); return s ? P.normalize(s) : "."; },
+      resolve(...a) {
+        let r = "";
+        for (let i = a.length - 1; i >= 0 && !rootOf(r); i--) if (a[i]) r = slash(a[i]) + (r ? "/" + r : "");
+        const here = slash(proc.cwd());
+        if (!rootOf(r)) r = here + (r ? "/" + r : "");
+        // a bare \ on Windows is the cwd's drive's root
+        if (windows && rootOf(r) === "/") r = (/^[A-Za-z]:/.exec(here) || [""])[0] + r;
+        const root = rootOf(r);
+        return root + normalizeParts(r.slice(root.length).split("/"), true).join("/");
+      },
+      isAbsolute: (x) => rootOf(slash(x)) !== "",
+      dirname(x) {
+        if (!x) return ".";
+        x = slash(x);
+        const root = rootOf(x), s = x.replace(/\/+$/, "");
+        if (s.length < root.length) return root;
+        const i = s.lastIndexOf("/");
+        return i < 0 ? "." : i < root.length ? root : s.slice(0, i);
+      },
+      basename(x, ext) {
+        x = slash(x);
+        let b = x.replace(/\/+$/, "");
+        b = b.length < rootOf(x).length ? "" : b.slice(b.lastIndexOf("/") + 1);
+        return ext && b.endsWith(ext) && b !== ext ? b.slice(0, -ext.length) : b;
+      },
+      extname(x) { const b = P.basename(x); const i = b.lastIndexOf("."); return i <= 0 ? "" : b.slice(i); },
+      relative(from, to) {
+        const a = P.resolve(from), b = P.resolve(to);
+        // another drive (or share) on Windows: no way there but the whole path
+        if (!same(rootOf(a), rootOf(b))) return b;
+        const f = a.slice(rootOf(a).length).split("/").filter(Boolean), t = b.slice(rootOf(b).length).split("/").filter(Boolean);
+        let i = 0;
+        while (i < f.length && i < t.length && same(f[i], t[i])) i++;
+        return [...Array(f.length - i).fill(".."), ...t.slice(i)].join("/");
+      },
+      parse(x) { const base = P.basename(x), ext = P.extname(x); return { root: rootOf(slash(x)), dir: P.dirname(x), base, ext, name: ext ? base.slice(0, -ext.length) : base }; },
+      format(o) { return (o.dir ? o.dir + "/" : o.root || "") + (o.base || (o.name || "") + (o.ext || "")); },
+    };
+    return P;
   };
-  path.posix = path;
+  const path = pathFor(win);
+  path.posix = win ? pathFor(false) : path;
+  // Windows' parsing on any system (Node's path.win32 writes \; this one /, as raea's Windows does)
+  path.win32 = win ? path : pathFor(true);
+  path.posix.posix = path.win32.posix = path.posix;
+  path.posix.win32 = path.win32.win32 = path.win32;
+  /** a path a native gave, as path writes it: / on Windows */
+  const fwd = win ? (x) => String(x).replace(/\\/g, "/") : (x) => x;
 
   // ---- fs ---------------------------------------------------------------------------------------------------------------
   const stats = (s) => ({
@@ -166,8 +207,8 @@
     rmdirSync(p, o) { call("rm", pathOf(p), !!(o && o.recursive), false); },
     renameSync: (a, b) => call("rename", pathOf(a), pathOf(b)),
     copyFileSync: (a, b) => call("copyFile", pathOf(a), pathOf(b)),
-    realpathSync: (p) => call("realpath", pathOf(p)),
-    mkdtempSync: (prefix) => call("mkdtemp", String(prefix)),
+    realpathSync: (p) => fwd(call("realpath", pathOf(p))),
+    mkdtempSync: (prefix) => fwd(call("mkdtemp", String(prefix))),
     constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 },
     createWriteStream(p) { fs.writeFileSync(p, ""); return { write(d) { fs.appendFileSync(p, d); return true; }, end(d) { if (d) fs.appendFileSync(p, d); }, on() { return this; } }; },
   };
@@ -181,9 +222,11 @@
   fs.promises = promises;
 
   // ---- os, crypto, child_process --------------------------------------------------------------------------------------
+  // the system's own words, as Node gives them (until 0.1.8 every system here was an arm64 Mac's)
   const os = {
-    tmpdir: () => call("tmpdir"), homedir: () => call("homedir"), platform: () => "darwin", arch: () => "arm64", EOL: "\n",
-    cpus: () => Array.from({ length: 8 }, () => ({ model: "", speed: 0 })), type: () => "Darwin", release: () => "", hostname: () => "raea", endianness: () => "LE",
+    tmpdir: () => fwd(call("tmpdir")), homedir: () => fwd(call("homedir")), platform: () => proc.platform, arch: () => proc.arch, EOL: win ? "\r\n" : "\n",
+    cpus: () => Array.from({ length: 8 }, () => ({ model: "", speed: 0 })), type: () => ({ darwin: "Darwin", win32: "Windows_NT", linux: "Linux" })[proc.platform] || proc.platform,
+    release: () => "", hostname: () => "raea", endianness: () => "LE",
   };
   const crypto = {
     createHash(alg) {
@@ -221,18 +264,23 @@
       if (r.status !== 0) { const e = new Error(`Command failed: ${cmd} ${(args || []).join(" ")}\n${r.stderr}`); e.status = r.status; e.stdout = r.stdout; e.stderr = r.stderr; throw e; }
       return r.stdout;
     },
-    execSync(command, o) { return childProcess.execFileSync("/bin/sh", ["-c", String(command)], o); },
+    // a command line through the system's shell, as Node's: sh, or on Windows cmd
+    execSync(command, o) { return win ? childProcess.execFileSync(g.process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", String(command)], o) : childProcess.execFileSync("/bin/sh", ["-c", String(command)], o); },
   };
 
   // ---- process, url, util, events, module ---------------------------------------------------------------------------
   const proc = g.process;
-  let cwd = call("cwd");
+  let cwd = fwd(call("cwd"));
   proc.cwd = () => cwd;
   proc.chdir = (d) => { cwd = path.resolve(d); };
   proc.version = "v22.0.0";
   proc.versions = { node: "22.0.0", raea: "1" };
-  proc.arch = "arm64";
-  proc.pid = 1;
+  // the process's own (until 0.1.8 a pid of 1 and no ppid, so `raea show` never found the harness that ran it)
+  const own = call("process");
+  proc.arch = own.arch;
+  proc.pid = own.pid;
+  let parent;
+  Object.defineProperty(proc, "ppid", { get: () => (parent === undefined ? (parent = call("ppid")) : parent), configurable: true });
   proc.execPath = "raea";
   proc.exitCode = undefined;
   proc.nextTick = (fn, ...a) => queueMicrotask(() => fn(...a));
@@ -244,9 +292,19 @@
   proc.memoryUsage = () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 });
   proc.on = proc.once = proc.off = () => proc;
   proc.emitWarning = () => {};
+  // file:///C:/x on Windows is C:/x, and file://server/share/x is //server/share/x
   const url = {
-    fileURLToPath: (u) => decodeURIComponent(new URL(String(u)).pathname),
-    pathToFileURL: (p) => new URL("file://" + encodeURI(path.resolve(String(p)))),
+    fileURLToPath(u) {
+      const x = new URL(String(u));
+      const p = decodeURIComponent(x.pathname);
+      if (!win) return p;
+      return x.hostname ? "//" + x.hostname + p : /^\/[A-Za-z]:(\/|$)/.test(p) ? p.slice(1) : p;
+    },
+    pathToFileURL(p) {
+      const r = path.resolve(String(p));
+      const share = win && r.startsWith("//");
+      return new URL("file:" + (share ? "" : win ? "///" : "//") + encodeURI(r).replace(/[?#]/g, encodeURIComponent));
+    },
     URL: g.URL, URLSearchParams: g.URLSearchParams,
   };
   const inspect = (x) => { try { return typeof x === "string" ? x : JSON.stringify(x); } catch { return String(x); } };
@@ -299,7 +357,7 @@
     req.cache = cache;
     return req;
   };
-  builtins.module = { createRequire: (from) => requireFrom(path.dirname(pathOf(from).replace(/^file:\/\//, ""))), builtinModules: Object.keys(builtins) };
+  builtins.module = { createRequire: (from) => { const f = String(from instanceof URL ? from.href : from); return requireFrom(path.dirname(f.startsWith("file:") ? url.fileURLToPath(f) : f)); }, builtinModules: Object.keys(builtins) };
   g.__raea_node_builtins = builtins;
   g.__raea_node_require = requireFrom;
   g.Buffer = Buffer;

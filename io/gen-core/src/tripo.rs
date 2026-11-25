@@ -59,7 +59,7 @@ pub fn available() -> bool {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    raea_io_home::user_home().unwrap_or_default()
 }
 
 fn command() -> Command {

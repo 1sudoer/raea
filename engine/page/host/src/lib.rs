@@ -5,13 +5,16 @@
 //! adds [`HostPlugin`] and mounts its own (page::mount), its systems around the host's.
 
 pub mod brp;
-/// the desktop window's chrome and native calls, in raea-page-window (kept under these names for main.rs and tests)
-pub use raea_page_window::{chrome, native};
+/// the desktop window's side, in raea-page-window (under these names for main.rs and tests)
+#[cfg(feature = "window")]
+pub use raea_page_window::idle;
+pub use raea_page_window::{chrome, native, scheme};
 /// the live stage, in raea-page-stage
 pub use raea_page_stage as stage;
 pub mod inject;
 pub mod mcp;
 pub mod page;
+pub mod shell;
 pub mod tree;
 
 use std::time::Duration;
@@ -54,6 +57,10 @@ impl Plugin for HostPlugin {
         // the pointer is fed by inject.rs: headless, picking's own mouse reader would place it on the window, not its
         // image; on screen, inject::window_pointer reads the window's events as that reader does, with a trackpad's
         // deltas in points
+        // a text field's copy, cut and paste reach the clipboard (src/shell.rs), unless the app gave its pages a shell
+        if !app.world().contains_resource::<raea_sys_page::PageShell>() {
+            app.insert_resource(raea_sys_page::PageShell(std::sync::Arc::new(shell::Shell)));
+        }
         app.insert_resource(PointerInputSettings { is_mouse_enabled: false, is_touch_enabled: false })
             .insert_resource(inject::Clicks::new(self.double_click))
             .insert_resource(LaunchSize(self.size))

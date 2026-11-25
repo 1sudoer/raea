@@ -288,7 +288,7 @@ pub fn ingest(path: &Path, store: &Path, backend: &str, v: &dyn Vision) -> Resul
     if m.version != INGEST_VERSION {
         m = Manifest { version: INGEST_VERSION, ..Default::default() };
     }
-    m.source = std::fs::canonicalize(path).unwrap_or(path.to_path_buf()).display().to_string();
+    m.source = dunce::canonicalize(path).unwrap_or(path.to_path_buf()).display().to_string();
     m.hash = hash;
     let save = |m: &Manifest| std::fs::write(&mpath, serde_json::to_string_pretty(m).unwrap()).map_err(|e| e.to_string());
     let timed = |f: &mut dyn FnMut() -> Result<(), String>| -> Result<f64, String> {

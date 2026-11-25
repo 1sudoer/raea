@@ -14,7 +14,7 @@ fn source_of(args: &[String]) -> Option<PathBuf> {
     }
     let f = Path::new(args.get(1)?);
     let ext = f.extension()?.to_str()?;
-    (matches!(ext, "tsx" | "ts" | "jsx" | "js") && f.is_file()).then(|| f.canonicalize().unwrap_or_else(|_| f.to_path_buf()))
+    (matches!(ext, "tsx" | "ts" | "jsx" | "js") && f.is_file()).then(|| dunce::canonicalize(&f).unwrap_or_else(|_| f.to_path_buf()))
 }
 
 /// raea's caches' refused/HASH.json (raea_io_home::caches) for that file (RAEA_REFUSED_CACHE moves it; "0" turns it off)

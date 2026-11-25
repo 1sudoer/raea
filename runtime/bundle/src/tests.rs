@@ -23,7 +23,7 @@ fn rewrite_into_points_imports_and_re_exports_at_the_copies() {
 fn an_import_written_in_a_string_template_or_comment_is_left_as_text() {
     // a code chip's text (a launch film types `import { RigidBody } from "raea/plugins/avian"`) isn't an import
     let m = &raea_io_home::home().join("sdk/raea/src");
-    let src = "import { a } from \"raea\";\nconst chip = `import { b } from \"raea/clock\"; ${ {x: `import c from \"raea\"`}.x }`;\n// import d from \"raea\";\n/* import e from \"raea\"; */\nconst s = 'import f from \"raea\"';\nconst r = /import g from \"raea\"/;\nimport { h } from \"raea/clock\";\n";
+    let src = "import { a } from \"raea\";\nconst chip = `import { b } from \"raea/clock\"; ${ {x: `import c from \"raea\"`}.x }`;\n// import d from \"raea\";\n/* import e from \"raea\"; */\nconst s = 'import f from \"raea\"';\nconst r = /import g from \"raea\"/;\n// its @import and nesting\nimport { h } from \"raea/clock\";\n";
     let out = rewrite_into(src, Path::new("/nowhere/app"), m, "../motion", None).unwrap();
     assert!(out.starts_with("import { a } from \"../motion/prelude\""), "{out}");
     assert!(out.ends_with("import { h } from \"../app/clock\";\n"), "{out}");
@@ -37,6 +37,7 @@ fn point_sdks_climbs_from_a_nested_file() {
     let src = "import { useClockState } from \"@raea/app/clock\";\nimport { x } from \"@raea/nope\";\n";
     assert_eq!(point_sdks(src, "../", &sdks()), src.replace("@raea/app/clock", "../app/clock"));
     assert_eq!(point_sdks(src, "../../", &sdks()), src.replace("@raea/app/clock", "../../app/clock"));
+    assert_eq!(point_sdks("import { C } from \"@raea/ui/canvas\";", "../", &sdks()), "import { C } from \"../ui/canvas\";");
 }
 
 #[test]
@@ -68,5 +69,49 @@ fn outside_copies_what_the_edit_imports_beyond_its_folder() {
     w("y.ts", "export const y = 0;\n");
     let e = outside_in(&dir, &roots).unwrap_err();
     assert!(e.contains("lib/c.ts") && e.contains("outside raea's home"), "{e}");
+    // @shared/ (LY2), as raea's skill says to import: 0.1.7 left it to the bundler, which took it for a package
+    w(".raea/workspace", "");
+    w("shared/components/badge.tsx", "export { TONE } from \"./tone\";\n");
+    w("shared/components/tone.ts", "export const TONE = 1;\n");
+    w("proj/edit/a.tsx", "import { TONE } from \"@shared/components/badge\";\n");
+    let roots = vec![("project", root.clone()), ("shared", t.join("shared"))];
+    let outs = outside_in(&dir, &roots).unwrap();
+    assert_eq!(outs.iter().map(|o| o.copy.to_str().unwrap()).collect::<Vec<_>>(), ["ext/shared/components/badge.tsx", "ext/shared/components/tone.ts"]);
+    assert!(point_outside("import { TONE } from \"@shared/components/badge\";", &dir, Path::new("src"), &dir, &outs).contains("\"../ext/shared/components/badge.tsx\""));
+    w("proj/edit/a.tsx", "import { N } from \"@shared/components/nope\";\n");
+    assert!(outside_in(&dir, &roots).unwrap_err().contains("a.tsx: `@shared/components/nope` isn't there"));
     std::fs::remove_dir_all(&t).unwrap();
+}
+
+#[test]
+fn a_project_s_own_tsconfig_is_not_in_the_work_copy() {
+    // raea writes a tsconfig.json into every new project: copied with the sources, it shadowed the work folder's
+    let d = std::env::temp_dir().join(format!("raea-bundle-tsconfig-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("from/components")).unwrap();
+    for f in ["from/tsconfig.json", "from/components/jsconfig.json", "from/a.tsx", "from/components/data.json"] {
+        std::fs::write(d.join(f), "{}").unwrap();
+    }
+    copy_dir(&d.join("from"), &d.join("to"), 0).unwrap();
+    drop_tsconfigs(&d.join("to"), 0);
+    assert!(!d.join("to/tsconfig.json").exists() && !d.join("to/components/jsconfig.json").exists());
+    assert!(d.join("to/a.tsx").exists() && d.join("to/components/data.json").exists());
+    // the project's own files are untouched
+    assert!(d.join("from/tsconfig.json").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_edit_s_sources_leave_out_hidden_folders_and_packages() {
+    let d = std::env::temp_dir().join(format!("raea-bundle-sources-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    for f in ["a.tsx", "parts/b.ts", "phone.glb", ".git/hooks/c.js", "node_modules/pkg/d.js", "target/e.ts", "out/f.json"] {
+        std::fs::create_dir_all(d.join(f).parent().unwrap()).unwrap();
+        std::fs::write(d.join(f), "").unwrap();
+    }
+    let mut got = sources(&d).unwrap();
+    got.sort();
+    assert_eq!(got, vec![PathBuf::from("a.tsx"), PathBuf::from("parts/b.ts")]);
+    assert!(rewrite_into("import m from \"./phone.glb\";", &d, &raea_io_home::home().join("sdk/raea/src"), "../motion", None).unwrap().contains("phone.glb\""));
+    let _ = std::fs::remove_dir_all(&d);
 }

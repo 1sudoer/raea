@@ -1,0 +1,34 @@
+# The complete corresponding source of the Git for Windows the Windows app ships (tools/release/git-sources.sh),
+# published once as the prerelease tools-git-<tag>-sources, which the app's git\SOURCE.txt names: GPLv2 section 3
+# asks whoever distributes Git to make it available, and dugite-native's own repository isn't all of it (Git for
+# Windows' MSYS2 runtime, bash, curl and the rest are built from their own source packages). A run whose release
+# already holds the archive changes nothing.
+name: tools-git-sources
+on:
+  workflow_dispatch:
+  push:
+    paths: [tools/release/git-sources.sh, .github/workflows/tools-git-sources.yml]
+permissions:
+  contents: write
+jobs:
+  sources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: publish (once)
+        run: |
+          t=$(sed -n 's/^tag=//p' tools/release/git-sources.sh)
+          tag=tools-git-$t-sources; tar=git-for-windows-$t-sources.tar
+          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$tar"; then
+            echo "$tag already has $tar"; exit 0
+          fi
+          bash tools/release/git-sources.sh out
+          cp tools/release/git-sources.sh out/
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease --title "Git for Windows ($t) sources, as raea's Windows app ships it" \
+            --notes "The complete corresponding source of the Git for Windows (dugite-native $t) that raea's Windows app ships in its git folder: each package of its etc/package-versions.txt as the source package it was built from, from Git for Windows' pacman repository or MSYS2's source mirror (SOURCES.tsv inside says which), collected by git-sources.sh, attached here. raea runs Git as a separate program."
+          gh release upload "$tag" "out/$tar" "out/$tar.sha256" out/git-sources.sh

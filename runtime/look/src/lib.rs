@@ -8,11 +8,19 @@ use raea_core_scene::*;
 use serde_json::{Map, Value};
 
 mod camera;
+mod cuts;
+pub use cuts::*;
 pub use camera::*;
 mod instances;
+mod post;
+pub use post::*;
 mod parts;
 pub use parts::*;
+mod rendercam;
+pub use rendercam::*;
 pub use instances::*;
+mod active;
+pub use active::*;
 
 /// Bloom of intensity 1: Bevy's natural preset.
 pub const BLOOM: f64 = 0.15;
@@ -146,8 +154,16 @@ pub fn column(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, name: &s
 pub fn exact(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, name: &str, vals: &[f64]) {
     row.insert(name.into(), V::N(vals[0]));
     if !vals.iter().all(|v| (*v - vals[0]).abs() < 1e-9) {
-        p.keys.insert((id.to_string(), name.to_string()), vals.iter().enumerate().map(|(f, v)| (f as i64, *v, "linear".to_string())).collect());
+        p.keys.insert((id.to_string(), name.to_string()), linear_keys(vals));
     }
+}
+
+/// One value a frame as linear keys: a key only where the value differs from a neighbour's, as linear between the rest
+/// gives the same value on every frame; a still late in a long scene (its frames before held as copies of one) keyed
+/// thousands of frames per column (#77).
+pub fn linear_keys(vals: &[f64]) -> Vec<(i64, f64, String)> {
+    let keep = |f: usize| f == 0 || f + 1 == vals.len() || vals[f] != vals[f - 1] || vals[f] != vals[f + 1];
+    vals.iter().enumerate().filter(|(f, _)| keep(*f)).map(|(f, v)| (f as i64, *v, "linear".to_string())).collect()
 }
 
 /// A model's look as raea-render's look column has it: 0 solid, 1 pixel, 2 site.
@@ -157,14 +173,6 @@ pub fn look_of(props: &Map<String, Value>) -> f64 {
         Some("site") => 2.0,
         _ => 0.0,
     }
-}
-
-/// The distance the camera focuses at: its `focus`, else how far its lookAt point is.
-pub fn focus_of(c: &Item) -> f64 {
-    num(&c.props, "focus").unwrap_or_else(|| {
-        let (p, l) = (vec3(&c.props, "position", [0.0, 0.0, 5.0]), vec3(&c.props, "lookAt", [0.0, 0.0, 0.0]));
-        ((p[0] - l[0]).powi(2) + (p[1] - l[1]).powi(2) + (p[2] - l[2]).powi(2)).sqrt().max(0.01)
-    })
 }
 
 /// The paint look's keyed values on one frame (raea-render's look.rs and paint.rs read them): its tone bands, paper grain,
@@ -199,16 +207,17 @@ pub fn is_paint(l: &Map<String, Value>) -> bool {
 pub fn paint_fixed(row: &mut BTreeMap<String, V>, first: &Map<String, Value>) {
     row.insert("paint_rag_scale".into(), V::N(n(first, "ragScale", 24.0)));
     // ambient occlusion and ground bounce as a band, the water's foam, the shadows' torn edge (paint.rs)
-    for (k, col) in [("aoHeight", "paint_ao_height"), ("ground", "paint_ground"), ("ssao", "paint_ssao"), ("water", "paint_water"), ("foam", "paint_foam"), ("edge", "paint_edge"), ("edgeScale", "paint_edge_scale"), ("wash", "paint_wash"), ("washSize", "paint_wash_size"), ("stroke", "paint_stroke"), ("strokeScale", "paint_stroke_scale"), ("saturate", "paint_saturate"), ("foliage", "paint_foliage"), ("foliageHeight", "paint_foliage_height"), ("calmFrom", "paint_calm_from"), ("calmTo", "paint_calm_to"), ("calmAmount", "paint_calm_amount"), ("texel", "paint_texel"), ("texelJitter", "paint_texel_jitter"), ("cloudShadows", "paint_cloud_shadows"), ("cloudShadowSize", "paint_cloud_shadow_size"), ("wind", "paint_wind"), ("windX", "paint_wind_x"), ("windZ", "paint_wind_z"), ("hazeDensity", "paint_haze_density"), ("hazeHeight", "paint_haze_height"), ("hazeStart", "paint_haze_start"), ("hazeMost", "paint_haze_most")] {
+    for (k, col) in [("aoHeight", "paint_ao_height"), ("ground", "paint_ground"), ("ssao", "paint_ssao"), ("water", "paint_water"), ("foam", "paint_foam"), ("edge", "paint_edge"), ("edgeScale", "paint_edge_scale"), ("wash", "paint_wash"), ("washSize", "paint_wash_size"), ("stroke", "paint_stroke"), ("strokeScale", "paint_stroke_scale"), ("saturate", "paint_saturate"), ("foliage", "paint_foliage"), ("foliageHeight", "paint_foliage_height"), ("calmFrom", "paint_calm_from"), ("calmTo", "paint_calm_to"), ("calmAmount", "paint_calm_amount"), ("texel", "paint_texel"), ("texelJitter", "paint_texel_jitter"), ("cloudShadows", "paint_cloud_shadows"), ("cloudShadowSize", "paint_cloud_shadow_size"), ("soft", "paint_soft"), ("cutRag", "paint_cut_rag"), ("cutRim", "paint_cut_rim_width"), ("rimAmount", "paint_rim_amount"), ("rimPower", "paint_rim_power"), ("terminatorAmount", "paint_term_amount"), ("wind", "paint_wind"), ("windX", "paint_wind_x"), ("windZ", "paint_wind_z"), ("hazeDensity", "paint_haze_density"), ("hazeHeight", "paint_haze_height"), ("hazeStart", "paint_haze_start"), ("hazeMost", "paint_haze_most")] {
         if let Some(v) = num(first, k) {
             row.insert(col.into(), V::N(v));
         }
     }
-    for (k, col) in [("shadow", "paint_shadow"), ("mid", "paint_mid"), ("ao", "paint_ao"), ("foamColor", "paint_foam_color"), ("calm", "paint_calm"), ("haze", "paint_haze"), ("hazeSun", "paint_haze_sun")] {
+    for (k, col) in [("shadow", "paint_shadow"), ("mid", "paint_mid"), ("ao", "paint_ao"), ("foamColor", "paint_foam_color"), ("calm", "paint_calm"), ("haze", "paint_haze"), ("hazeSun", "paint_haze_sun"), ("cutRimColor", "paint_cut_rim"), ("rim", "paint_rim"), ("terminator", "paint_term")] {
         if let Some(h) = hex(first.get(k)) {
             row.insert(col.into(), V::S(h));
         }
     }
+    cut_colours(row, first);
     // the sky: one colour, or [top, bottom]
     match first.get("sky") {
         Some(Value::Array(a)) => {
@@ -295,6 +304,7 @@ pub fn frame_looks(all: &[Vec<Item>], p: &mut Program, row: &mut BTreeMap<String
     let lines: Vec<Option<&Map<String, Value>>> = all.iter().map(|its| its.iter().find(|i| i.kind == "outline").map(|i| &*i.props)).collect();
     if let Some(first) = looks.iter().flatten().find(|l| is_paint(l)) {
         paint_keyed_rows(&looks, p, row, first);
+        paint_cut_rows(&looks, p, row, first);
     }
     let mut kinds: Vec<BTreeMap<String, V>> = Vec::new();
     let idx: Vec<f64> = looks
@@ -332,17 +342,6 @@ pub fn frame_looks(all: &[Vec<Item>], p: &mut Program, row: &mut BTreeMap<String
     row.insert("frame_look_i".into(), V::N(idx[0]));
     if !idx.iter().all(|i| *i == idx[0]) {
         p.keys.insert(("cam".to_string(), "frame_look_i".to_string()), idx.iter().enumerate().map(|(f, v)| (f as i64, *v, "step".to_string())).collect());
-    }
-}
-
-/// a material's `paint` (under a paint look): its breakup, patches of noise in their own colour (raea-render's paint.rs)
-pub fn paint_columns(row: &mut BTreeMap<String, V>, props: &Map<String, Value>) {
-    let Some(g) = props.get("paint").and_then(Value::as_object) else { return };
-    row.insert("paint_breakup".into(), V::N(n(g, "breakup", 0.5)));
-    row.insert("paint_breakup_scale".into(), V::N(n(g, "scale", 1.0)));
-    if let Some(h) = hex(g.get("color")) {
-        row.insert("paint_patch".into(), V::S(h));
-        row.insert("paint_patch_amount".into(), V::N(n(g, "amount", 0.6)));
     }
 }
 
@@ -434,12 +433,14 @@ pub fn material_fields(p: &mut Program, id: &str, its: &[Item]) {
     keyed(p, "component", Some(id), "m", each.iter().map(|(f, v)| (*f, v)));
 }
 
-/// A three.js shader's uniforms and time (a <ThreeShaderMaterial>'s, docs/r3f.feature R3F11), sent as keyed
+/// A three.js shader's uniforms, time and render-image textures (a <ThreeShaderMaterial>'s, docs/r3f.feature R3F11), sent as keyed
 /// `three:uniforms` rows from each frame they change, which raea-sys-three-shader's `patch` writes into its slots.
 pub fn three_uniforms(p: &mut Program, id: &str, its: &[Item]) {
     let each: Vec<(usize, Value)> = its.iter().enumerate().filter_map(|(f, it)| {
         let m = it.material.as_ref().filter(|m| &*m.kind == "ThreeShaderMaterial")?;
-        let v = serde_json::json!({ "uniforms": m.props.get("uniforms").cloned().unwrap_or(Value::Null), "time": m.props.get("time").cloned().unwrap_or(Value::Null) });
+        // its textures that name render images: an app ping-ponging two targets reads another each frame (R3F23c)
+        let renders: Map<String, Value> = m.props.get("textures").and_then(Value::as_object).into_iter().flatten().filter(|(_, s)| s.as_str().is_some_and(|s| s.starts_with("render:"))).map(|(k, s)| (k.clone(), s.clone())).collect();
+        let v = serde_json::json!({ "uniforms": m.props.get("uniforms").cloned().unwrap_or(Value::Null), "time": m.props.get("time").cloned().unwrap_or(Value::Null), "textures": renders });
         Some((f, serde_json::json!({ "type": "three:uniforms", "value": v })))
     }).collect();
     if each.is_empty() {

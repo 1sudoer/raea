@@ -10,6 +10,11 @@
 //!                  1e30)
 //!   normal(uv)     with `prepass`: the surface's world-space normal
 //! `at`: "before-tonemap" (the HDR frame, after bloom) or "after-tonemap" (the display colours; the default).
+//!
+//! `in.uv` spans the camera's Viewport, not its target: the Engine's target is w x (h + 1), a tag row under the frame,
+//! and Bevy's frame textures are the target's size, so a pass drawn over the whole texture saw uv 0..1 over h + 1 rows
+//! (a pattern by uv drifting a row by the frame's foot, R3F25). The pass draws in the Viewport, and frame(), depth()
+//! and normal() map its uv back onto the texture.
 
 use std::collections::HashMap;
 
@@ -24,10 +29,11 @@ use bevy::render::{
     },
     renderer::{RenderContext, RenderDevice, ViewQuery},
     texture::{FallbackImage, GpuImage},
+    camera::ExtractedCamera,
     view::{ExtractedView, ViewTarget},
     Render, RenderApp, RenderStartup, RenderSystems,
 };
-use raea_sys_material::shader_material::{SLOTS, TEXTURES};
+use raea_sys_material::shader_material::{uniform, SLOTS, TEXTURES};
 use raea_sys_shader::{accessors, defines, register, Inputs};
 use serde_json::Value;
 
@@ -52,6 +58,45 @@ pub struct Pass {
     pub array: Option<Handle<Image>>,
     /// a pass as written (a <FramePass file>): its own bindings (written.rs)
     pub written: Option<written::Written>,
+    /// an inline pass's uniforms, followed frame by frame (`follow`)
+    pub inline: Option<Inline>,
+}
+
+/// An inline pass's row and its uniforms' names and types in slot order: `follow` puts each frame's values in its
+/// slots, as a pass as written's are (until 11-11 an inline pass kept its first frame's uniforms for a whole render:
+/// a camera's matrices or a time handed in stood still).
+#[derive(Clone, Debug, Default)]
+pub struct Inline {
+    pub id: String,
+    pub names: Vec<(String, &'static str)>,
+    last: String,
+}
+
+impl Inline {
+    pub fn new(names: Vec<(String, &'static str)>) -> Inline {
+        Inline { id: String::new(), names, last: String::new() }
+    }
+
+    /// This frame's uniforms (JSON, {NAME: value}) into `slots` when they've changed; whether they had. A uniform the
+    /// frame leaves out keeps its value; one whose type changes is refused, the module being built for the first
+    /// frame's.
+    pub fn follow(&mut self, uniforms: &str, slots: &mut [Vec4; SLOTS]) -> Result<bool, String> {
+        if uniforms == self.last {
+            return Ok(false);
+        }
+        let v: Value = serde_json::from_str(uniforms).map_err(|e| format!("its uniforms: {e}"))?;
+        let o = v.as_object().ok_or_else(|| format!("its uniforms are {{name: value}}, got {v}"))?;
+        for (i, (name, ty)) in self.names.iter().enumerate() {
+            let Some(x) = o.get(name) else { continue };
+            let u = uniform(name, x)?;
+            if u.ty != *ty {
+                return Err(format!("uniform {name} is a {ty} (its first frame's), got a {}", u.ty));
+            }
+            slots[i] = u.value;
+        }
+        self.last = uniforms.to_string();
+        Ok(true)
+    }
 }
 
 /// The camera's passes, in order.
@@ -60,17 +105,23 @@ pub struct Pass {
 pub struct FramePasses(pub Vec<Pass>);
 
 /// The module a pass's source is compiled as, in WESL: its bindings and accessors, the source, and the entry point
-/// unless it has its own. Bindings: 0 the frame, 1 its sampler, 2 the uniforms (the camera's near plane, then the
-/// slots), 3 + 2i a texture and 4 + 2i its sampler, 11 the texture array and 12 its sampler, 13 the depth and 14 the
-/// normals with a prepass.
+/// unless it has its own. Bindings: 0 the frame, 1 its sampler, 2 the uniforms (the camera's near plane, the
+/// Viewport's place in the texture, then the slots), 3 + 2i a texture and 4 + 2i its sampler, 11 the texture array and
+/// 12 its sampler, 13 the depth and 14 the normals with a prepass.
 pub fn module(source: &str, uniforms: &[(String, &'static str)], textures: &[String], array: Option<&str>, prepass: bool) -> String {
     let mut m = String::from(
         "import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;\n\n\
          @group(0) @binding(0) var raea_frame: texture_2d<f32>;\n\
          @group(0) @binding(1) var raea_frame_sampler: sampler;\n\
-         struct RaeaPass { near: vec4<f32>, s: array<vec4<f32>, 16> };\n\
+         struct RaeaPass { near: vec4<f32>, view: vec4<f32>, s: array<vec4<f32>, 16> };\n\
          @group(0) @binding(2) var<uniform> raea_pass: RaeaPass;\n\
-         fn frame(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(raea_frame, raea_frame_sampler, uv, 0.0); }\n",
+         // a uv over the camera's Viewport as one over the frame's texture (view: its size, then its corner, over the texture's)\n\
+         fn raea_view_uv(uv: vec2<f32>) -> vec2<f32> { return raea_pass.view.zw + uv * raea_pass.view.xy; }\n\
+         // read past its edge, the frame's edge pixel (as a clamped texture is), never the row under the Viewport\n\
+         fn frame(uv: vec2<f32>) -> vec4<f32> {\n\
+         \x20   let h = 0.5 / (vec2<f32>(textureDimensions(raea_frame)) * raea_pass.view.xy);\n\
+         \x20   return textureSampleLevel(raea_frame, raea_frame_sampler, raea_view_uv(clamp(uv, h, 1.0 - h)), 0.0);\n\
+         }\n",
     );
     for (i, t) in textures.iter().enumerate() {
         m += &format!("@group(0) @binding({}) var tex_{t}: texture_2d<f32>;\n@group(0) @binding({}) var samp_{t}: sampler;\n", 3 + i * 2, 4 + i * 2);
@@ -81,7 +132,7 @@ pub fn module(source: &str, uniforms: &[(String, &'static str)], textures: &[Str
     if prepass {
         m += "@group(0) @binding(13) var raea_depth: texture_depth_2d;\n\
               @group(0) @binding(14) var raea_normal: texture_2d<f32>;\n\
-              fn raea_texel(uv: vec2<f32>, size: vec2<u32>) -> vec2<i32> { return clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1)); }\n\
+              fn raea_texel(uv: vec2<f32>, size: vec2<u32>) -> vec2<i32> { return clamp(vec2<i32>(raea_view_uv(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999))) * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1)); }\n\
               // reverse-Z: the depth is near / distance, 0 where nothing was drawn\n\
               fn depth(uv: vec2<f32>) -> f32 {\n\
               \x20   let d = textureLoad(raea_depth, raea_texel(uv, textureDimensions(raea_depth)), 0);\n\
@@ -110,7 +161,7 @@ pub fn build(world: &mut World, v: &Value, mut image: impl FnMut(&mut World, &Va
     };
     if o.contains_key("file") {
         let (shader, w) = written::build(world, o, &mut image)?;
-        return Ok(Pass { shader, at, prepass: false, slots: [Vec4::ZERO; SLOTS], textures: vec![], array: None, written: Some(w) });
+        return Ok(Pass { shader, at, prepass: false, slots: [Vec4::ZERO; SLOTS], textures: vec![], array: None, written: Some(w), inline: None });
     }
     let ins = Inputs::read(world, o, "a frame pass", &mut image)?;
     if !(ins.src.contains("@fragment") || defines(&ins.src, "shade")) {
@@ -124,7 +175,8 @@ pub fn build(world: &mut World, v: &Value, mut image: impl FnMut(&mut World, &Va
     };
     let (names, tnames) = ins.names();
     let shader = register(world, module(&ins.src, &names, &tnames, ins.array.as_ref().map(|a| a.0.as_str()), prepass), &ins.defs, "raea frame pass", "raea_sys_framepass");
-    Ok(Pass { shader, at, prepass, slots: ins.slots(), textures: ins.textures.into_iter().map(|t| t.1).collect(), array: ins.array.map(|a| a.1), written: None })
+    let inline = Some(Inline::new(names));
+    Ok(Pass { shader, at, prepass, slots: ins.slots(), textures: ins.textures.into_iter().map(|t| t.1).collect(), array: ins.array.map(|a| a.1), written: None, inline })
 }
 
 /// The passes onto a camera: with a prepass, its depth and normal prepasses on and its multisampling off (a
@@ -147,18 +199,28 @@ pub fn install(app: &mut App) {
     render_app.add_systems(Core3d, (draw::<true>.before(tonemapping), draw::<false>.after(tonemapping)).in_set(Core3dSystems::PostProcess));
 }
 
-/// Each pass as written's uniforms from its row's keyed `uniforms` this frame (a bad one is logged); the camera's
-/// passes marked changed only when one has, so they're extracted again.
+/// Each pass's uniforms from its row's keyed `uniforms` this frame, as written or inline (a bad one is logged); the
+/// camera's passes marked changed only when one has, so they're extracted again.
 fn follow(frame: Option<Res<raea_sys_frame::FrameRows>>, mut cams: Query<&mut FramePasses>) {
     let Some(frame) = frame else { return };
     let cols = &frame.cols;
     for mut passes in &mut cams {
         let mut changed = false;
-        for w in passes.bypass_change_detection().0.iter_mut().filter_map(|p| p.written.as_mut()) {
-            let Some(r) = cols.id.iter().position(|i| *i == w.id) else { continue };
-            match w.follow(&raea_sys_frame::keyed(|c| frame.at(r, c), "uniforms").unwrap_or_default()) {
-                Ok(c) => changed |= c,
-                Err(e) => error!("FramePass {}: {e}", w.id),
+        for pass in passes.bypass_change_detection().0.iter_mut() {
+            let Pass { written, inline, slots, .. } = pass;
+            if let Some(w) = written.as_mut() {
+                let Some(r) = cols.id.iter().position(|i| *i == w.id) else { continue };
+                match w.follow(&raea_sys_frame::keyed(|c| frame.at(r, c), "uniforms").unwrap_or_default()) {
+                    Ok(c) => changed |= c,
+                    Err(e) => error!("FramePass {}: {e}", w.id),
+                }
+            } else if let Some(i) = inline.as_mut() {
+                let Some(r) = cols.id.iter().position(|x| *x == i.id) else { continue };
+                let Some(u) = raea_sys_frame::keyed(|c| frame.at(r, c), "uniforms") else { continue };
+                match i.follow(&u, slots) {
+                    Ok(c) => changed |= c,
+                    Err(e) => error!("FramePass {}: {e}", i.id),
+                }
             }
         }
         if changed {
@@ -178,7 +240,7 @@ struct Pipelines {
     samplers: HashMap<(u128, String), Sampler>,
 }
 
-const UNIFORM_BYTES: u64 = (16 * (1 + SLOTS)) as u64;
+const UNIFORM_BYTES: u64 = (16 * (2 + SLOTS)) as u64;
 
 fn init_pipelines(mut commands: Commands, device: Res<RenderDevice>) {
     let tex = || texture_2d(TextureSampleType::Float { filterable: true });
@@ -239,23 +301,43 @@ fn queue(views: Query<(&ViewTarget, &FramePasses)>, pipelines: Option<ResMut<Pip
     }
 }
 
-type Views<'w, 's> = ViewQuery<'w, 's, (&'static ViewTarget, &'static FramePasses, &'static ExtractedView, Option<&'static ViewPrepassTextures>)>;
+type Views<'w, 's> = ViewQuery<'w, 's, (&'static ViewTarget, &'static FramePasses, &'static ExtractedView, Option<&'static ViewPrepassTextures>, Option<&'static ExtractedCamera>)>;
+
+/// The camera's Viewport in its target (x, y, w, h in px), and its size and corner over the target's (the uniforms'
+/// `view`); none without a Viewport, the pass then spanning the target.
+fn viewport(camera: Option<&ExtractedCamera>) -> Option<([f32; 4], Vec4)> {
+    let c = camera?;
+    let v = c.viewport.as_ref()?;
+    rect(v.physical_position, v.physical_size, c.physical_target_size?)
+}
+
+/// A Viewport at `at`, `size` big, in a `target`-sized texture, as `viewport` gives it.
+fn rect(at: UVec2, size: UVec2, target: UVec2) -> Option<([f32; 4], Vec4)> {
+    let (at, size, t) = (at.as_vec2(), size.as_vec2(), target.as_vec2());
+    if t.x <= 0.0 || t.y <= 0.0 || size.x <= 0.0 || size.y <= 0.0 {
+        return None;
+    }
+    Some(([at.x, at.y, size.x, size.y], Vec4::new(size.x / t.x, size.y / t.y, at.x / t.x, at.y / t.y)))
+}
 
 /// The passes placed before tone mapping (BEFORE) or after it.
 fn draw<const BEFORE: bool>(view: Views<'_, '_>, p: Option<Res<Pipelines>>, cache: Res<PipelineCache>, images: Res<RenderAssets<GpuImage>>, fallback: Res<FallbackImage>, mut ctx: RenderContext) {
     let Some(p) = p else { return };
     let at = if BEFORE { At::BeforeTonemap } else { At::AfterTonemap };
-    let (target, passes, extracted, prepass) = view.into_inner();
+    let (target, passes, extracted, prepass, camera) = view.into_inner();
     // a perspective camera's near plane, from its infinite reverse-Z projection
     let near = extracted.clip_from_view.w_axis.z;
+    let port = viewport(camera);
+    let view_uv = port.map_or(Vec4::new(1.0, 1.0, 0.0, 0.0), |p| p.1);
     for pass in passes.0.iter().filter(|x| x.at == at) {
         if let Some(w) = &pass.written {
             let Some((layout, id)) = p.written.get(&(pass.shader, target.main_texture_format())) else { continue };
             let Some(rp) = cache.get_render_pipeline(*id) else { continue };
             let post = target.post_process_write();
             let sampler = |n: &str| p.samplers.get(&(pass.shader, n.to_string())).cloned();
+            // over the whole texture, as it reads its frame binding by its own uv: it has no frame() to map
             if let Some(group) = written::group(ctx.render_device(), &cache.get_bind_group_layout(layout), w, post.source, &images, sampler) {
-                blit(&mut ctx, post.destination, rp, &group);
+                blit(&mut ctx, post.destination, rp, &group, None);
             }
             continue;
         }
@@ -268,7 +350,7 @@ fn draw<const BEFORE: bool>(view: Views<'_, '_>, p: Option<Res<Pipelines>>, cach
             continue;
         }
         let mut bytes: Vec<u8> = Vec::with_capacity(UNIFORM_BYTES as usize);
-        for v in std::iter::once(Vec4::new(near, 0.0, 0.0, 0.0)).chain(pass.slots.iter().copied()) {
+        for v in [Vec4::new(near, 0.0, 0.0, 0.0), view_uv].into_iter().chain(pass.slots.iter().copied()) {
             for f in v.to_array() {
                 bytes.extend_from_slice(&f.to_ne_bytes());
             }
@@ -326,12 +408,13 @@ fn draw<const BEFORE: bool>(view: Views<'_, '_>, p: Option<Res<Pipelines>>, cach
                 )),
             )
         };
-        blit(&mut ctx, post.destination, rp, &group);
+        blit(&mut ctx, post.destination, rp, &group, port.map(|p| p.0));
     }
 }
 
-/// The pass's full-screen triangle drawn into `dest`.
-fn blit(ctx: &mut RenderContext, dest: &TextureView, rp: &RenderPipeline, group: &BindGroup) {
+/// The pass's full-screen triangle drawn into `dest`, in `port` (x, y, w, h) when the camera has a Viewport. What's
+/// outside it (the tag row) no pass after reads: Bevy's upscaling scissors to the Viewport.
+fn blit(ctx: &mut RenderContext, dest: &TextureView, rp: &RenderPipeline, group: &BindGroup, port: Option<[f32; 4]>) {
     let mut rpass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
         label: Some("raea_frame_pass"),
         color_attachments: &[Some(RenderPassColorAttachment { view: dest, depth_slice: None, resolve_target: None, ops: Operations::default() })],
@@ -340,6 +423,9 @@ fn blit(ctx: &mut RenderContext, dest: &TextureView, rp: &RenderPipeline, group:
         occlusion_query_set: None,
         multiview_mask: None,
     });
+    if let Some([x, y, w, h]) = port {
+        rpass.set_viewport(x, y, w, h, 0.0, 1.0);
+    }
     rpass.set_pipeline(rp);
     rpass.set_bind_group(0, group, &[]);
     rpass.draw(0..3, 0..1);
@@ -358,5 +444,35 @@ mod tests {
         assert!(!m.contains("fn depth(") && m.contains("return shade(in);"));
         let d = module("@fragment fn f(in: FullscreenVertexOutput) -> @location(0) vec4<f32> { return vec4(depth(in.uv)); }", &[], &[], None, true);
         assert!(d.contains("fn depth(") && d.contains("fn normal(") && !d.contains("raea_frame_pass("));
+        // the frame, the depth and the normals are read at the Viewport's uv mapped onto their textures
+        assert!(m.contains("textureSampleLevel(raea_frame, raea_frame_sampler, raea_view_uv(clamp(uv, h, 1.0 - h)), 0.0)"));
+        assert!(d.contains("vec2<i32>(raea_view_uv(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999))) * vec2<f32>(size))"));
+    }
+
+    #[test]
+    fn a_pass_spans_the_cameras_viewport_not_the_tag_row_under_it() {
+        // the Engine's 640 x 361 target, its camera's 640 x 360 Viewport at the top: uv 1 is the frame's last row
+        let (port, view) = rect(UVec2::ZERO, UVec2::new(640, 360), UVec2::new(640, 361)).unwrap();
+        assert_eq!(port, [0.0, 0.0, 640.0, 360.0]);
+        assert_eq!(view, Vec4::new(1.0, 360.0 / 361.0, 0.0, 0.0));
+        // a Viewport placed in its target: its corner over the target's
+        let (_, v) = rect(UVec2::new(100, 50), UVec2::new(200, 100), UVec2::new(400, 200)).unwrap();
+        assert_eq!(v, Vec4::new(0.5, 0.5, 0.25, 0.25));
+        assert!(rect(UVec2::ZERO, UVec2::ZERO, UVec2::new(640, 361)).is_none());
+    }
+
+    #[test]
+    fn an_inline_pass_follows_its_uniforms_frame_by_frame() {
+        // a render's frames each hand the pass their own values (a camera, a time): they were the first frame's
+        let mut i = Inline::new(vec![("k".into(), "f32"), ("eye".into(), "vec3<f32>")]);
+        let mut slots = [Vec4::ZERO; SLOTS];
+        assert_eq!(i.follow(r#"{"k": 0.5, "eye": [1, 2, 3]}"#, &mut slots), Ok(true));
+        assert_eq!((slots[0].x, slots[1]), (0.5, Vec4::new(1.0, 2.0, 3.0, 0.0)));
+        // the same values again change nothing; one left out keeps its value
+        assert_eq!(i.follow(r#"{"k": 0.5, "eye": [1, 2, 3]}"#, &mut slots), Ok(false));
+        assert_eq!(i.follow(r#"{"k": 0.75}"#, &mut slots), Ok(true));
+        assert_eq!((slots[0].x, slots[1].z), (0.75, 3.0));
+        // its type is its first frame's
+        assert!(i.follow(r#"{"k": [1, 2]}"#, &mut slots).is_err());
     }
 }

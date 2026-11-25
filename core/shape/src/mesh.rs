@@ -118,13 +118,7 @@ pub fn export(m: &Manifold, path: &str, format: &str) -> Result<usize, String> {
             for i in &t {
                 bin.extend_from_slice(&i.to_le_bytes());
             }
-            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-            for c in v.chunks(3) {
-                for k in 0..3 {
-                    lo[k] = lo[k].min(c[k]);
-                    hi[k] = hi[k].max(c[k]);
-                }
-            }
+            let (lo, hi) = bounds(v.chunks(3).map(|c| [c[0], c[1], c[2]]));
             let json = serde_json::json!({
                 "asset": {"version": "2.0", "generator": "raea"},
                 "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
@@ -136,28 +130,44 @@ pub fn export(m: &Manifold, path: &str, format: &str) -> Result<usize, String> {
                     {"bufferView": 1, "componentType": 5125, "count": t.len(), "type": "SCALAR"}
                 ]
             });
-            let mut js = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
-            while js.len() % 4 != 0 {
-                js.push(b' ');
-            }
-            while bin.len() % 4 != 0 {
-                bin.push(0);
-            }
-            let total = 12 + 8 + js.len() + 8 + bin.len();
-            let mut out = Vec::with_capacity(total);
-            out.extend_from_slice(b"glTF");
-            out.extend_from_slice(&2u32.to_le_bytes());
-            out.extend_from_slice(&(total as u32).to_le_bytes());
-            out.extend_from_slice(&(js.len() as u32).to_le_bytes());
-            out.extend_from_slice(b"JSON");
-            out.extend_from_slice(&js);
-            out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-            out.extend_from_slice(b"BIN\0");
-            out.extend_from_slice(&bin);
-            out
+            glb(json, bin)?
         }
         f => return Err(format!("export: {f}? (obj, glb)")),
     };
     std::fs::write(path, &bytes).map_err(|e| format!("{path}: {e}"))?;
     Ok(bytes.len())
+}
+
+/// The least and greatest x, y and z of some points: a glTF POSITION accessor's min and max.
+pub(crate) fn bounds(points: impl Iterator<Item = [f32; 3]>) -> ([f32; 3], [f32; 3]) {
+    points.fold(([f32::MAX; 3], [f32::MIN; 3]), |(mut lo, mut hi), p| {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+        (lo, hi)
+    })
+}
+
+/// A glTF binary file from its JSON and its binary chunk, each padded to four bytes.
+pub(crate) fn glb(json: serde_json::Value, mut bin: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut js = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+    while js.len() % 4 != 0 {
+        js.push(b' ');
+    }
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+    let total = 12 + 8 + js.len() + 8 + bin.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(js.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&js);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    Ok(out)
 }

@@ -21,3 +21,4 @@ pub mod toon;
 pub mod shadow_only;
 pub mod shadow_catch;
 pub mod shader_material;
+pub mod tint;

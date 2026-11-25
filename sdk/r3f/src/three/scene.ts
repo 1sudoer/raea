@@ -6,11 +6,14 @@ import * as THREE from "three";
 import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
 import type { Sky } from "three/examples/jsm/objects/Sky.js";
+import { paintLook, paintTone } from "./paint";
 import { fire, flat, grass, placeFlat, plateTexture, richText, screenCard, sky, splatPoints } from "./extras";
 import { GEOMETRY, geometryOfShape, shapesReady } from "./geometry";
 import { KINDS, PRIMITIVES } from "./kinds";
 import { TONE, fitCamera, makeLight, setCamera, setLight, vec } from "./lights";
 import { MATERIAL, paint, texture, vertexColoured } from "./materials";
+import { room } from "./room";
+import { shaderMaterial } from "./shader";
 import { ModelPart, decal, gizmoLines, imagePlane, instanced, place } from "./things";
 import { EXPOSURE } from "../units";
 
@@ -29,6 +32,8 @@ interface Kept {
   waiting?: boolean;
   /** <Entities>: a mesh per entity id, and the shape it was made from */
   entities?: Map<number, { mesh: THREE.Mesh; shape: string }>;
+  /** <Grass>: the field it was made from */
+  made?: string;
 }
 
 /** what raea's settings make of the renderer: apply() sets them */
@@ -38,6 +43,9 @@ export interface Settings {
    * AgX, its nearest, for a renderer drawing without the composer */
   tony: boolean;
   exposure: number;
+  /** a <Grade>'s exposure (a multiplier): Bevy's colour grading puts it on every pixel before the curve, as three's
+   * toneMappingExposure does */
+  grade: number;
   shadows: boolean;
   shadowMap: number;
 }
@@ -47,18 +55,34 @@ const GIZMO = "bevy_gizmos::retained::Gizmo";
 const envLoaders = { hdr: new HDRLoader(), exr: new EXRLoader() };
 const envs = new Map<string, THREE.Texture>();
 
+/** panoramas that have loaded: three builds the environment's shaders from its size, so one still loading isn't lit by
+ * (an HDR's texture before its data arrives compiles every lit material's shader wrong, and they draw nothing) */
+const ready = new WeakSet<THREE.Texture>();
+
+/** what each panorama still loading should do once it has: every page that asked for it, not only the first */
+const waiting = new Map<THREE.Texture, Set<() => void>>();
 function panorama(src: string, done: () => void): THREE.Texture {
   let t = envs.get(src);
-  if (t) return t;
+  if (t) {
+    if (!ready.has(t)) waiting.get(t)?.add(done);
+    return t;
+  }
+  const loaded = () => {
+    ready.add(t!);
+    for (const f of waiting.get(t!) ?? []) f();
+    waiting.delete(t!);
+  };
   const ext = src.split("?")[0].split(".").pop()!.toLowerCase();
   try {
-    t = ext === "hdr" || ext === "exr" ? envLoaders[ext].load(src, done) : texture(src, true);
+    t = ext === "hdr" || ext === "exr" ? envLoaders[ext].load(src, loaded) : texture(src, true);
+    if (!(ext === "hdr" || ext === "exr")) ready.add(t);
   } catch (e) {
     console.warn(`raea/r3f: Environment ${src} couldn't be loaded: ${String(e)}`);
     t = new THREE.Texture();
   }
   t.mapping = THREE.EquirectangularReflectionMapping;
   envs.set(src, t);
+  if (!ready.has(t)) waiting.set(t, new Set([done]));
   return t;
 }
 
@@ -66,7 +90,7 @@ function panorama(src: string, done: () => void): THREE.Texture {
 export class Scene3d {
   readonly scene = new THREE.Scene();
   camera: THREE.Camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  settings: Settings = { toneMapping: THREE.AgXToneMapping, tony: true, exposure: 1, shadows: true, shadowMap: 2048 };
+  settings: Settings = { toneMapping: THREE.AgXToneMapping, tony: true, exposure: 1, grade: 1, shadows: true, shadowMap: 2048 };
   /** the frame effects on the page (Bloom, DepthOfField, Outline ...), each kind's props: the app's composer draws them */
   effects: { kind: string; props: Props }[] = [];
   /** whether the page drew any 3D at the last sync */
@@ -80,6 +104,7 @@ export class Scene3d {
   private height = 1;
   private seconds = 0;
   private cameraEl?: Element;
+  private renderer?: THREE.WebGLRenderer; // apply()'s last, which an <Environment room> is made on
 
   sync(root: Element, seconds = this.seconds) {
     this.seconds = seconds;
@@ -91,7 +116,7 @@ export class Scene3d {
     for (const el of nodes) {
       seen.add(el);
       const kind = el.getAttribute("data-3d")!;
-      const json = (el.getAttribute("data-props") ?? "{}") + "|" + (el.getAttribute("data-shape") ?? "");
+      const json = (el.getAttribute("data-props") ?? "{}") + "|" + (el.getAttribute("data-shape") ?? "") + "|" + (el.getAttribute("data-at") ?? "");
       const status = KINDS[kind]?.status;
       if (status === "effect") this.effects.push({ kind, props: JSON.parse(el.getAttribute("data-props") ?? "{}") as Props });
       let k = this.kept.get(el);
@@ -112,6 +137,10 @@ export class Scene3d {
         this.kept.delete(el);
       }
     }
+    // a paint look is in the surfaces (paint.ts); the frame pass only draws its cells
+    paintLook(this.scene, this.effects.find((e) => e.kind === "Look")?.props);
+    const ge = this.effects.find((e) => e.kind === "Grade")?.props.exposure;
+    this.settings.grade = 2 ** (typeof ge === "number" ? ge : 0);
     this.fit(this.width, this.height);
   }
 
@@ -197,11 +226,12 @@ export class Scene3d {
         const fromShape = primitive ? undefined : geometryOfShape(shape);
         k.waiting = !primitive && !!shape && !fromShape;
         if (k.waiting) this.warnOnce("Mesh shape", "is a solid: load raea's shape module (loadShapes) to draw it");
-        const at = p.at as number[] | undefined;
+        // <Instances>' copies: their placements in data-at, apart from its props (sdk/render instances.tsx)
+        const at = p.at ? { at: p.at as number[], stride: 9 } : placements(el);
         const had = k.obj as THREE.Mesh | undefined;
         const geometry = fromShape ?? had?.geometry ?? new THREE.BufferGeometry();
         const material = (had?.material as THREE.Material | undefined) ?? new THREE.MeshStandardMaterial();
-        const m = at ? instanced(had instanceof THREE.InstancedMesh ? had : undefined, geometry, material, at) : had && !(had instanceof THREE.InstancedMesh) ? had : new THREE.Mesh(geometry, material);
+        const m = at ? instanced(had instanceof THREE.InstancedMesh ? had : undefined, geometry, material, at.at, at.stride) : had && !(had instanceof THREE.InstancedMesh) ? had : new THREE.Mesh(geometry, material);
         m.geometry = geometry;
         place(m, p);
         // shadow="only": it casts its shadow and isn't seen
@@ -273,15 +303,28 @@ export class Scene3d {
       case "Canvas3D":
         return k;
       case "Environment": {
+        if (p.room) {
+          room(this.scene, p, this.renderer);
+          return k;
+        }
         const src = p.src as string;
-        const t = panorama(src, () => this.onLoad());
+        // attached once it has loaded (a cube-UV map made from an empty texture fails to compile), by this page's
+        // next sync or, if the rows don't change, here
+        const t = panorama(src, () => {
+          const env = this.scene.userData.raeaEnvironment as { src: string; intensity: number; background: boolean } | undefined;
+          if (env?.src === src) {
+            if (env.intensity > 0) this.scene.environment = t;
+            if (env.background) this.scene.background = t;
+          }
+          this.onLoad();
+        });
         // for the source export (../export): the panorama as raea gave it
         this.scene.userData.raeaEnvironment = { src, intensity: (p.intensity as number) ?? 1, rotation: (p.rotation as number) ?? 0, background: !!p.background, backgroundIntensity: (p.backgroundIntensity as number) ?? (p.intensity as number) ?? 1 };
         const intensity = ((p.intensity as number) ?? 1) * 1000 * EXPOSURE;
-        this.scene.environment = intensity > 0 ? t : null;
+        this.scene.environment = intensity > 0 && ready.has(t) ? t : null;
         this.scene.environmentIntensity = intensity;
         this.scene.environmentRotation.set(0, (p.rotation as number) ?? 0, 0);
-        if (p.background) {
+        if (p.background && ready.has(t)) {
           this.scene.background = t;
           this.scene.backgroundIntensity = ((p.backgroundIntensity as number) ?? (p.intensity as number) ?? 1) * 1000 * EXPOSURE;
           this.scene.backgroundRotation.set(0, (p.rotation as number) ?? 0, 0);
@@ -298,8 +341,12 @@ export class Scene3d {
         this.hang(k, el, fire(k.obj as THREE.Group | undefined, p, this.seconds));
         return k;
       case "Grass": {
+        // made once per field (its grids are thousands of numbers), near the eye in full and thinned beyond
+        const json = JSON.stringify(p.spec ?? null);
+        if (k.obj && k.made === json) return k;
         k.obj?.removeFromParent();
-        const g = grass(p);
+        k.made = json;
+        const g = grass(p, this.camera.position);
         if (g) this.hang(k, el, g);
         return k;
       }
@@ -348,6 +395,12 @@ export class Scene3d {
       }
       return k;
     }
+    if (kind === "ThreeShaderMaterial") {
+      const mesh = owner?.obj instanceof THREE.Mesh ? owner.obj : undefined;
+      k.material = shaderMaterial(k.material, p);
+      if (mesh) mesh.material = k.material;
+      return k;
+    }
     if (kind in MATERIAL) {
       // a material inside a Model re-covers it (read there)
       if (owner?.kind === "Model") return k;
@@ -376,11 +429,13 @@ export class Scene3d {
     if (kind.endsWith("Light")) {
       const l = (k.obj as THREE.Light | undefined) ?? makeLight(kind);
       if (!l) return k;
-      if (!k.obj) {
-        k.obj = l;
-        this.scene.add(l);
-      }
+      // a light is an entity like any other: inside a moved Entity it moves with it (its position and its target are
+      // in the parent's frame, as Bevy's Transform is)
+      if (!k.obj) k.obj = l;
+      if (!l.parent) this.parentOf(el).add(l);
       setLight(l, kind, p, this.scene, this.settings.shadowMap);
+      const target = (l as THREE.SpotLight).target as THREE.Object3D | undefined;
+      if (target && l.parent && target.parent !== l.parent) l.parent.add(target);
       return k;
     }
     const status = KINDS[kind]?.status;
@@ -413,14 +468,33 @@ export class Scene3d {
     for (const m of this.flats) placeFlat(m, this.camera, width, height);
   }
 
-  /** raea's settings on a renderer: tone mapping, exposure, shadows */
+  /** raea's settings on a renderer: tone mapping, exposure, shadows; an <Environment room> waiting for it made */
   apply(renderer: THREE.WebGLRenderer) {
+    const env = this.scene.userData.raeaEnvironment as Props | undefined;
+    if (this.renderer !== renderer && env?.room) room(this.scene, env, renderer);
+    this.renderer = renderer;
     renderer.toneMapping = this.settings.toneMapping;
     // three's ACES scales its input by 1/0.6 (tonemapping_pars_fragment); Bevy's ACESFitted doesn't
-    renderer.toneMappingExposure = this.settings.exposure * (this.settings.toneMapping === THREE.ACESFilmicToneMapping ? 0.6 : 1);
+    renderer.toneMappingExposure = this.settings.exposure * this.settings.grade * (this.settings.toneMapping === THREE.ACESFilmicToneMapping ? 0.6 : 1);
+    paintTone.mode.value = !this.settings.tony && this.settings.toneMapping === THREE.ACESFilmicToneMapping ? 1 : 0;
+    paintTone.exposure.value = renderer.toneMappingExposure;
     renderer.shadowMap.enabled = this.settings.shadows;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   }
 }
 
 export { vec };
+
+/** an <Instances>' placements from its data-at: 9 numbers a copy (position, rotation, scale), or 12 with a colour a
+ * copy ({"stride":12,"at":[...]}); undefined without one */
+function placements(el: Element): { at: number[]; stride: number } | undefined {
+  const raw = el.getAttribute("data-at");
+  if (!raw) return undefined;
+  try {
+    const at = JSON.parse(raw);
+    if (Array.isArray(at)) return { at: at as number[], stride: 9 };
+    return at && Array.isArray(at.at) && (at.stride === 9 || at.stride === 12) ? { at: at.at as number[], stride: at.stride as number } : undefined;
+  } catch {
+    return undefined;
+  }
+}

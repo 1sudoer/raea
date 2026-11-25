@@ -1,0 +1,12 @@
+[package]
+name = "raea-sys-shots"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "Cuts between cameras: the frames that start a shot, a live scene's shot change, and the frame an engine last drew as a cut (raea-sys-frame re-exports it as shots)"
+
+[dependencies]
+# a shot's frames read from the camera row's keys
+raea-core-program = { path = "../../core/program" }
+bevy = { version = "=0.20.0", default-features = false, features = ["std", "default_app", "3d_bevy_render", "bevy_ui"] }

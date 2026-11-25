@@ -192,6 +192,15 @@ pub(crate) fn apply_commits(
     }
 }
 
+/// The commits a OneBatch runtime has yet to apply, what React has sent since moved to its queue unapplied (None for a
+/// runtime that applies everything sent each update).
+pub(crate) fn queued(world: &mut World) -> Option<usize> {
+    let sent: Vec<Batch> = world.contains_resource::<OneBatch>().then(|| world.get_resource::<Inbox>().map(|i| i.0.lock().unwrap().try_iter().collect()).unwrap_or_default())?;
+    let mut q = world.resource_mut::<OneBatch>();
+    q.0.extend(sent);
+    Some(q.0.len())
+}
+
 /// One pass of apply_commits timed and its allocations counted, into APPLY_NS and APPLY_ALLOC* as it drops.
 pub(crate) struct ApplyTimer(pub(crate) Instant, pub(crate) (u64, u64));
 impl Drop for ApplyTimer {

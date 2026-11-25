@@ -13,8 +13,10 @@ export interface ThreeShaderMaterialProps {
    * RawShaderMaterial (which declares three's built-ins itself), `vertexColors` as the material's */
   glsl?: { vertex: string; fragment: string; raw?: boolean; vertexColors?: boolean };
   /** a node material's WGSL, as three's TSL builder writes it for raea (sdk/r3f's input/tsl.ts): the contract's
-   * `three_vertex` and `three_fragment`, its uniforms' types, the mesh attributes it reads beyond the standard four */
-  wgsl?: { vertex: string; fragment: string; uniforms?: { name: string; type: string; array?: number }[]; attributes?: string[] };
+   * `three_vertex` and `three_fragment`, its uniforms' types, the mesh attributes it reads beyond the standard four,
+   * whether it is a lit surface (three_surface), and the storage buffers it reads (`tsl_s0`, `tsl_s1`: each a buffer
+   * a <Compute>'s kernels share by key, its size in bytes and first contents) */
+  wgsl?: { vertex: string; fragment: string; uniforms?: { name: string; type: string; array?: number }[]; attributes?: string[]; lit?: boolean; storage?: { name: string; key: string; size: number; f32?: number[]; u32?: number[]; i32?: number[] }[] };
   /** each uniform's value this frame */
   uniforms?: Record<string, ThreeUniform>;
   /** each sampler's picture: a file, a data URL, "render:NAME" (at most four); `colorSpace: "linear"` for one three

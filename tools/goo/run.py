@@ -435,7 +435,10 @@ def main():
     import taichi as ti
 
     kw = {"cpu_max_num_threads": 1} if cpu else {}
-    ti.init(arch=ti.cpu if cpu else ti.metal, default_fp=ti.f32, offline_cache=True, log_level=ti.WARN, random_seed=seed, **kw)
+    # Metal on a Mac; elsewhere Taichi's best GPU (CUDA, Vulkan, OpenGL), and the CPU where there's none
+    ti.init(arch=ti.cpu if cpu else (ti.metal if sys.platform == "darwin" else ti.gpu), default_fp=ti.f32, offline_cache=True,
+            log_level=ti.WARN, random_seed=seed, **kw)
+    backend = "cpu" if cpu else ti.lang.impl.current_cfg().arch.name
     dims = np.ceil((bmax - bmin) / dx).astype(int) + 1
     nx, ny, nz = (int(d) for d in dims)
     say(f"grid {nx}x{ny}x{nz}")
@@ -809,7 +812,7 @@ def main():
     stats = {"particles": int(N), "objects": stats_obj, "frames": frames, "fps": fps, "dx": dx,
              "substeps": substeps_total, "simSeconds": round(sim_s, 2), "surfaceSeconds": round(surf_s, 2),
              "seconds": round(time.time() - T0, 2), "bytes": nbytes, "maxTriangles": int(max(tri_counts) if tri_counts else 0),
-             "glb": glb_written, "backend": "cpu" if cpu else "metal"}
+             "glb": glb_written, "backend": backend}
     Path(str(out) + ".json").write_text(json.dumps(stats, indent=1))
     say(f"wrote {out} ({nbytes / 1e6:.1f} MB, {frames} frames, max {stats['maxTriangles']} triangles) in {stats['seconds']}s")
 

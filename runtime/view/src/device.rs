@@ -16,12 +16,18 @@ pub fn render_creation() -> bevy::render::settings::RenderCreation {
                 RenderInstance::new(instance),
             )
         }
+        // Bevy's own device asks for the backends raea's would (WGPU_BACKEND, else DX12 for an Intel or AMD GPU on Windows)
         Some(Err(e)) => {
             eprintln!("raea: the shared GPU device isn't there ({e}); Bevy makes its own");
-            Default::default()
+            own()
         }
-        None => Default::default(),
+        None => own(),
     }
+}
+
+/// Bevy's renderer making its own device, on the backends raea_gpu_device::backends says
+fn own() -> bevy::render::settings::RenderCreation {
+    bevy::render::settings::RenderCreation::Automatic(Box::new(bevy::render::settings::WgpuSettings { backends: Some(raea_gpu_device::backends()), ..Default::default() }))
 }
 
 /// Set by a render that walks its frames in order (raea-render's render): the pool's budget drops to 32 MiB.

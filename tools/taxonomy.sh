@@ -14,6 +14,16 @@
 set -euo pipefail
 export LC_ALL=C
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+mods=${RAEA_MODULES:-$ROOT}
+if [ "$mods" != "$ROOT" ]; then
+  # an export (tools/agents/check --lane runs the export's own copy, so other lanes' uncommitted SDK edits in the shared
+  # tree can't fail a lane): the SDK's imports resolve through the checkout's node_modules, linked in where missing
+  for m in "$mods"/sdk/*/node_modules; do
+    d=$ROOT/${m#"$mods"/}
+    [ -d "$(dirname "$d")" ] || continue
+    [ -e "$d" ] || { rm -f "$d"; ln -s "$m" "$d"; }
+  done
+fi
 LIST=$ROOT/tools/taxonomy.list
 check=0
 [ "${1:-}" = "--check" ] && check=1
@@ -81,9 +91,10 @@ done < "$tmp/listed"
 
 n=$(wc -l < "$tmp/pascal"); a=$(wc -l < "$tmp/all")
 # props named after the backend that draws them or the processor it runs on: the engine chooses where work runs
-# (S3b), so a prop names what it does, never the path
+# (S3b), so a prop names what it does, never the path. Another program's API typed as it is (sdk/blender/src/gen, Blender's
+# own names from its RNA: bpy.ops.render.opengl) is left out with the generated .gen.tsx
 backend=$(grep -rnoE '^\s+(wgpu|metal|vulkan|opengl|webgl|webgpu|bevy|blitz|vello|skia|three|gpu|cpu|readback|software|hardware)([A-Z_][A-Za-z_]*)?\??:' \
-  "$ROOT"/sdk/*/src --include='*.ts' --include='*.tsx' | grep -v '\.gen\.tsx' | sed "s|$ROOT/||; s/: *\$//" || true)
+  "$ROOT"/sdk/*/src --include='*.ts' --include='*.tsx' | grep -vE '\.gen\.tsx|/sdk/blender/src/gen/' | sed "s|$ROOT/||; s/: *\$//" || true)
 if [ -n "$backend" ]; then
   echo "taxonomy: props named after a backend or a processor (S3b: the engine chooses where work runs):"
   echo "$backend" | sed 's/^/  /'

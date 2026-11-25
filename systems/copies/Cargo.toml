@@ -1,0 +1,14 @@
+[package]
+name = "raea-sys-copies"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "An <Instances>' copies (runtime/scene3d instance.rs): a mesh's or a model's parts spawned under a parent at each placement, sharing their source's mesh and material handles so Bevy batches the set"
+
+[dependencies]
+# a copy with a colour of its own: one TintMaterial over the standard one, the copy's number in its MeshTag
+raea-sys-material = { path = "../material" }
+# a part under a shader cover keeps the link that makes its surface follow the standard one
+raea-sys-shader = { path = "../shader" }
+bevy = { version = "=0.20.0", default-features = false, features = ["std", "default_app", "3d_bevy_render"] }

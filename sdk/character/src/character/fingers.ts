@@ -1,12 +1,12 @@
 // Fingers: hand shapes and closing on a thing.
 import { type Vec3 } from "@raea/render/3d";
-import { B, FINGERS, Finger, FingerSegment, alongPath, captured, capturedHand, I, pathHand, Pose, Posed, Quat, Side, Skeleton, add, cross, dot, fingerSegments, handRest, joint, norm, place, pose, qaxis, qmul, qrot, scale3, slerp, sub, surface, withFingers } from "./all";
+import { B, FINGERS, Finger, sameJoint, FingerSegment, alongPath, captured, capturedHand, I, pathHand, Pose, Posed, Quat, Side, Skeleton, add, cross, dot, fingerSegments, handRest, joint, norm, place, pose, qaxis, qmul, qrot, scale3, slerp, sub, surface, withFingers } from "./all";
 
 // ---------------------------------------------------------------- fingers
 
 /** Each finger's own joints on a side (thumb first), phalanx 1 to 3; empty for a skeleton without them. */
 export function fingerJoints(skel: Skeleton, s: Side): number[][] {
-  if (!skel.joints.some((j) => j.name === B.finger("index", 1, s))) return [];
+  if (!skel.joints.some((j) => sameJoint(j.name, B.finger("index", 1, s)))) return [];
   return FINGERS.map((f) => ([1, 2, 3] as const).map((k) => joint(skel, B.finger(f, k, s))));
 }
 

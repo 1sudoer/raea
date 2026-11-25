@@ -184,7 +184,7 @@ fn open(names: &[String], fps: f64, serve: Option<u16>) -> R<Peer> {
         // no plugin named: the clock still steps by frames
         let dt = Duration::from_secs_f64(1.0 / fps.max(1.0));
         app.world_mut().resource_mut::<Time<Fixed>>().set_timestep(dt);
-        app.insert_resource(PluginClock { stepped: 0, dt, advancing: false, steps: 0 });
+        app.insert_resource(PluginClock { stepped: 0, dt, advancing: false, steps: 0, pure: false });
     }
     if let Some(port) = serve {
         #[cfg(feature = "remote")]

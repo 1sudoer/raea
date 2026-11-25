@@ -198,7 +198,7 @@ impl<R: OpIds> Plugin for BridgePlugin<R> {
             .add_message::<PageConflict>()
             .configure_sets(PreUpdate, PageSystems::Step.after(PageSystems::Events).after(bevy::picking::PickingSystems::Last))
             .configure_sets(PostUpdate, (PageSystems::Commands, PageSystems::Restyle, PageSystems::Layout, PageSystems::Twins, PageSystems::Paint).chain())
-            .add_systems(PostUpdate, (apply_commands.in_set(PageSystems::Commands), twins::<R>.in_set(PageSystems::Twins)));
+            .add_systems(PostUpdate, (apply_commands.in_set(PageSystems::Commands), twins::<R, true>.in_set(PageSystems::Twins)));
     }
 }
 
@@ -221,8 +221,9 @@ fn elements(doc: &BaseDocument, ops: Option<&HashMap<u64, NodeId>>, out: &mut Ve
 }
 
 /// Twins spawned for new elements and despawned with theirs (and with their page), and each one's box written when it
-/// changed (H1). A twin's components are the page's (H9): one a system wrote is put back, named.
-fn twins<R: OpIds>(
+/// changed (H1). A twin's components are the page's (H9): one a system wrote is put back, named. Without `BOXES` (an
+/// event's sync, under RAEA_TWIN_SYNC_LIGHT) a kept twin keeps the box it has: only a new one takes its box now.
+fn twins<R: OpIds, const BOXES: bool>(
     mut commands: Commands,
     docs: NonSend<Docs>,
     roots: Option<NonSend<R>>,
@@ -237,6 +238,11 @@ fn twins<R: OpIds>(
         error!("raea-page: a system wrote {property} on {twin}, which is the page's; the page's value stays (docs/blitz-bevy.feature B3 H9)");
         conflicts.write(PageConflict { twin, property: property.into(), owner: Owner::Page });
     };
+    // RAEA_TWIN_SYNC_LIGHT=1 (a trial, off by default): an event's sync spawns and despawns twins and sets their
+    // hierarchy, but leaves a kept twin's box as it is. Layout hasn't run since the frame's own pass took every box, and
+    // that pass takes them again after this frame's layout; taking each element's rect on every pointer move was most of
+    // a 400-clip timeline drag's twin work (docs/timeline.feature TL13a)
+    let keep_boxes = !BOXES && std::env::var_os("RAEA_TWIN_SYNC_LIGHT").is_some_and(|v| v == "1");
     let index = &mut *index;
     // pages gone: their twins with them
     index.pages.retain(|page, t| {
@@ -260,11 +266,12 @@ fn twins<R: OpIds>(
         by_key.clear();
         t.by_node.clear();
         for (key, node) in now.drain(..) {
-            let at = doc.get_client_bounding_rect(node).map(|b| ElementBox(Rect::new(b.x as f32, b.y as f32, (b.x + b.width) as f32, (b.y + b.height) as f32))).unwrap_or_default();
+            let rect = || doc.get_client_bounding_rect(node).map(|b| ElementBox(Rect::new(b.x as f32, b.y as f32, (b.x + b.width) as f32, (b.y + b.height) as f32))).unwrap_or_default();
             let op = if let Key::Op(id) = key { Some(id) } else { plain.0.get(page).and_then(|m| m.get(&node)).copied() };
             let el_now = PageElement { page: *page, node, op };
-            let e = match t.by_key.remove(&key) {
+            let (e, at) = match t.by_key.remove(&key) {
                 Some(e) => {
+                    let mut kept = None;
                     if let Ok((mut el, mut b)) = twins.get_mut(e) {
                         if let Some((was_el, was_b)) = t.written.get(&e) {
                             if *el != *was_el {
@@ -275,11 +282,17 @@ fn twins<R: OpIds>(
                             }
                         }
                         el.set_if_neq(el_now);
+                        // an event's sync leaves the box to the frame's own pass, which takes it after layout
+                        let at = if keep_boxes { *b } else { rect() };
                         b.set_if_neq(at);
+                        kept = Some(at);
                     }
-                    e
+                    (e, kept.unwrap_or_else(rect))
                 }
-                None => commands.spawn((el_now, at)).id(),
+                None => {
+                    let at = rect();
+                    (commands.spawn((el_now, at)).id(), at)
+                }
             };
             t.written.insert(e, (el_now, at));
             by_key.insert(key, e);
@@ -445,7 +458,7 @@ impl<H: EventHandler> EventHandler for Forward<'_, H> {
 /// for the event's path and for whatever runs in the frame after it (its box comes at [`PageSystems::Twins`]).
 /// The twins brought to the pages now, outside their set: before an event's delivery, after a host step's commits.
 pub fn sync_twins<R: OpIds>(world: &mut World) {
-    if let Err(e) = world.run_system_cached(twins::<R>) {
+    if let Err(e) = world.run_system_cached(twins::<R, false>) {
         warn!("raea-page: twins: {e}");
     }
 }

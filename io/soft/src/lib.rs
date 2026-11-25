@@ -208,6 +208,10 @@ impl Backend for Soft {
     fn encoder(&self, out: &Path, o: &EncodeOpts) -> R<Box<dyn VideoEncoder>> {
         h264_encoder(out, o, None)
     }
+    /// Opus at 48 kHz, as mux_h264 lays it under its video
+    fn sound(&self, a: &Audio) -> R<raea_io_codec::SoundTrack> {
+        Ok(raea_io_codec::SoundTrack { aac: false, rate: 48000, channels: a.channels.len().clamp(1, 2) as u16, priming: 0, packets: opus_packets(a)? })
+    }
 }
 
 /// An H.264 MP4 (no B-frames) as a decoder.
@@ -278,6 +282,12 @@ pub fn h264_encoder(out: &Path, o: &EncodeOpts, intra_qp: Option<u8>) -> R<Box<d
         .rate_control_mode(RateControlMode::Bitrate)
         // every frame is a sample: rate control may not drop one (the edit has a frame for every tick)
         .skip_frames(false)
+        // no background detection: it takes a slowly changing dark ground (a night scene's sky, a glow drifting over
+        // black) for still and copies its old blocks forward, which undoes the bits adaptive quantization gives flat
+        // darks. A dim glow drifting at --quality master blotched in every sampled frame (6-8% of dark blocks
+        // stepping, raea check) at any bitrate or quantiser; without it, 0.1%, as a lossless encode of the same
+        // frames (#169). Adaptive quantization stays on: off, the darks blotch with or without this.
+        .background_detection(false)
         // BT.709 limited range, as raea_io_codec::yuv converts the frames and as the Mac's encoder tags them (vt.rs):
         // untagged, ffmpeg and other players read it as BT.601 and shift reds and greens
         .vui(openh264::encoder::VuiConfig::bt709());
@@ -287,5 +297,5 @@ pub fn h264_encoder(out: &Path, o: &EncodeOpts, intra_qp: Option<u8>) -> R<Box<d
     };
     let enc = H264Encoder::with_api_config(OpenH264API::from_source(), config).map_err(|e| format!("openh264: {e}"))?;
     let _ = std::io::stdout().flush();
-    Ok(Box::new(Encoder { enc, opts: o.clone(), out: out.to_path_buf(), frames: Vec::new() }))
+    Ok(Box::new(Encoder { enc, opts: o.clone(), out: out.to_path_buf(), samples: raea_io_codec::samples::Samples::new()? }))
 }

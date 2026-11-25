@@ -5,9 +5,9 @@ use crate::cli::*;
 #[test]
 fn shell_runs() {
     // engine/cli's handler loads and answers on raea's JavaScriptCore (part list is the shell's own, no host step);
-    // `raea help` lists SHELL's verbs (help_lists_every_verb)
-    let parts = shell(&["part".to_string(), "list".to_string()]).unwrap();
-    assert!(parts.contains("captions"), "{parts}");
+    // `raea help` lists SHELL's verbs (help_lists_every_verb); raea component is part's new name (LY4), part still answers
+    let (parts, components) = (shell(&["part".to_string(), "list".to_string()]).unwrap(), shell(&["component".to_string(), "list".to_string()]).unwrap());
+    assert!(parts.contains("captions") && components.contains("into components/reel/"), "{parts}\n{components}");
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn help_lists_every_verb() {
     let listed = |v: &str| [format!("raea {v} "), format!("raea {v}\n"), format!("| {v} ")].iter().any(|l| help.contains(l.as_str()));
     let missing: Vec<_> = verbs.iter().filter(|v| !listed(v) && !unlisted.contains(&v.as_str())).collect();
     assert!(missing.is_empty(), "not in raea help: {missing:?}");
-    for usage in [raea_app_check::USAGE, raea_app_game::USAGE, raea_runtime_export::SCENE_USAGE, motion::physics::USAGE, tools::splat::USAGE, tools::sound::SAO_USAGE, tools::sound::TOKENSYNTH_USAGE, tools::song::USAGE, motion::track::USAGE, raea_app_solid::USAGE, raea_app_judge::USAGE, tools::blender::USAGE] {
+    for usage in [raea_app_check::USAGE, raea_app_ask::USAGE, raea_app_direction::check::USAGE, raea_app_direction::USAGE, raea_app_notes::USAGE, raea_app_game::USAGE, raea_app_scene::USAGE, raea_app_voice::USAGE, motion::physics::USAGE, raea_runtime_wear::USAGE, tools::splat::USAGE, tools::sound::SAO_USAGE, tools::sound::TOKENSYNTH_USAGE, tools::song::USAGE, motion::track::USAGE, raea_app_solid::USAGE, raea_app_judge::USAGE, raea_app_make::USAGE, tools::blender::USAGE, raea_app_lightbake::USAGE] {
         assert!(help.contains(usage), "{usage}");
     }
 }
@@ -45,9 +45,8 @@ fn help_json_is_every_listed_verb() {
     let verbs: Vec<&str> = j["verbs"].as_array().unwrap().iter().map(|v| v["verb"].as_str().unwrap()).collect();
     assert_eq!(verbs, verb_list(&help).iter().map(String::as_str).collect::<Vec<_>>());
     assert!(!verbs.contains(&"compositions"), "the help's opening line isn't a verb: {verbs:?}");
-    let controller = j["verbs"].as_array().unwrap().iter().find(|v| v["verb"] == "controller").unwrap();
-    assert_eq!(controller["args"], 3);
-    assert!(controller["flags"].as_array().unwrap().iter().any(|f| f["flag"] == "--by" && f["values"] == 1));
+    let project = j["verbs"].as_array().unwrap().iter().find(|v| v["verb"] == "project").unwrap();
+    assert!(project["flags"].as_array().unwrap().iter().any(|f| f["flag"] == "--storage" && f["values"] == 1));
     assert!(j["verbs"].as_array().unwrap().iter().any(|v| v["verb"] == "gen" && v["own_parser"] == true));
 }
 
@@ -68,7 +67,10 @@ fn a_verb_refuses_what_it_doesnt_take() {
         &["song", "s.wav", "--plot", "p.png", "--backend", "x"],
         &["cut", "take.mp4", "one line", "another", "--append"],
         &["part", "add", "captions", "face-frame", "--force"],
+        &["component", "add", "reel", "--shared", "--force"],
         &["mezz", "--check", "a.mov", "b.mov"],
+        &["fingerprint", "bootstrap", "--fp", "client-ads", "a.mp4", "b.mp4", "c.mp4"],
+        &["fingerprint", "new", "client-ads", "--about", "Short ads for one brand", "--extends", "me"],
         &["traces", "show", "last"],
         &["media", "ffmpeg", "-i", "x", "--anything"],
         &["physics", "bake", "r.json", "--whatever"],
@@ -126,7 +128,7 @@ fn every_flag_a_verb_reads_is_in_the_help() {
         ("apps/game export.rs", include_str!("../../../apps/game/src/export.rs")),
         ("apps/game player.rs", include_str!("../../../apps/game/src/player.rs")),
         ("apps/tools song.rs", include_str!("../../../apps/tools/src/song.rs")),
-        ("motion/track.rs", include_str!("../../../runtime/react/src/scene/track.rs")),
+        ("motion/track.rs", include_str!("../../../runtime/track/src/lib.rs")),
         ("apps/tools splat.rs", include_str!("../../../apps/tools/src/splat.rs")),
         ("apps/tools sound.rs", include_str!("../../../apps/tools/src/sound.rs")),
         ("runtime/export scene.rs", include_str!("../../../runtime/export/src/scene.rs")),

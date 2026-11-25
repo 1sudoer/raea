@@ -11,16 +11,64 @@ use raea_io_codec::{
 
 pub struct Ffmpeg;
 
-/// The facts, the presentation times, and whether the colour matrix is untagged.
-fn probe(path: &Path) -> R<(Info, Vec<f64>, bool)> {
-    let out = Command::new("ffprobe")
+/// The ffmpeg or ffprobe to run: the PATH's, else raea's own (raea_io_assets::ffmpeg_tool). Opening a video (`fetch`)
+/// fetches raea's own on Windows the first time one needs it; sound, encoding and asking what FFmpeg can do (says)
+/// use FFmpeg when it's there and never fetch it (a silent clip's sound is tried on every backend).
+fn cli(name: &str, fetch: bool) -> R<Command> {
+    raea_io_assets::ffmpeg_tool(name, fetch).map(Command::new)
+}
+
+/// A file named as a video: only these fetch FFmpeg when it isn't there (an audio file or an image never does)
+fn named_video(path: &Path) -> bool {
+    const VIDEO: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "avi", "mts", "m2ts", "ts", "3gp", "wmv", "flv", "mpg", "mpeg", "mxf", "ogv"];
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    VIDEO.iter().any(|v| *v == ext)
+}
+
+/// Every decoded frame, once: -fps_mode from FFmpeg 5.1 on, -vsync before it (FFmpeg 8 took -vsync out, and the decoder
+/// read nothing: #113).
+pub fn passthrough() -> [&'static str; 2] {
+    static FLAG: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    let flag = FLAG.get_or_init(|| {
+        let head = says("-version");
+        let version = head.split("version ").nth(1).and_then(|v| {
+            let mut parts = v.trim_start_matches('n').split(|c: char| !c.is_ascii_digit());
+            Some((parts.next()?.parse::<u32>().ok()?, parts.next()?.parse::<u32>().ok()?))
+        });
+        if version.is_some_and(|v| v < (5, 1)) { "-vsync" } else { "-fps_mode" }
+    });
+    [flag, "passthrough"]
+}
+
+/// What `ffmpeg -hide_banner OPTION` prints (nothing without ffmpeg).
+fn says(option: &str) -> String {
+    let out = cli("ffmpeg", false).ok().and_then(|mut c| c.args(["-hide_banner", option]).output().ok()).map(|o| o.stdout).unwrap_or_default();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The H.264 encoder this machine's ffmpeg has, as its arguments, for a clip a person plays (in a browser or on a
+/// phone): libx264 where ffmpeg was built with it (Homebrew's, Linux distributions'), else the system's own (Windows'
+/// Media Foundation, h264_mf, in the LGPL build raea ships there; macOS's VideoToolbox) at 8 Mb/s; None without one.
+pub fn h264() -> Option<Vec<&'static str>> {
+    static ENCODERS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let have = ENCODERS.get_or_init(|| says("-encoders"));
+    let has = |c: &str| have.split_whitespace().any(|w| w == c);
+    let enc = ["libx264", "h264_mf", "h264_videotoolbox"].into_iter().find(|c| has(c))?;
+    let rate: &[&'static str] = if enc == "libx264" { &[] } else { &["-b:v", "8M"] };
+    Some([&["-c:v", enc][..], rate, &["-pix_fmt", "yuv420p"]].concat())
+}
+
+/// The facts, the presentation times, whether the colour matrix is untagged, and the decoder a VP8 or VP9 stream with
+/// alpha needs (libvpx: ffmpeg's own VP9 decoder drops the alpha WebM keeps beside the picture, #113).
+fn probe(path: &Path) -> R<(Info, Vec<f64>, bool, Option<&'static str>)> {
+    let out = cli("ffprobe", named_video(path))?
         .args([
             "-v",
             "error",
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_name,width,height,r_frame_rate,color_space:stream_side_data=rotation:format=duration",
+            "stream=codec_name,width,height,r_frame_rate,color_space:stream_tags=alpha_mode:stream_side_data=rotation:format=duration",
             "-show_entries",
             "packet=pts_time",
             "-of",
@@ -60,6 +108,18 @@ fn probe(path: &Path) -> R<(Info, Vec<f64>, bool)> {
         .and_then(|d| d.parse().ok())
         .unwrap_or(0.0);
     let untagged = !matches!(s["color_space"].as_str(), Some(c) if c != "unknown");
+    // the tag in either case: ffmpeg's muxer writes ALPHA_MODE when it copies a stream that has alpha, and a file
+    // remuxed with -c copy drew opaque (#224)
+    let tagged = s["tags"].as_object().and_then(|t| t.iter().find_map(|(k, v)| k.eq_ignore_ascii_case("alpha_mode").then(|| v.as_str()).flatten()));
+    let alpha = match (s["codec_name"].as_str(), tagged) {
+        (Some("vp8"), Some("1")) => Some("libvpx"),
+        (Some("vp9"), Some("1")) => Some("libvpx-vp9"),
+        _ => None,
+    };
+    // an ffmpeg built without libvpx decodes the picture alone, as before
+    static DECODERS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let have = DECODERS.get_or_init(|| says("-decoders"));
+    let alpha = alpha.filter(|c| have.split_whitespace().any(|w| w == *c));
     Ok((
         Info {
             codec: s["codec_name"].as_str().unwrap_or("?").into(),
@@ -71,6 +131,7 @@ fn probe(path: &Path) -> R<(Info, Vec<f64>, bool)> {
         },
         pts,
         untagged,
+        alpha,
     ))
 }
 
@@ -82,6 +143,8 @@ struct Decoder {
     /// untagged HD (720 lines or more) is read as BT.709, as Apple, browsers and our own decoders read it (swscale
     /// would assume BT.601)
     bt709: bool,
+    /// the decoder named before the input (libvpx for VP8/VP9 with alpha), else ffmpeg's choice
+    vpx: Option<&'static str>,
 }
 
 impl Decoder {
@@ -91,8 +154,8 @@ impl Decoder {
             let _ = c.wait();
         }
         let start = self.pts[at] - self.pts[0];
-        let mut cmd = Command::new("ffmpeg");
-        cmd.args(["-v", "error", "-ss", &format!("{start:.6}"), "-i"]).arg(&self.path);
+        let mut cmd = cli("ffmpeg", false)?;
+        cmd.args(["-v", "error"]).args(self.vpx.map(|c| ["-c:v", c]).into_iter().flatten()).args(["-ss", &format!("{start:.6}"), "-i"]).arg(&self.path);
         if self.bt709 {
             cmd.args(["-vf", "scale=in_color_matrix=bt709:in_range=tv"]);
         }
@@ -103,11 +166,12 @@ impl Decoder {
                 "rawvideo",
                 "-pix_fmt",
                 "rgba",
-                "-vsync",
-                "passthrough",
-                "-",
             ])
+            .args(passthrough())
+            .arg("-")
             .stdout(Stdio::piped())
+            // kept for a read that fails (and out of the run's output: the pipe closed under it is "Broken pipe")
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("ffmpeg: {e}"))?;
         self.pipe = Some((child, at));
@@ -132,12 +196,11 @@ impl VideoDecoder for Decoder {
         let mut buf = vec![0u8; size];
         loop {
             let (child, next) = self.pipe.as_mut().unwrap();
-            child
-                .stdout
-                .as_mut()
-                .unwrap()
-                .read_exact(&mut buf)
-                .map_err(|e| format!("ffmpeg read: {e}"))?;
+            if let Err(e) = child.stdout.as_mut().unwrap().read_exact(&mut buf) {
+                let mut said = String::new();
+                let _ = child.stderr.as_mut().map(|s| s.read_to_string(&mut said));
+                return Err(format!("ffmpeg read: {e} {}", said.trim()));
+            }
             *next += 1;
             if *next - 1 == want {
                 return Ok(Frame {
@@ -186,7 +249,7 @@ impl VideoEncoder for Encoder {
                 }
             }
             std::fs::write(&raw, bytes).map_err(|e| e.to_string())?;
-            let st = Command::new("ffmpeg")
+            let st = cli("ffmpeg", false)?
                 .args(["-v", "error", "-y", "-i"])
                 .arg(&self.video)
                 .args([
@@ -240,7 +303,7 @@ impl Backend for Ffmpeg {
         "ffmpeg"
     }
     fn open_video(&self, path: &Path) -> R<Box<dyn VideoDecoder>> {
-        let (info, pts, untagged) = probe(path)?;
+        let (info, pts, untagged, vpx) = probe(path)?;
         let bt709 = untagged && info.width.min(info.height) >= 720;
         if pts.is_empty() {
             return Err(format!("{}: no video frames", path.display()));
@@ -251,10 +314,11 @@ impl Backend for Ffmpeg {
             pts,
             pipe: None,
             bt709,
+            vpx,
         }))
     }
     fn decode_audio(&self, path: &Path) -> R<Audio> {
-        let ch = Command::new("ffprobe")
+        let ch = cli("ffprobe", false)?
             .args([
                 "-v",
                 "error",
@@ -272,7 +336,7 @@ impl Backend for Ffmpeg {
             .trim()
             .parse()
             .unwrap_or(1);
-        let out = Command::new("ffmpeg")
+        let out = cli("ffmpeg", false)?
             .args(["-v", "error", "-i"])
             .arg(path)
             .args(["-vn", "-f", "f32le", "-ar", "48000", "-"])
@@ -294,7 +358,7 @@ impl Backend for Ffmpeg {
     }
     fn encoder(&self, out: &Path, o: &EncodeOpts) -> R<Box<dyn VideoEncoder>> {
         let video = out.with_extension("video.mp4");
-        let child = Command::new("ffmpeg")
+        let child = cli("ffmpeg", false)?
             .args([
                 "-v",
                 "error",
@@ -341,3 +405,6 @@ impl Backend for Ffmpeg {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests;

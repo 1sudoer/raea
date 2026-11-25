@@ -1,7 +1,7 @@
 // CanvasRenderingContext2D.
 import * as wire from "../wire";
 import { base64, encodePng } from "./png";
-import { COMPOSITES, CanvasHost, Gradient, ID, ImageData_, Paint, Path, Path2D_, S, State, fresh, measure, mul, paintOf, parseColor, parseFilter, parseFont, unb64 } from "./all";
+import { COMPOSITES, CanvasHost, Gradient, ID, ImageData_, Paint, Path, Path2D_, S, State, fresh, measure, mul, paintOf, parseColor, parseFilter, parseFont, parseSpacing, roundRectPath, arcToPath, unb64 } from "./all";
 
 export class CanvasRenderingContext2D_ {
   private s: State = fresh();
@@ -63,9 +63,11 @@ export class CanvasRenderingContext2D_ {
     this.pending = true;
     queueMicrotask(() => {
       this.pending = false;
+      const list = { gen: this.gen, w: this.size[0], h: this.size[1], ops: this.list };
+      if (this.canvas._send) return this.canvas._send(list);
       const id = this.canvas.__wid;
       if (id === undefined || !this.canvas._wired) return;
-      wire.set(id, "__canvas2d", { gen: this.gen, w: this.size[0], h: this.size[1], ops: this.list });
+      wire.set(id, "__canvas2d", list);
     });
   }
   private static uids = 0;
@@ -232,6 +234,28 @@ export class CanvasRenderingContext2D_ {
   set font(v: string) {
     if (parseFont(v)) this.s.font = v;
   }
+  // tracking and word spacing, as Chrome's canvas has them (snapcn's sky-lockup measures its words with letterSpacing
+  // set: layout-reads LR10); an em is the font's as it is when it's set
+  get letterSpacing() {
+    return `${this.s.letterSpacing}px`;
+  }
+  set letterSpacing(v: string) {
+    const n = parseSpacing(v, this.s.font);
+    if (n !== null) this.s.letterSpacing = n;
+  }
+  get wordSpacing() {
+    return `${this.s.wordSpacing}px`;
+  }
+  set wordSpacing(v: string) {
+    const n = parseSpacing(v, this.s.font);
+    if (n !== null) this.s.wordSpacing = n;
+  }
+  /** the font the host shapes text in: the CSS font's parts, and the spacing when there is any */
+  private get shaped() {
+    const f = parseFont(this.s.font)!;
+    const { letterSpacing, wordSpacing } = this.s;
+    return letterSpacing || wordSpacing ? { ...f, letterSpacing, wordSpacing } : f;
+  }
   get textAlign() {
     return this.s.align;
   }
@@ -309,22 +333,7 @@ export class CanvasRenderingContext2D_ {
     this.path.close();
   }
   roundRect(x: number, y: number, w: number, h: number, radii: number | number[] = 0) {
-    const r = Array.isArray(radii) ? radii : [radii];
-    const [tl, tr, br, bl] = r.length === 1 ? [r[0], r[0], r[0], r[0]] : r.length === 2 ? [r[0], r[1], r[0], r[1]] : r.length === 3 ? [r[0], r[1], r[2], r[1]] : [r[0], r[1], r[2], r[3]];
-    const scale = Math.min(1, w / (tl + tr || 1), w / (bl + br || 1), h / (tl + bl || 1), h / (tr + br || 1));
-    const [a, b, c, d] = [tl, tr, br, bl].map((v) => (typeof v === "number" ? v : 0) * scale);
-    const P = this.path;
-    P.move(x + a, y);
-    P.line(x + w - b, y);
-    if (b) P.ellipse(x + w - b, y + b, b, b, 0, -Math.PI / 2, 0, false);
-    P.line(x + w, y + h - c);
-    if (c) P.ellipse(x + w - c, y + h - c, c, c, 0, 0, Math.PI / 2, false);
-    P.line(x + d, y + h);
-    if (d) P.ellipse(x + d, y + h - d, d, d, 0, Math.PI / 2, Math.PI, false);
-    P.line(x, y + a);
-    if (a) P.ellipse(x + a, y + a, a, a, 0, Math.PI, Math.PI * 1.5, false);
-    P.close();
-    P.move(x, y);
+    roundRectPath(this.path, x, y, w, h, radii);
   }
   arc(x: number, y: number, r: number, a0: number, a1: number, ccw = false) {
     this.path.ellipse(x, y, r, r, 0, a0, a1, ccw);
@@ -333,23 +342,7 @@ export class CanvasRenderingContext2D_ {
     this.path.ellipse(x, y, rx, ry, rot, a0, a1, ccw);
   }
   arcTo(x1: number, y1: number, x2: number, y2: number, r: number) {
-    const P = this.path;
-    if (!P.last) P.move(x1, y1);
-    const [x0, y0] = P.last!;
-    const v0 = [x0 - x1, y0 - y1], v1 = [x2 - x1, y2 - y1];
-    const l0 = Math.hypot(v0[0], v0[1]), l1 = Math.hypot(v1[0], v1[1]);
-    const cross = v0[0] * v1[1] - v0[1] * v1[0];
-    if (!r || !l0 || !l1 || Math.abs(cross) < 1e-9) return P.line(x1, y1);
-    const ang = Math.acos(Math.max(-1, Math.min(1, (v0[0] * v1[0] + v0[1] * v1[1]) / (l0 * l1))));
-    const t = r / Math.tan(ang / 2);
-    const p0 = [x1 + (v0[0] / l0) * t, y1 + (v0[1] / l0) * t];
-    const p1 = [x1 + (v1[0] / l1) * t, y1 + (v1[1] / l1) * t];
-    // the centre: from p0, perpendicular toward the inside of the corner
-    const n = cross > 0 ? [-v0[1] / l0, v0[0] / l0] : [v0[1] / l0, -v0[0] / l0];
-    const cx = p0[0] + n[0] * r, cy = p0[1] + n[1] * r;
-    const a0 = Math.atan2(p0[1] - cy, p0[0] - cx), a1 = Math.atan2(p1[1] - cy, p1[0] - cx);
-    P.line(p0[0], p0[1]);
-    P.ellipse(cx, cy, r, r, 0, a0, a1, cross < 0);
+    arcToPath(this.path, x1, y1, x2, y2, r);
   }
 
   // -------- drawing
@@ -408,8 +401,8 @@ export class CanvasRenderingContext2D_ {
     this.push(["clear", p.d, { ...this.state(), shadow: null }]);
   }
   private text(kind: "fill" | "stroke", text: string, x: number, y: number, maxWidth?: number) {
-    const f = parseFont(this.s.font)!;
-    const align = this.s.align === "start" ? "left" : this.s.align === "end" ? "right" : this.s.align;
+    const f = this.shaped;
+    const align = this.side;
     const paint = kind === "fill" ? paintOf(this.s.fill, this.s.ts) : paintOf(this.s.stroke, this.s.ts);
     this.push(["text", kind, String(text), x, y, f, align, this.s.baseline, maxWidth ?? null, paint, kind === "stroke" ? this.strokeParams() : null, this.state()]);
   }
@@ -419,8 +412,12 @@ export class CanvasRenderingContext2D_ {
   strokeText(t: string, x: number, y: number, maxWidth?: number) {
     this.text("stroke", t, x, y, maxWidth);
   }
+  /** textAlign as a side: start and end are left and right (the context's direction is ltr) */
+  private get side() {
+    return this.s.align === "start" ? "left" : this.s.align === "end" ? "right" : this.s.align;
+  }
   measureText(text: string) {
-    return measure(this.s.font, String(text));
+    return measure(this.shaped, String(text), this.side, this.s.baseline);
   }
   drawImage(img: { src?: string; currentSrc?: string; _canvas2d?: CanvasRenderingContext2D_; width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }, ...a: number[]) {
     let s: (number | null)[];
@@ -455,6 +452,15 @@ export class CanvasRenderingContext2D_ {
     const out = new ImageData_(sw, sh);
     if (r) unb64(r.data, out.data);
     return out;
+  }
+  /** The image's pixels written onto the bitmap as they are (no transform, alpha, compositing or clip), only its dirty
+   *  rectangle when one is given: a "put" in the list, which the host writes in order with the draws (layout-reads LR6). */
+  putImageData(img: ImageData_, dx: number, dy: number, x = 0, y = 0, w = img.width, h = img.height) {
+    [dx, dy, x, y, w, h] = [dx, dy, x, y, w, h].map((n) => Math.trunc(Number(n)));
+    if ([dx, dy, x, y, w, h].some((n) => !Number.isFinite(n))) return;
+    if (w < 0) [x, w] = [x + w, -w];
+    if (h < 0) [y, h] = [y + h, -h];
+    this.push(["put", { w: img.width, h: img.height, data: base64(new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength)) }, dx, dy, x, y, w, h]);
   }
   createImageData(a: number | ImageData_, h?: number) {
     if (a instanceof ImageData_) return new ImageData_(a.width, a.height);

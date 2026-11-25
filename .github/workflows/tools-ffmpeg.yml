@@ -1,0 +1,49 @@
+# FFmpeg for Windows as raea ships it (tools/release/ffmpeg-win.sh): built on Linux with mingw-w64 and published once
+# as the prerelease tools-ffmpeg-<version>-lgpl, with FFmpeg's source tarball, its signature and the script, which are
+# its complete source (LGPL 2.1 or later). io/assets/src/setup.rs pins the zip by its
+# sha256, so a published zip is never replaced: a run whose release already holds one only builds it and says
+# whether its own sha256 differs.
+name: tools-ffmpeg
+on:
+  workflow_dispatch:
+  push:
+    paths: [tools/release/ffmpeg-win.sh, .github/workflows/tools-ffmpeg.yml]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      # the x86_64 cross compiler only, and non-interactive: an install that asks (needrestart, debconf) waits forever.
+      # The runner's own EC2 mirror has trickled (35 MB in 11 minutes, 11-19), so apt reads Ubuntu's archive first
+      # and Azure's mirror after it, gives up on a stalled request and retries.
+      - name: mingw-w64
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+        run: |
+          printf 'http://archive.ubuntu.com/ubuntu/\tpriority:1\nhttp://azure.archive.ubuntu.com/ubuntu/\tpriority:2\n' | sudo tee /etc/apt/apt-mirrors.txt
+          o="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"
+          sudo -E apt-get $o update -q
+          sudo -E apt-get $o install -y -q --no-install-recommends gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64 libz-mingw-w64-dev nasm make pkg-config xz-utils zip
+        timeout-minutes: 25
+      - name: build
+        run: bash tools/release/ffmpeg-win.sh out
+      - name: publish (once)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/^v=//p' tools/release/ffmpeg-win.sh)
+          tag=tools-ffmpeg-$v-lgpl; zip=ffmpeg-$v-lgpl-win64.zip
+          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$zip"; then
+            echo "$tag already has $zip (never replaced); this run's: $(cat out/$zip.sha256)"; exit 0
+          fi
+          curl -fsSL -o "out/ffmpeg-$v.tar.xz.asc" "https://ffmpeg.org/releases/ffmpeg-$v.tar.xz.asc"
+          cp tools/release/ffmpeg-win.sh out/
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease --title "FFmpeg $v for Windows (LGPL), as raea ships it" \
+            --notes "FFmpeg $v cross-built for Windows x64 by tools/release/ffmpeg-win.sh: static, FFmpeg's own code, zlib and libvpx's decoders (BSD), LGPL 2.1 or later; its H.264 encoder is Windows' own (Media Foundation). Its complete source is ffmpeg-$v.tar.xz (with FFmpeg's signature), the libvpx tarball and ffmpeg-win.sh, attached here. raea ships it beside raea.exe on Windows and fetches it where it isn't."
+          gh release upload "$tag" "out/$zip" "out/$zip.sha256" "out/ffmpeg-$v.tar.xz" "out/ffmpeg-$v.tar.xz.asc" out/libvpx-*.tar.gz out/ffmpeg-win.sh

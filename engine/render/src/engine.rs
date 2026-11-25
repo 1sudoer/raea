@@ -23,9 +23,9 @@ use raea_core_program::eval::Tup;
 use raea_sys_frame::store;
 use raea_core_program::ir::{Program, V};
 
-// clips pooled on the GPU, the Blitz overlay and the NV12 readback (raea-runtime-gpuframe)
+// clips pooled on the GPU, the Blitz overlay, the NV12 readback and a supersampled one shrunk (raea-runtime-gpuframe)
 #[cfg(feature = "native")]
-use raea_runtime_gpuframe::{nv12::*, overlay::*, pool::*};
+use raea_runtime_gpuframe::{downsample::downsample, nv12::*, overlay::*, pool::*};
 mod spawn;
 pub use spawn::*;
 pub use open::Opening;
@@ -64,8 +64,6 @@ use raea_sys_text3d as text3d;
 use raea_sys_splat as splat;
 // 2D over the 3D, <Sprite> and <Shape2D> (raea-sys-sprite)
 use raea_sys_sprite as sprite2d;
-// traced ambient occlusion (raea-sys-rt)
-use raea_sys_rt::traced_ao;
 use raea_sys_grid as grid;
 // footage behind the 3D and a camera's window on a larger view (<Matchmove>)
 use raea_sys_matchmove as matchmove;
@@ -89,6 +87,7 @@ use raea_sys_shader as shader_ext;
 use raea_sys_post::lens;
 // the camera's motion blur (<MotionBlur>), a function of the frame
 use raea_sys_post::motion_blur;
+use raea_sys_post::cut;
 // Bevy's depth of field, patched to keep the frame's alpha (the paint look's sky)
 use raea_sys_post::dof;
 use raea_sys_post::effect_stack;
@@ -126,14 +125,28 @@ pub struct Engine {
     prestep: bool,
     /// its updates pipelined or not (raea_sys_frame::pipe)
     pipe: raea_sys_frame::pipe::Pipe,
+    /// the frame `draw` last drew (None after a load)
+    drawn: Option<i64>,
+    /// a live scene's rows changed a set structurally (set_rows): the next draw warms up as at a cut
+    warm_next: bool,
+    /// with a load to replay, a live scene's rows as set so far (set_rows, less remove_rows), merged: what a seek back
+    /// sets again on the new App, which starts from the load's (catch_up)
+    kept: BTreeMap<(String, String), BTreeMap<String, V>>,
 }
 
+/// The last frame's extract commands applied before the app goes: Bevy applies them in the next frame's render schedule, so
+/// on a still each extract system was dropped with its queue unapplied and warned (54 "CommandQueue" lines, #89 item 7)
+impl Drop for Engine {
+    fn drop(&mut self) { self.app.get_sub_app_mut(bevy::render::RenderApp).map(|sub| sub.world_mut().try_schedule_scope(bevy::render::ExtractSchedule, |w, s| s.apply_deferred(w))); }
+}
+
+#[cfg(feature = "native")] pub(crate) use raea_io_trace::stat; #[cfg(not(feature = "native"))] pub(crate) fn stat(_: &str) -> bool { false } // a stat channel (io/trace stats.rs, nobuild NB2a); the web's build has none
 /// RAEA_MEM_MARKS: one line on stderr per start-up phase, "mem_mark <ms since the first mark> <phys_footprint MB>
 /// <phase>", to line up with a memory timeline (the footprint is the process's, as the OS counts it).
 pub fn mem_mark(what: &str) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     static T0: std::sync::OnceLock<bevy::platform::time::Instant> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("RAEA_MEM_MARKS").is_some()) {
+    if !*ON.get_or_init(|| stat("RAEA_MEM_MARKS")) {
         return;
     }
     let t = T0.get_or_init(bevy::platform::time::Instant::now).elapsed().as_secs_f64() * 1e3;
@@ -171,9 +184,9 @@ pub fn phys_footprint() -> Option<u64> {
     None
 }
 
-/// Before a frame renders, every pipeline that's compiling is waited for (they compile in parallel on the task pool),
-/// so the frame draws everything it has, as synchronous compilation did. A pipeline whose shader hasn't loaded yet is
-/// retried by Bevy as before; only those being compiled are waited on.
+/// Before a frame renders, every pipeline compiling on the task pool (RAEA_BEVY_ASYNC_PIPELINES=1, engine/open.rs) is
+/// waited for, so the frame draws everything it has, as synchronous compilation does. A pipeline whose shader hasn't
+/// loaded yet is retried by Bevy as before; only those being compiled are waited on.
 fn wait_pipelines(mut cache: ResMut<bevy::render::render_resource::PipelineCache>) {
     use bevy::render::render_resource::CachedPipelineState;
     // a browser compiles them asynchronously, on its own event loop: a live frame there draws what's made
@@ -214,6 +227,9 @@ impl Engine {
         Engine::build(prog, inserted, dir, None, true)
     }
 
+    /// The frame `draw` drew last, if any.
+    pub fn drawn(&self) -> Option<i64> { self.drawn }
+
     /// Frame `f` drawn into the target (one update: the pipeline is synchronous, so it's on the GPU's queue when this
     /// returns, ahead of anything the paint device is given next).
     pub fn draw(&mut self, f: i64) {
@@ -226,24 +242,51 @@ impl Engine {
             self.app.world_mut().resource_mut::<Error>().0 = Some(e);
         }
         self.app.world_mut().resource_mut::<Clock>().0 = f;
+        // a frame across a cut from the one drawn last (another shot's sky, fog or grade: frame_sets) warms up as a load
+        // does, 8 updates at it before its own: a new effect can take updates to come (the sky's light on the scene,
+        // Bevy's generated environment map, took three, so RR0's sunset shot opened 2 frames dark, RR1). A plugin's
+        // clock steps on the first and holds on the rest, as `frames` warms up a cut and a shot rendered alone its load
+        let cut = std::mem::take(&mut self.warm_next) || self.drawn.is_some_and(|d| self.app.world().get_resource::<raea_sys_frame::tables::Cuts>().is_some_and(|c| c.between(d, f)));
+        self.drawn = Some(f); #[cfg(feature = "native")] raea_io_trace::count("engine/draws", 1);
+        if cut {
+            self.pipe.flush(&mut self.app);
+            for _ in 0..8 {
+                plugins::arm(self.app.world_mut());
+                self.app.update();
+            }
+        }
         self.pre_step();
         plugins::arm(self.app.world_mut());
         self.pipe.flush(&mut self.app);
-        self.app.update();
+        self.app.update(); #[cfg(feature = "native")] raea_io_trace::count("engine/updates", 1);
         self.capture_aov(f);
+        raea_sys_frame::layer::record(self.app.world_mut(), f);
     }
 
     /// With MotionBlur, the frame before the clock's drawn first (its readback ignored): Bevy takes each mesh's,
     /// skin's and the camera's previous pose from the update before, so this makes it frame f - 1's on every update of
     /// frame f, in a render (which may update a frame several times), a seek and play alike. It costs a second draw.
+    /// A cut to another camera (a timeline's Shots, or a live camera row's shot Moved since the frame drawn last) has
+    /// no frame before it, as a shot rendered alone hasn't: the step draws the frame itself, and Solari's history starts
+    /// again (RR2). It's taken with a plugin too, unlike the step to f - 1: every engine has one (the Engine's reads,
+    /// react_share), so the cut drew its blur from the frame drawn last, the other camera's.
     fn pre_step(&mut self) {
         let f = self.app.world().resource::<Clock>().0;
-        if !self.prestep || f <= 0 || plugins::active(self.app.world()) {
+        let moved = self.app.world_mut().remove_resource::<raea_sys_frame::shots::Moved>().is_some();
+        let cut = moved || self.app.world().get_resource::<raea_sys_frame::shots::Shots>().is_some_and(|s| s.starts(f));
+        if cut {
+            self.app.world_mut().insert_resource(raea_sys_frame::shots::Cut(f));
+            #[cfg(feature = "raytracing")]
+            raea_render_raytrace::cut(self.app.world_mut());
+        }
+        if !self.prestep || f <= 0 || (plugins::active(self.app.world()) && !cut) {
             return;
         }
         let world = self.app.world_mut();
-        world.resource_mut::<Clock>().0 = f - 1;
+        world.resource_mut::<Clock>().0 = if cut { f } else { f - 1 };
         world.resource_mut::<PreStep>().0 = true;
+        // armed, or a plugin's Time would move by the last update's step again
+        plugins::arm(self.app.world_mut());
         self.pipe.update(&mut self.app);
         let world = self.app.world_mut();
         world.resource_mut::<PreStep>().0 = false;
@@ -258,12 +301,24 @@ impl Engine {
     /// call on, every frame draws the rows' latest values instead of the timeline's. Nothing is rebuilt per frame: only
     /// the values given change, and the sync systems write only what changed onto the entities.
     pub fn set_rows(&mut self, rows: &[Tup]) -> Result<(), String> {
+        if self.replay.is_some() {
+            for t in rows {
+                self.kept.entry((t.kind.clone(), t.id.clone())).or_default().extend(t.vals.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+        }
         let spawned = apply_rows(self.app.world_mut(), &self.dir, rows)?;
         if spawned {
             scene3d::shade_rows(self.app.world_mut(), rows)?;
         }
         // a camera's frame looks, as the timeline's are each frame (relational), so a live game's look turns on too
-        self.app.world_mut().resource_mut::<FrameRows>().parse_looks();
+        // a set that came, went or changed its kind (another shot's sky, AO coming on): the next frame warms up (draw)
+        if self.app.world_mut().resource_mut::<FrameRows>().parse_looks() {
+            self.warm_next = true;
+        }
+        // the camera row on another shot (its shot column sent only when it changes): the next frame drawn is a cut
+        if rows.iter().any(|t| t.kind == "camera" && t.vals.contains_key("shot")) {
+            self.app.world_mut().insert_resource(raea_sys_frame::shots::Moved);
+        }
         // a glTF model, and a panorama a live frame showed first (#38), set up before the frame that shows it draws
         if spawned { scene3d::await_models(&mut self.app)?; }
         raea_sys_post::msaa_for_3d(self.app.world_mut(), has_3d(rows) || raea_sys_sprite::has_2d(rows));
@@ -271,14 +326,16 @@ impl Engine {
     }
 
     /// A live scene's rows dropped, by kind and id: their entities go (and the meshes and surfaces only they held).
-    pub fn remove_rows(&mut self, rows: &[(String, String)]) {
-        remove_rows_from(self.app.world_mut(), rows);
+    pub fn remove_rows(&mut self, rows: &[(String, String)]) -> Result<(), String> {
+        rows.iter().for_each(|r| drop(self.kept.remove(r)));
+        remove_rows_from(self.app.world_mut(), rows)
     }
 
     /// The registered Bevy plugins' frame clock: the frames before f stepped through (one update each, their readbacks
-    /// dropped), from a new App made from the load when f is before the last frame stepped. Nothing without plugins.
+    /// dropped), from a new App made from the load when f is before the last frame stepped. Nothing without plugins, or
+    /// when the load's rows give them nothing to step (plugins::steps: a frame-pure edit's still draws only its frame).
     fn catch_up(&mut self, f: i64) -> Result<(), String> {
-        if !plugins::active(self.app.world()) {
+        if !plugins::active(self.app.world()) || self.replay.is_none() {
             return Ok(());
         }
         if f < self.app.world().resource::<plugins::PluginClock>().stepped {
@@ -291,7 +348,13 @@ impl Engine {
             // the old App dropped it ("Buffer ... has been destroyed" from get_mapped_range, a panic)
             #[cfg(feature = "native")]
             raea_sys_frame::pipe::wait_gpu(&self.app);
+            let kept = std::mem::take(&mut self.kept);
             *self = Engine::build(&prog, &rows, &dir, None, self.live)?;
+            // a live scene's rows as the play left them (this frame's included): the load's are its first frame's, so
+            // a seek back from another shot drew the first shot's look and anything moved since where it began (RR1)
+            if !kept.is_empty() {
+                self.set_rows(&kept.into_iter().map(|((kind, id), vals)| Tup { kind, id, vals }).collect::<Vec<_>>())?;
+            }
         }
         loop {
             let s = self.app.world().resource::<plugins::PluginClock>().stepped;

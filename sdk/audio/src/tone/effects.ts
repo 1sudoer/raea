@@ -176,7 +176,8 @@ export class Meter extends ToneAudioNode {
   constructor(_o?: unknown) {
     super("Gain", { gain: 1 });
   }
-  getValue() {
+  // a level, or an FFT's or a Waveform's bins (as Tone's getValue is number | number[])
+  getValue(): number | Float32Array {
     return -Infinity;
   }
 }

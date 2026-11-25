@@ -106,14 +106,12 @@ fn three_untone(c: vec4<f32>) -> vec4<f32> {
     let mode = u32(three_slots.s[DISPLAY_SLOT].x + 0.5);
     let display = three_slots.s[DISPLAY_SLOT].y > 0.5;
     @if(TONEMAP_IN_SHADER) {
-        // and a linear (scene-light) colour is mapped here, as Bevy's own materials map theirs
+        // and a linear (scene-light) colour is mapped here by Bevy's own tone mapping, as its materials' are
+        // (pbr_functions): the camera's method after its colour grading, a Grade's exposure among it (three's ACES
+        // scales by 1/0.6 first: R3F25), so an unlit node material comes out as a lit one and a standard one do
         if !display {
             // scene light takes the camera's exposure, as three's renderer scales it before its tone mapping
-            let lit = c.rgb * three_exposure();
-            if mode == 0u {
-                return vec4(lit, c.a);
-            }
-            return vec4(three_tonemap(lit, mode - 1u), c.a);
+            return tone_mapping(vec4(c.rgb * three_exposure(), c.a), view.color_grading);
         }
         return vec4(three_srgb_decode(clamp(c.rgb, vec3(0.0), vec3(1.0))), c.a);
     }
@@ -137,4 +135,14 @@ fn three_untone(c: vec4<f32>) -> vec4<f32> {
         x = clamp(x * pow((want + 1e-4) / (y + 1e-4), vec3(0.75)), vec3(0.0), vec3(512.0));
     }
     return vec4(x, c.a);
+}
+
+/// the colour as the blend takes it: an additive material's premultiplied with no alpha of its own, since Bevy blends
+/// AlphaMode::Add as premultiplied alpha (src + dst * (1 - src.a)) and three's AdditiveBlending adds src * src.a, so
+/// overlapping particles sum as three sums them (docs/r3f.feature R3F22). The alpha mode is surface.rs's alpha_code.
+fn three_blend(c: vec4<f32>) -> vec4<f32> {
+    if u32(three_slots.s[DISPLAY_SLOT].z + 0.5) == 4u {
+        return vec4(c.rgb * c.a, 0.0);
+    }
+    return c;
 }

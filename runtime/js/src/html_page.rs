@@ -134,11 +134,11 @@ pub fn prepare(file: &Path, fps: f64, fonts: Option<&Path>, size: Option<(u32, u
     let file = if file.is_dir() { file.join("index.html") } else { file.to_path_buf() };
     let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     // (plain: Windows canonicalizes to a verbatim `\\?\D:\` path, #40)
-    let file = file.canonicalize().map(raea_io_home::plain).unwrap_or(file);
+    let file = dunce::canonicalize(&file).map(raea_io_home::plain).unwrap_or(file);
     // served: the page's folder is `root` and the page a path under it (`/x` is then root's x, as a server rooted
     // there serves it); the project listing is left out (a WPT checkout is too big to list, and only a
     // composition's sub-compositions use it)
-    let served = root.and_then(|r| r.canonicalize().ok()).map(raea_io_home::plain).filter(|r| file.starts_with(r));
+    let served = root.and_then(|r| dunce::canonicalize(&r).ok()).map(raea_io_home::plain).filter(|r| file.starts_with(r));
     let (dir, name, files) = match &served {
         Some(r) => (r.clone(), file.strip_prefix(r).unwrap_or(&file).to_string_lossy().into_owned(), vec![]),
         None => {

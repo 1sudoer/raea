@@ -11,7 +11,7 @@ const fileOf = (sub: string) => Bun.resolveSync(`raea/${sub}`, ROOT);
 
 // Bevy's crates (bevy_ prefix dropped) and raea's own subjects; anything else is an older topic subpath (S7 M5)
 const BEVY = ["app", "asset", "time", "state", "input", "transform", "math", "color", "mesh", "image", "camera", "light", "pbr", "post_process", "sprite", "text", "ui", "animation", "audio", "picking", "gizmos", "scene", "remote", "dev_tools", "feathers", "window", "ecs", "prelude"];
-const RAEA = ["video", "physics", "character", "room", "ml"];
+const RAEA = ["video", "physics", "character", "people", "room", "ml"];
 // modules the guides name whose file isn't sdk/raea/src/<name> (S1f's trim dropped raea/bevy-own for a while)
 const NAMED = ["bevy-own", "glb", "views", "modelling", "arena", "window", "screen", "asset"];
 

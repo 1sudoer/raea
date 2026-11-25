@@ -9,4 +9,25 @@ description = "`raea check`: the floor's measurable lines on an export, ranked P
 [dependencies]
 # taste.ts rules, as the raea CLI evaluates them (docs/projects.feature PJ0)
 raea-core-brief = { path = "../../core/brief" }
+# a transcript's words, read as `raea world` reads them (docs/direction.feature DR1)
+raea-core-facts = { path = "../../core/facts" }
+raea-io-home = { path = "../../io/home" }
+# a check's record named by when it was (UTC, DR3)
+raea-io-trace = { path = "../../io/trace" }
+# ffmpeg's flag for every decoded frame, by its version
+raea-io-ffmpeg = { path = "../../io/ffmpeg" }
+# caption contrast and loudness, measured as `raea world` measures a render (DR2)
+raea-sys-measure = { path = "../../systems/measure" }
+# what it reads of a video, through FFmpeg or raea's own decoders where it isn't installed
+raea-app-check-read = { path = "read" }
+# who can fix what it finds: the encode's or the picture's own, carried, a source (split out to keep this crate small)
+raea-app-check-cause = { path = "cause" }
+# the text rules on a render's manifest (split out: raea render holds its own text to them)
+raea-app-check-text = { path = "text" }
+# the flashing screen (WCAG 2.3.1), split out to keep this crate small
+raea-app-check-flash = { path = "flash" }
+# what the person sent from the raea app, handed to the agent (split out to keep this crate small)
+raea-app-check-inbox = { path = "inbox" }
+# the Stop gate for a `make` job (docs/make.feature MK2; split out to keep this crate small)
+raea-app-check-make = { path = "make" }
 serde_json = "1"

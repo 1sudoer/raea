@@ -4,8 +4,11 @@ use super::*;
 /// resolution on top (raea-bundle's script.rs: the SDK from its source, the test API, raea-runtime-react's node_modules as the
 /// fallback); its default export, if a function, is called and awaited, then the run ends.
 pub fn bundle_script(ts: &Path, out: &Path) -> R<()> {
-    bundle_module(ts, out, "Promise.resolve().then(() => (typeof (M as any).default === \"function\" ? (M as any).default() : undefined)).then(() => call(\"done\", JSON.stringify({ code: 0 })), (e: any) => { call(\"print\", JSON.stringify({ text: \"error: \" + (e && e.stack ? e.stack : String(e)) })); call(\"done\", JSON.stringify({ code: 1 })); });")
+    bundle_module(ts, out, SCRIPT_ENTRY)
 }
+
+/// bundle_script's entry: the answer printed, a throw on stderr with its message (#168)
+const SCRIPT_ENTRY: &str = include_str!("script_entry.ts");
 
 /// What a spec's run does (brief.ts, script.ts, taste.ts, a controller: docs/projects.feature PJ0), for bundle_module:
 /// it prints the module's default export as one line of JSON and ends, or prints the error and exits 1. The reader is
@@ -23,28 +26,6 @@ pub fn bundle_module(ts: &Path, out: &Path, body: &str) -> R<()> {
 /// same file, and changes nothing elsewhere.
 fn spec(p: &Path) -> String {
     dunce::simplified(p).display().to_string()
-}
-
-/// A react-dom page's bundle (a surface): the module at `src` (its default
-/// export a React component) rendered by react-dom into #root with the page's width and height, again on each resize,
-/// bundled with its packages (the project's node_modules, raea-io-npm's) into `out`. The bundle's text. A legacy-app panel's
-/// and a `<Screen app>`'s.
-pub fn bundle_surface(src: &Path, out: &Path) -> R<String> {
-    let entry = format!(
-        r#"// raea writes this (motion.rs bundle_surface): {src} on react-dom, at the surface's size, again on each resize.
-import {{ createElement }} from "react";
-import {{ createRoot }} from "react-dom/client";
-import Page from {src:?};
-
-const root = createRoot(document.getElementById("root")!);
-const draw = () => root.render(createElement(Page as any, {{ width: innerWidth, height: innerHeight }}));
-addEventListener("resize", draw);
-draw();
-"#,
-        src = spec(src)
-    );
-    bundle_entry(&entry, out, &[])?;
-    std::fs::read_to_string(out).map_err(|e| format!("{}: {e}", out.display()))
 }
 
 /// `entry` (TypeScript source) bundled into `out` by raea-bundle's library (engine/bundle/src/script.rs's resolution); `extra`
@@ -108,6 +89,12 @@ pub fn bundle_tests(files: &[PathBuf], out: &Path, filter: Option<&str>, extra: 
 /// raea-bundle's library, loaded at run time (runtime/bundle/lib: raea-runtime-bundle-lib)
 pub use raea_runtime_bundle_lib as inproc;
 
+/// Whether a composition's elements are stamped with their place in the code (engine/bundle stamp.rs): the app's editor
+/// sets RAEA_SOURCE_STAMPS=1 on the renders it asks for, so its render manifest says which JSX drew what
+pub fn stamps() -> bool {
+    raea_io_home::env_on("RAEA_SOURCE_STAMPS")
+}
+
 pub fn bundle_fresh(tsx: &Path, out_js: &Path, o: &CompOpts, portable: Option<&Path>) -> R<()> {
     let t0 = std::time::Instant::now();
     let dir = tsx.parent().unwrap().to_path_buf();
@@ -117,7 +104,8 @@ pub fn bundle_fresh(tsx: &Path, out_js: &Path, o: &CompOpts, portable: Option<&P
     let work = std::env::temp_dir().join(format!("raea-cli-b{}", std::process::id()));
     remove_work(&work);
     copy_dir(&dir, &work.join("src"), 0)?;
-    let motion_src = raea_io_home::home().join("sdk/raea/src").canonicalize().map_err(|e| format!("raea/motion/src: {e}"))?;
+    drop_tsconfigs(&work.join("src"), 0);
+    let motion_src = dunce::canonicalize(&raea_io_home::home().join("sdk/raea/src")).map_err(|e| format!("raea/motion/src: {e}"))?;
     copy_dir(&motion_src, &work.join("motion"), 0)?;
     let sdks = sdks();
     for rel in sources(&work.join("motion"))? {
@@ -179,6 +167,9 @@ pub fn bundle_fresh(tsx: &Path, out_js: &Path, o: &CompOpts, portable: Option<&P
     }
     let js = raea_io_home::home().join("sdk/react/js");
     link_node_modules(&js, &work)?;
+    // the command line's props, where getInputProps() and a Composition read them (the entry imports it first)
+    let global = |v: Option<String>| v.unwrap_or("undefined".into());
+    std::fs::write(work.join("props.ts"), format!("(globalThis as any).__raea_input_props = {};\n(globalThis as any).__raea_scale = {};\n(globalThis as any).__raea_hold = {};\n", global(o.props.as_ref().map(Value::to_string)), global(o.scale.map(|s| s.to_string())), global(o.hold.map(|(n, m)| format!("[{n}, {m}]"))))).map_err(|e| e.to_string())?;
     if o.lite {
         // the game's code and the SDK's resolve "react" to the live view runtime (tsconfig paths cover the files under
         // the work folder; packages in node_modules keep their own React)
@@ -194,10 +185,10 @@ pub fn bundle_fresh(tsx: &Path, out_js: &Path, o: &CompOpts, portable: Option<&P
     }
     let t_work = t0.elapsed();
     // in process by raea-bundle's library (Rolldown; a live bundle with its Z3 compile in Rust)
-    let (js_text, css) = inproc::bundle(&work.join("entry.tsx"), serde_json::json!({"z3": o.lite, "edit": {"dir": dir, "js": js}})).map_err(|e| format!("couldn't bundle {file}: {}", e.lines().filter(|l| !l.trim().is_empty()).take(6).collect::<Vec<_>>().join(" | ")))?;
+    let (js_text, css) = inproc::bundle(&work.join("entry.tsx"), serde_json::json!({"z3": o.lite, "edit": {"dir": dir, "js": js}, "stamps": stamps()})).map_err(|e| format!("couldn't bundle {file}: {}", e.lines().filter(|l| !l.trim().is_empty()).take(6).collect::<Vec<_>>().join(" | ")))?;
     // its CSS rides in the bundle's last line (bundle_css), so every copy and cache of it carries it
     let code = if css.is_empty() { js_text } else { format!("{js_text}\n//# raea-css={}\n", serde_json::to_string(&css).unwrap_or_default()) };
-    if std::env::var_os("RAEA_BUNDLE_TRACE").is_some() {
+    if raea_io_trace::stat("RAEA_BUNDLE_TRACE") {
         eprintln!("raea bundle: {} in {:.1} ms: the work folder {:.1} ms, Rolldown {:.1} ms", tsx.display(), t0.elapsed().as_secs_f64() * 1e3, t_work.as_secs_f64() * 1e3, (t0.elapsed() - t_work).as_secs_f64() * 1e3);
     }
     std::fs::write(out_js, code).map_err(|e| format!("{}: {e}", out_js.display()))?;

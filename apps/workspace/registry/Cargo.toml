@@ -1,0 +1,16 @@
+[package]
+name = "raea-app-registry"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "A raea project's compositions and components, read from their source without running it, and lint for what isn't connected (docs/projects.feature PJ8)"
+
+[dependencies]
+dunce = "1"
+# the version engine/bundle parses TSX with
+oxc = { version = "=0.152.0", features = ["ast_visit"] }
+raea-io-home = { path = "../../../io/home" }
+serde_json = "1"
+# what the scan finds, as raea's one Finding (docs/direction.feature DR3)
+raea-core-facts = { path = "../../../core/facts" }

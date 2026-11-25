@@ -41,6 +41,16 @@ fn basis(n: vec3<f32>) -> mat3x3<f32> {
     return mat3x3(t, cross(n, t), n);
 }
 
+// whether a ray leaves the reach unblocked. The query lives in its own function, a fresh one each call: declared in
+// the loop's body, naga's Metal output reassigns it each pass (`rq = intersection_query<..> {}`), and Metal's
+// intersection_query has no assignment, so the pipeline failed to build on the Mac (11-17)
+fn open_to(origin: vec3<f32>, dir: vec3<f32>, reach: f32) -> bool {
+    var rq: ray_query;
+    rayQueryInitialize(&rq, tlas, RayDesc(RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0005, reach, origin, dir));
+    rayQueryProceed(&rq);
+    return rayQueryGetCommittedIntersection(&rq).kind == RAY_QUERY_INTERSECTION_NONE;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(depth_texture);
@@ -68,10 +78,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let r = sqrt((f32(k) + 0.5) / f32(rays));
         let a = f32(k) * 2.39996323 + turn;
         let dir = normalize(b * vec3(r * cos(a), r * sin(a), sqrt(max(1.0 - r * r, 0.0))));
-        var rq: ray_query;
-        rayQueryInitialize(&rq, tlas, RayDesc(RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0005, reach, origin, dir));
-        rayQueryProceed(&rq);
-        if (rayQueryGetCommittedIntersection(&rq).kind == RAY_QUERY_INTERSECTION_NONE) {
+        if (open_to(origin, dir, reach)) {
             open++;
         }
     }

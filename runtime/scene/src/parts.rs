@@ -8,14 +8,14 @@ pub(crate) fn surface_shader_rows(all: &[Vec<Item>], p: &mut Program) {
 }
 
 /// the scene's <FramePass>es or <Compute>s (`kind` frame_pass or compute), from the first frame, in the order written:
-/// frame_pass0, frame_pass1, …; a compute or pass as written's `entry`, `bind` and `uniforms` keyed (strings that change
-/// frame by frame)
+/// frame_pass0, frame_pass1, …; a compute or pass as written's `entry`, `bind` and `uniforms`, and three's compute's
+/// `kernels`, `shared` and `runs` (docs/r3f.feature R3F22), keyed (strings that change frame by frame)
 pub(crate) fn ordered_shader_rows(all: &[Vec<Item>], p: &mut Program, kind: &str) {
     let Some(f0) = all.first() else { return };
     let mut rows: Vec<_> = f0.iter().filter(|it| *it.kind == *kind).enumerate().map(|(i, it)| shader_row(format!("{kind}{i}"), it)).collect();
     for (i, row) in rows.iter_mut().enumerate() {
         let id = format!("{kind}{i}");
-        for prop in ["entry", "bind", "uniforms"].into_iter().filter(|k| f0.iter().filter(|it| *it.kind == *kind).nth(i).is_some_and(|it| it.props.contains_key(*k))) {
+        for prop in ["entry", "bind", "uniforms", "kernels", "shared", "runs"].into_iter().filter(|k| f0.iter().filter(|it| *it.kind == *kind).nth(i).is_some_and(|it| it.props.contains_key(*k))) {
             let vals: Vec<String> = all.iter().map(|f| f.iter().filter(|it| *it.kind == *kind).nth(i).and_then(|it| it.props.get(prop)?.as_str()).unwrap_or("").to_string()).collect();
             keyed_strings(p, row, &id, prop, &vals);
         }
@@ -36,9 +36,9 @@ fn shader_row(id: String, it: &Item) -> BTreeMap<String, V> {
 /// lights: directional (towards its target, the origin by default), point, spot
 pub(crate) fn lights_rows(all: &[Vec<Item>], tr: &Tracks, p: &mut Program) {
     let mut li = 0;
-    // a <Shadows>, found once: every light takes its cascades and biases (looking for it per light scanned every
-    // frame's items once a light, 100 000 lights by 100 000 items)
-    let shadows = all.iter().flatten().find(|i| i.kind == "shadows");
+    // each frame's <Shadows>, found once: every light takes its cascades and biases (looking for it per light scanned
+    // every frame's items once a light, 100 000 lights by 100 000 items)
+    let shadows = FrameShadows::of(all);
     for (_, track) in &tr.lights {
         let its = filled(&track);
         let kind = its[0].kind;
@@ -77,15 +77,8 @@ pub(crate) fn lights_rows(all: &[Vec<Item>], tr: &Tracks, p: &mut Program) {
             }
         }
         let first = &its[0].props;
-        if let Some(c) = hex(first.get("color")).filter(|c| c != "#ffffff") {
-            row.insert("color".into(), V::S(c));
-        }
-        if let Some(Value::Bool(s)) = first.get("castShadow") {
-            row.insert("shadows".into(), V::N(*s as u8 as f64));
-        }
-        if first.get("volumetric") == Some(&Value::Bool(true)) {
-            row.insert("volumetric".into(), V::N(1.0));
-        }
+        // its colour, shadows and shafts, each frame's (RR1)
+        light_sets(&its, p, &mut row, &id);
         // a point or spot light the paint look draws (paint.rs)
         if kind != "directional" && first.get("paint") == Some(&Value::Bool(true)) {
             row.insert("paint".into(), V::N(1.0));
@@ -99,14 +92,8 @@ pub(crate) fn lights_rows(all: &[Vec<Item>], tr: &Tracks, p: &mut Program) {
         if let Some(r) = soft.filter(|r| *r > 0.0) {
             row.insert("soft".into(), V::N(r));
         }
-        // a <Shadows>' cascades (the sun's) and biases (every light's)
-        if let Some(sh) = shadows {
-            for (prop, col) in [("distance", "shadow_dist"), ("firstCascade", "shadow_first"), ("cascades", "shadow_cascades"), ("overlap", "shadow_overlap"), ("bias", "shadow_bias"), ("normalBias", "shadow_nbias")] {
-                if let Some(x) = num(&sh.props, prop) {
-                    row.insert(col.into(), V::N(x));
-                }
-            }
-        }
+        // each frame's <Shadows>' cascades (the sun's) and biases (every light's), RR1
+        shadows.light(p, &mut row, &id, kind, first);
         // the light's own biases (Bevy's shadow_depth_bias, shadow_normal_bias), over a <Shadows>'
         for (prop, col) in [("shadow_depth_bias", "shadow_bias"), ("shadow_normal_bias", "shadow_nbias")] {
             if let Some(x) = num(first, prop) {
@@ -154,7 +141,7 @@ pub(crate) fn meshes_rows(tr: &Tracks, names: &[String], p: &mut Program) {
             for (k, name) in ["col_r", "col_g", "col_b"].iter().enumerate() {
                 let vals: Vec<f64> = c.iter().map(|v| v[k]).collect();
                 // exact, as the hex's byte over 255 (the engine reads either into the same f32: #26)
-                p.keys.insert((id.clone(), name.to_string()), vals.iter().enumerate().map(|(f, v)| (f as i64, *v, "linear".to_string())).collect());
+                p.keys.insert((id.clone(), name.to_string()), raea_runtime_look::linear_keys(&vals));
                 row.insert(name.to_string(), V::N(vals[0]));
             }
         }
@@ -182,9 +169,10 @@ pub(crate) fn meshes_rows(tr: &Tracks, names: &[String], p: &mut Program) {
             }
         }
         for (prop, col) in [("map", "map"), ("normalMap", "normal_map"), ("roughnessMap", "rough_map"), ("metalnessMap", "metal_map"), ("metallicRoughnessMap", "mr_map"), ("aoMap", "ao_map"), ("emissiveMap", "emissive_map"), ("depthMap", "depth_map"), ("clearcoatNormalMap", "clearcoat_normal_map")] {
-            if let Some(src) = m0.get(prop).and_then(Value::as_str) {
-                row.insert(col.into(), V::S(src_path(src)));
-            }
+            let Some(src) = m0.get(prop).and_then(Value::as_str) else { continue };
+            // render images an app ping-pongs between are keyed frame by frame (R3F23c: raea-sys-rendermap); a picture is its first frame's
+            let srcs: Vec<String> = if src.starts_with("render:") { mats.iter().map(|m| match m.get(prop) { Some(Value::String(s)) => s.clone(), _ => src.to_string() }).collect() } else { vec![src_path(src)] };
+            keyed_strings(p, &mut row, &id, col, &srcs);
         }
         if let Some(Value::Array(r)) = m0.get("repeat") {
             if let [u, v] = r.as_slice() {
@@ -243,7 +231,6 @@ pub(crate) fn meshes_rows(tr: &Tracks, names: &[String], p: &mut Program) {
         }
         grid_columns(&mut row, m0);
         paint_columns(&mut row, m0);
-        raea_sys_wear::columns(&mut row, m0);
         raea_sys_procmat::columns(&mut row, m0);
         placement(p, &mut row, &id, &its);
         visible(p, &mut row, &id, &track);
@@ -277,7 +264,7 @@ pub(crate) fn meshes_rows(tr: &Tracks, names: &[String], p: &mut Program) {
             row.insert("receive".into(), V::N(0.0));
         }
         layers_column(&mut row, &its[0].props);
-        instances_column(&mut row, &its);
+        instances_column(p, &mut row, &id, &its);
         // its geometry's own vertex attributes (JSON, Mesh3d `attributes`), from the first frame: raea-sys-mesh with_attributes
         if let Some(Value::String(a)) = its[0].props.get("attributes") {
             row.insert("attributes".into(), V::S(a.clone()));
@@ -291,7 +278,7 @@ pub(crate) fn meshes_rows(tr: &Tracks, names: &[String], p: &mut Program) {
         components(p, &id, &its);
         material_fields(p, &id, &its);
         three_uniforms(p, &id, &its);
-        own_uniforms(p, &id, &its, |it| it.material.as_ref()?.props.get("shader"));
+        own_uniforms(p, &id, &its, true, |it| it.material.as_ref()?.props.get("shader"));
     }
 }
 
@@ -371,7 +358,7 @@ pub(crate) fn texts_rows(tr: &Tracks, names: &[String], p: &mut Program) {
                         m.insert(to.into(), v.clone());
                     }
                 }
-                Item { kind: "glyph", props: std::sync::Arc::new(Map::new()), shape: None, material: None, world: local(&m) }
+                Item { kind: "glyph", props: std::sync::Arc::new(Map::new()), shape: None, material: None, at: None, world: local(&m) }
             }).collect();
             placement(p, &mut row, &gid, &moved);
             let colors: Vec<String> = gs.iter().map(|g| hex(g.get("c")).unwrap_or("#ffffff".into())).collect();
@@ -410,7 +397,7 @@ mod light_rotation_tests {
     use super::*;
 
     fn sun(props: serde_json::Value, world: Mat4) -> Item {
-        Item { kind: "directional", props: std::sync::Arc::new(props.as_object().unwrap().clone()), shape: None, material: None, world }
+        Item { kind: "directional", props: std::sync::Arc::new(props.as_object().unwrap().clone()), shape: None, material: None, at: None, world }
     }
 
     #[test]

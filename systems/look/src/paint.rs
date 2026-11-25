@@ -23,7 +23,9 @@ pub type PaintMaterial = ExtendedMaterial<StandardMaterial, Paint>;
 pub fn install(app: &mut App) {
     bevy::asset::embedded_asset!(app, "paint.wesl");
     bevy::asset::embedded_asset!(app, "paint_vertex.wesl");
+    bevy::asset::embedded_asset!(app, "paint_prepass.wesl");
     bevy::shader::load_shader_library!(app, "paint_lights.wesl");
+    bevy::shader::load_shader_library!(app, "paint_world.wesl");
     app.add_plugins(MaterialPlugin::<PaintMaterial>::default());
 }
 
@@ -93,7 +95,8 @@ pub struct PaintParams {
     calm: Vec4,
     /// texel (m; 0: none), each cell's shade jitter, cloud shadows' drift (x, z: m)
     k5: Vec4,
-    /// cloud shadows' cover (0: none), their size (m), this material sways (1: cut-out, set per mesh), -
+    /// cloud shadows' cover (0: none), their size (m), this material sways (1: cut-out, set per mesh), soft (0: flat
+    /// bands; above it the light as a gradient that wide)
     k6: Vec4,
     /// wind: a blade's tip's bend (m; 0: none), its direction (x, z), the time it has blown (s)
     k7: Vec4,
@@ -102,6 +105,21 @@ pub struct PaintParams {
     /// the haze's colour (a: on), and its colour toward the sun (a: on)
     haze: Vec4,
     haze_sun: Vec4,
+    /// worlds (paint_world.wesl): up to four cuts, each a ball (its centre, its radius in m; 0: off)
+    cut: [Vec4; 4],
+    /// inside each cut: its style (0: the look's own), the style's scale, how much of it, -; and its two colours
+    style: [Vec4; 4],
+    style_a: [Vec4; 4],
+    style_b: [Vec4; 4],
+    /// this mesh's world (0: outside every cut; 1 to 4: inside that cut alone; -1: everywhere; set per mesh), the
+    /// cuts' torn edge (m), their lit rim's width (m), -
+    kw: Vec4,
+    /// the cuts' rim colour (a: on)
+    cut_rim: Vec4,
+    /// the eye-side rim's amount and power, the terminator's amount, -
+    k9: Vec4,
+    rim: Vec4,
+    term: Vec4,
 }
 
 impl MaterialExtension for Paint {
@@ -115,6 +133,10 @@ impl MaterialExtension for Paint {
     }
     fn prepass_vertex_shader() -> ShaderRef {
         "embedded://raea_sys_look/paint_vertex.wesl".into()
+    }
+    // the worlds' cut in the prepass too (Bevy's own prepass fragment otherwise)
+    fn prepass_fragment_shader() -> ShaderRef {
+        "embedded://raea_sys_look/paint_prepass.wesl".into()
     }
 }
 
@@ -174,7 +196,19 @@ fn params(v: &BTreeMap<String, V>) -> PaintParams {
     haze.w = on("paint_haze");
     let mut haze_sun = lin(v.get("paint_haze_sun"), [1.0, 0.9, 0.75, 1.0]);
     haze_sun.w = on("paint_haze_sun");
+    let mut cut_rim = lin(v.get("paint_cut_rim"), [1.0, 1.0, 1.0, 1.0]);
+    cut_rim.w = on("paint_cut_rim_width");
+    let styles = |s: &str, d: [f32; 4]| std::array::from_fn(|i| lin(v.get(&format!("paint_cut{i}_{s}")), d));
     PaintParams {
+        cut: std::array::from_fn(|i| Vec4::new(num(v, &format!("paint_cut{i}_x"), 0.0), num(v, &format!("paint_cut{i}_y"), 0.0), num(v, &format!("paint_cut{i}_z"), 0.0), num(v, &format!("paint_cut{i}_r"), 0.0).max(0.0))),
+        style: std::array::from_fn(|i| Vec4::new(num(v, &format!("paint_cut{i}_style"), 0.0), num(v, &format!("paint_cut{i}_scale"), 0.1).max(1e-4), num(v, &format!("paint_cut{i}_amount"), 1.0).clamp(0.0, 1.0), 0.0)),
+        style_a: styles("a", [0.05, 0.05, 0.08, 1.0]),
+        style_b: styles("b", [1.0, 1.0, 1.0, 1.0]),
+        kw: Vec4::new(0.0, num(v, "paint_cut_rag", 0.0).max(0.0), num(v, "paint_cut_rim_width", 0.0).max(0.0), 0.0),
+        cut_rim,
+        k9: Vec4::new(num(v, "paint_rim_amount", 0.0).max(0.0), num(v, "paint_rim_power", 3.0).max(0.1), num(v, "paint_term_amount", 0.0).clamp(0.0, 1.0), 0.0),
+        rim: lin(v.get("paint_rim"), [1.0, 1.0, 1.0, 1.0]),
+        term: lin(v.get("paint_term"), [1.0, 0.8, 0.7, 1.0]),
         shadow: lin(v.get("paint_shadow"), [0.55, 0.58, 0.68, 1.0]),
         mid: lin(v.get("paint_mid"), [0.80, 0.76, 0.78, 1.0]),
         ao,
@@ -187,7 +221,7 @@ fn params(v: &BTreeMap<String, V>) -> PaintParams {
         k4: Vec4::new(num(v, "paint_foliage_height", 0.6), num(v, "paint_calm_from", 8.0), num(v, "paint_calm_to", 40.0).max(num(v, "paint_calm_from", 8.0) + 0.01), num(v, "paint_calm_amount", 0.85).clamp(0.0, 1.0)),
         calm,
         k5: Vec4::new(num(v, "paint_texel", 0.0).max(0.0), num(v, "paint_texel_jitter", 0.08).clamp(0.0, 0.5), num(v, "paint_cloud_shadow_x", 0.0), num(v, "paint_cloud_shadow_z", 0.0)),
-        k6: Vec4::new(num(v, "paint_cloud_shadows", 0.0).clamp(0.0, 1.0), num(v, "paint_cloud_shadow_size", 40.0).max(1.0), 0.0, 0.0),
+        k6: Vec4::new(num(v, "paint_cloud_shadows", 0.0).clamp(0.0, 1.0), num(v, "paint_cloud_shadow_size", 40.0).max(1.0), 0.0, num(v, "paint_soft", 0.0).clamp(0.0, 1.0)),
         k7: Vec4::new(num(v, "paint_wind", 0.0).max(0.0), num(v, "paint_wind_x", 1.0), num(v, "paint_wind_z", 0.0), num(v, "paint_wind_time", 0.0)),
         k8: Vec4::new(num(v, "paint_haze_density", 0.02).max(0.0), num(v, "paint_haze_height", 3.0).max(0.01), num(v, "paint_haze_start", 8.0).max(0.0), num(v, "paint_haze_most", 0.7).clamp(0.0, 1.0)),
         haze,
@@ -198,6 +232,9 @@ fn params(v: &BTreeMap<String, V>) -> PaintParams {
 /// one mesh's own paint on top of the camera's: its breakup (paint_breakup, paint_breakup_scale, paint_patch)
 fn mesh_params(mut p: PaintParams, v: Option<&BTreeMap<String, V>>) -> PaintParams {
     let Some(v) = v else { return p };
+    if v.contains_key("paint_world") {
+        p.kw.x = num(v, "paint_world", 0.0);
+    }
     if v.contains_key("paint_breakup") {
         p.k1.w = num(v, "paint_breakup", 0.0);
         p.k2.x = num(v, "paint_breakup_scale", 1.0).max(0.001);

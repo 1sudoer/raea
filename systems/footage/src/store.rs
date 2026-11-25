@@ -5,9 +5,7 @@ use std::path::Path;
 
 /// The default store: $RAEA_INGEST, else ~/.cache/raea-ingest.
 pub fn store() -> std::path::PathBuf {
-    std::env::var_os("RAEA_INGEST")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/raea-ingest"))
+    raea_io_home::env_path("RAEA_INGEST", ".cache/raea-ingest")
 }
 
 pub fn content_hash(path: &Path) -> Result<String, String> {

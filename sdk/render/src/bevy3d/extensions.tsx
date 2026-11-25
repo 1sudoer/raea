@@ -42,13 +42,16 @@ export interface PaintExtensionProps {
   color?: string;
   /** how far toward `color` the patches go (0.6) */
   amount?: number;
+  /** under a <Look cuts>: the world this mesh is in. 0 (the default): outside every cut. 1 to 4: inside that cut and
+   *  no later one. -1: everywhere. Given alone it leaves the breakup off */
+  world?: number;
 }
 
 export function PaintExtension(_: PaintExtensionProps): ReactNode {
   throw new TypeError("PaintExtension goes in an ExtendedMaterial: <ExtendedMaterial base={<StandardMaterial />} extension={<PaintExtension scale={0.5} />} />");
 }
 
-/** raea's extension of StandardMaterial that wears it (the engine's Wear MaterialExtension, systems/wear): its paint
+/** raea's extension of StandardMaterial that wears it (a surface shader of raea's own, worn.ts): its paint
  *  mottled, chipped back to `chip_color` on edges and a few spots, `grime` gathered low and underneath and `rust` run
  *  down in streaks, fixed in the part's own space as it moves. `amount` 0-1; `chips`, `grime` and `rust` each 0-1 of it
  *  (0.6, 0.5, 0.25); `scale` a blotch's size in metres (0.08); `seed` moves the pattern. It goes in an
@@ -74,8 +77,8 @@ export interface WearExtensionProps {
   rust_color?: string;
 }
 
-/** raea's chips, grime and rust over a StandardMaterial, as an ExtendedMaterial's extension (systems/wear):
- * @bevy bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMaterial<bevy_pbr::pbr_material::StandardMaterial, raea_sys_wear::Wear>> */
+/** raea's chips, grime and rust over a StandardMaterial, as an ExtendedMaterial's extension: a surface shader of
+ * raea's own (worn.ts) on the hook a ShaderExtension uses, so its Bevy type is ShaderExtension's. */
 export function WearExtension(_: WearExtensionProps): ReactNode {
   throw new TypeError("WearExtension goes in an ExtendedMaterial: <ExtendedMaterial base={<StandardMaterial />} extension={<WearExtension amount={0.6} />} />");
 }

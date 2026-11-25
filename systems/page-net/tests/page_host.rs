@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
-use raea_sys_page_net::fetch as page_fetch;
+use raea_sys_page_net::{fetch as page_fetch, host_load};
 use serde_json::json;
 
 /// A host that answers each request with its own request line as the body.
@@ -50,10 +50,17 @@ fn the_page_reaches_its_host() {
     assert_eq!(body(&fetch("http://localhost/media/feed/new.mp4", "GET")), "GET /media/feed/new.mp4 HTTP/1.1");
     assert_eq!(body(&fetch("http://localhost/media/on-disk.wav", "GET")), "RIFF");
 
+    // what the page loads by itself (an <img>'s src) of its /host/* is the host's too, with its query; nothing else is
+    let load = |u: &str| host_load(&url::Url::parse(u).unwrap()).map(|b| String::from_utf8(b).unwrap());
+    assert_eq!(load("http://localhost/host/attachment?project=p&name=ref.png").as_deref(), Some("GET /host/attachment?project=p&name=ref.png HTTP/1.1"));
+    assert_eq!(load("http://localhost/media/on-disk.wav"), None);
+    assert_eq!(load("https://example.com/host/x"), None);
+
     // a host that's gone
     let gone = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
     unsafe { std::env::set_var("RAEA_PAGE_HOST", format!("http://{gone}")) };
     assert_eq!(fetch("http://localhost/host/acp/act", "POST")["status"], 502);
+    assert_eq!(load("http://localhost/host/attachment?name=ref.png"), None);
 
     std::fs::remove_dir_all(&root).unwrap();
 }

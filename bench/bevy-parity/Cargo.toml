@@ -30,3 +30,6 @@ ignored = ["argh", "accesskit", "rand", "chacha20", "bytemuck", "indexmap", "non
 [features]
 default = ["default_font"]
 default_font = []
+
+[build-dependencies]
+raea-io-home = { path = "../../io/home" }

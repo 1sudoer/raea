@@ -31,14 +31,26 @@ pub fn shade_rows(world: &mut World, inserted: &[Tup]) -> Result<(), String> {
         let ext = shader_ext::build(world, &v, plugins::image).map_err(|e| format!("SurfaceShader: {e}"))?;
         world.insert_resource(SceneShader(ext));
     }
+    shade_meshes(world)?;
+    pass_rows(world, inserted)?;
+    compute_rows(world, inserted)
+}
+
+/// Each mesh row waiting for its shader (MeshShader) given it. A load runs it with the rest of shade_rows; apply_rows
+/// runs it after a live frame's or a fed render's rows, so a shaded mesh that first appears after the load gets its
+/// shader too. (It ran only when a model spawned, so a shaded part with no model beside it drew its bare standard
+/// surface: gambit's gate set after a shot of plain meshes, its street in its own vertex colours, 11-17.)
+pub fn shade_meshes(world: &mut World) -> Result<(), String> {
     let todo: Vec<Entity> = world.query_filtered::<Entity, With<MeshShader>>().iter(world).collect();
+    if todo.is_empty() {
+        return Ok(());
+    }
     let mut made = Made::new();
     for e in todo {
         let Some(s) = world.entity_mut(e).take::<MeshShader>() else { continue };
         shader_ext::put(world, e, &s.spec, plugins::image, &mut made).map_err(|err| format!("mesh {}: shader: {err}", s.id))?;
     }
-    pass_rows(world, inserted)?;
-    compute_rows(world, inserted)
+    Ok(())
 }
 
 /// Rows of `kind` in the order written (`kind`0 first).
@@ -84,6 +96,9 @@ fn pass_rows(world: &mut World, inserted: &[Tup]) -> Result<(), String> {
         let mut pass = raea_sys_framepass::build(world, &v, plugins::image).map_err(|e| format!("FramePass: {e}"))?;
         if let Some(w) = pass.written.as_mut() {
             w.id = t.id.clone();
+        }
+        if let Some(i) = pass.inline.as_mut() {
+            i.id = t.id.clone();
         }
         passes.push(pass);
     }

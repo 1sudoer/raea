@@ -34,7 +34,7 @@ function Cut() {
 import { Freeze, Loop, Sequence, Series } from "raea/video"
 ```
 
-`raea/video` exports 5 components, 7 types. Bevy's counterpart: `raea's own; Bevy has no video crate`. Source: [sdk/raea/src/video.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/video.ts).
+`raea/video` exports 5 components, 8 types. Bevy's counterpart: `raea's own; Bevy has no video crate`. Source: [sdk/raea/src/video.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/video.ts).
 
 ## Components
 
@@ -93,6 +93,7 @@ A video clip in step with the frame; `data-source-time` is the source time (seco
 | --- | --- | --- |
 | `framing` | `"face"` | ours: frame the take on the largest face |
 | `punchIn` | `number` | ours: multiplies the framing's scale (1.15 is the usual) |
+| `matte` | `VideoMatte` | ours: its cutout: the mattes made of its file, which it wears as its mask, so what is cut out shows what is under it |
 
 Also takes the props of [`MediaProps`](#mediaprops).
 
@@ -111,15 +112,16 @@ The props of [`Loop`](#loop), tabled there.
 | Field | Type | What it is |
 | --- | --- | --- |
 | `src` (required) | `string` | the file: staticFile("clip.mp4"), or a generated asset |
-| `startFrom` | `number` | the media's own frame it starts playing from (0); the same as trimBefore |
-| `endAt` | `number` | the media's frame it stops before (exclusive): it holds the last frame, or loops; the same as trimAfter |
-| `trimBefore` | `number` | frames of the media cut off its start (the newer name for startFrom) |
-| `trimAfter` | `number` | the media's frame it's cut at (the newer name for endAt) |
+| `startFrom` | `number` | where in the media it starts playing (0), counted in the composition's frames, not the media's own: a 24 fps clip in a 60 fps film starts at its 4 s with startFrom={240}; the same as trimBefore |
+| `endAt` | `number` | where in the media it stops (exclusive), in the composition's frames like startFrom: it holds the last frame, or loops; the same as trimAfter |
+| `trimBefore` | `number` | how much of the media is cut off its start, in the composition's frames (the newer name for startFrom) |
+| `trimAfter` | `number` | where the media is cut, in the composition's frames (the newer name for endAt) |
 | `volume` | `VolumeProp` | linear gain, 1 being unity (0.5 is about -6 dB, 1.78 about +5 dB), or a function of the media's own frame |
 | `gainDb` | `VolumeProp` | ours: the gain in decibels (or a function of the media's own frame returning it); wins over volume |
 | `fadeIn` | `number` | ours: seconds to ramp the sound in from silence at its start (applied by the renderer at the audio's rate) |
-| `fadeOut` | `number` | ours: seconds to ramp the sound out to silence at its end |
+| `fadeOut` | `number` | ours: seconds to ramp the sound out to silence by its end: the end of its Sequence or Loop pass, or endAt, whichever comes first (one removed some other way fades out after it's gone) |
 | `playbackRate` | `number` | how fast it plays (1): 2 is double speed |
+| `speedCurve` | `SpeedPoint[]` | ours: its speed as a curve over its source, [place, speed] points: the place from 0 (startFrom) to 1 (endAt, which it needs), the speed from 0.1 to 10 and changing in a straight line between two points. Wins over playbackRate; its Sequence is as long as the curve takes (`speedLength`) |
 | `muted` | `boolean` | play no sound |
 | `loop` | `boolean` | start again from `startFrom` when it reaches `endAt` |
 | `bus` | `string` | the bus it plays into: a named channel of the edit's Tone graph (music, sfx, voice, ambience, ui), so it takes that bus's volume, effects and ducking (raea/tone `buses`) |
@@ -149,6 +151,17 @@ The props of [`Sequence`](#sequence), tabled there.
 | `name` | `string` | its label in the timeline and the render manifest (`data-sequence`) |
 | `width` | `number` | the width its children see, px (the parent's by default) |
 | `durationInFrames` | `number` | how many frames it shows its children (forever by default) |
+
+### `VideoMatte`
+
+A clip's mattes: PNGs whose alpha is what is kept, m00001.png on, in one folder of the media folder.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `src` (required) | `string` | the folder, as staticFile gives it: staticFile("matte/take-person") |
+| `fps` (required) | `number` | the file's frame rate: m00001.png is its frame 0 |
+| `every` | `number` | one matte each `every` frames of the file, held until the next (1, every frame, when left out) |
+| `count` (required) | `number` | how many mattes there are: past the last, the last is worn |
 
 ### `VideoProps`
 

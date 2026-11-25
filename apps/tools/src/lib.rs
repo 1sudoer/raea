@@ -4,11 +4,18 @@
 //! made.app, fal, Replicate, OpenRouter, Modal and ComfyUI, with sao as the local model: apps/tools/src/generate.rs).
 
 pub mod generate;
+/// `raea motion` and `raea setup motion`: body motion made by Kimodo, on MLX on a Mac, on PyTorch elsewhere (apps/motion)
+pub use raea_app_motion as motion;
 pub mod song;
 pub mod sound;
 pub mod splat;
 
 /// the MCP servers `raea skills install` offers an agent (blender, for a running Blender)
 pub mod agent_mcp;
+pub mod agent_hooks;
+/// Grok Bot as a `raea skills install` target: its copy staged on this Mac, and the links that finish it in Grok Bot
+pub mod agent_grokbot;
+/// where each agent reads a person's skills
+pub mod agent_skills;
 /// `raea setup blender` and `raea blender run`
 pub mod blender;

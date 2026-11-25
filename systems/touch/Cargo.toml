@@ -1,0 +1,10 @@
+[package]
+name = "raea-sys-touch"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "Where hands, feet and wheels wear a model, and where things belong on it, by rules over its materials and heights (raea/wear's touch and spots)"
+
+[dependencies]
+parry3d = "0.31"

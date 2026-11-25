@@ -1,0 +1,12 @@
+[package]
+name = "raea-app-check-inbox"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "`raea hook`'s hand-over: what the person sent from the raea app, read from the session's inbox once and handed to the agent at its next step"
+
+[dependencies]
+serde_json = "1"
+# the inbox folder, under the home folder
+raea-io-home = { path = "../../../io/home" }

@@ -31,7 +31,7 @@ pub fn session(name: &str, path: impl AsRef<std::path::Path>) -> ort::Result<Ses
 #[cfg(target_vendor = "apple")]
 fn coreml(b: SessionBuilder) -> ort::Result<SessionBuilder> {
     use ort::ep::coreml::{ComputeUnits, CoreML, ModelFormat};
-    let cache = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/raea-coreml");
+    let cache = raea_io_home::user_home().unwrap_or_default().join(".cache/raea-coreml");
     let _ = std::fs::create_dir_all(&cache);
     Ok(b.with_execution_providers([CoreML::default()
         .with_compute_units(ComputeUnits::CPUAndNeuralEngine)

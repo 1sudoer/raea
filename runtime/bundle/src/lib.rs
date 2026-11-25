@@ -12,16 +12,16 @@ mod cache;
 mod entry;
 mod fresh;
 mod outside;
+#[cfg(test)]
 mod pid;
 mod rewrite;
 pub mod styles;
-mod urls;
 pub use cache::*;
 pub use entry::*;
 pub use fresh::*;
 pub use outside::*;
 pub use rewrite::*;
-pub use urls::*;
+pub use raea_runtime_cssurls::*;
 pub use raea_core_scene::media_path;
 #[cfg(test)]
 mod tests;
@@ -41,7 +41,7 @@ pub fn brand_css(dir: &Path, w: u32) -> Option<String> {
         let f = here.join("brand").join("brand.css");
         if let Ok(css) = std::fs::read_to_string(&f) {
             let kept: Vec<&str> = css.lines().filter(|l| !l.trim_start().starts_with("@import")).collect();
-            // its fonts and images as files: /media/ from the edit, the rest from brand/ (urls.rs)
+            // its fonts and images as files: /media/ from the edit, the rest from brand/ (raea-runtime-cssurls)
             let kept = css_file_urls(&kept.join("\n"), dir, &here.join("brand"), |_| ());
             return Some(format!("{kept}\n:root {{ --brand-scale: {}; }}\n", 2.5 * w as f64 / 1080.0));
         }
@@ -59,12 +59,12 @@ pub fn bundle_css(js: &str) -> Option<String> {
 
 /// A page's own CSS: the space's brand kit (brand_css), then the CSS the bundle `js` imported (bundle_css)
 pub fn page_css(dir: &Path, w: u32, js: &Path) -> Option<String> {
-    // its url()s as files from the edit's folder (urls.rs), where the CSS files it imports are found
+    // its url()s as files from the edit's folder (raea-runtime-cssurls), where the CSS files it imports are found
     let bundled = std::fs::read_to_string(js).ok().and_then(|t| bundle_css(&t)).map(|c| css_file_urls(&c, dir, dir, |_| ()));
-    match (brand_css(dir, w), bundled) {
-        (Some(b), Some(c)) => Some(format!("{b}\n{c}")),
-        (b, c) => b.or(c),
-    }
+    // then the layers RAEA_HIDE_LAYERS hides (the layer pass's oracle), and what RAEA_HIDE_MEDIA and RAEA_LAYER hide (an
+    // export's layers, docs/capcut.feature CC2b, docs/layers.feature LA2a)
+    let parts: Vec<String> = [brand_css(dir, w), bundled, raea_sys_layers::hidden_css()].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
 /// A `\u` escape in a JSX attribute's plain string (`unit="\u00a0pts"`) is no escape there: the page shows the six
@@ -128,10 +128,19 @@ pub struct CompOpts {
     pub h: u32,
     pub fps: f64,
     pub frames: i64,
+    /// each of `--w --h --fps --frames` given (flag, the config's key, value): the entry says one the composition overrides
+    pub given: Vec<(&'static str, &'static str, f64)>,
     /// the Clock's words, perception and input (`--words`, `--perception`, `--input`), as JSON for the entry
     pub words: Option<Value>,
     pub perception: Option<Value>,
     pub input: Option<Value>,
+    /// `--props`: the composition's props from the command line, a JSON object or a file of one (over its
+    /// defaultProps, and what getInputProps() returns; docs/move-in.feature MV4, #176)
+    pub props: Option<Value>,
+    /// `--scale S`: a `<Composition>` laid out at its own size and drawn at S times it (MV5, #175)
+    pub scale: Option<f64>,
+    /// `--hold N:M`: frame N of a `<Composition>` drawn M times (96 unless given), a held camera on a still scene
+    pub hold: Option<(u32, u32)>,
     /// live play's runtime instead of React (sdk/react/js/lite: each frame rendered and only what changed sent, no
     /// reconciler): what a game plays on; renders keep React
     pub lite: bool,
@@ -171,10 +180,8 @@ pub fn input_file(path: &str) -> R<Value> {
         let body = &body[..body.find('}').unwrap_or(b - a - 1)];
         let mut m = Map::new();
         for kv in body.split(',') {
-            if let Some((k, v)) = kv.split_once(':') {
-                if let (Ok(k), Ok(v)) = (k.trim().parse::<i64>(), v.trim().parse::<f64>()) {
-                    m.insert(k.to_string(), json!(v));
-                }
+            if let Some((k, v)) = kv.split_once(':') && let (Ok(k), Ok(v)) = (k.trim().parse::<i64>(), v.trim().parse::<f64>()) {
+                m.insert(k.to_string(), json!(v));
             }
         }
         steps.insert(dom_key(name), Value::Object(m));
@@ -185,20 +192,38 @@ pub fn input_file(path: &str) -> R<Value> {
     Ok(json!({ "steps": steps }))
 }
 
+/// `--props`: a JSON object written out, or a file holding one.
+pub fn props_arg(given: &str) -> R<Value> {
+    let v = if given.trim_start().starts_with('{') { serde_json::from_str(given).map_err(|e| format!("--props {given}: {e}"))? } else { json_file(given)? };
+    if v.is_object() { Ok(v) } else { Err(format!("--props takes a JSON object ({{\"n\": 2}}) or a file of one, not {v}")) }
+}
+
+/// What the command line gave this run's composition (`--props`, `--scale`), for the render's manifest: a check of
+/// the file knows what it was rendered with.
+pub static GIVEN: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
 pub fn comp_opts(args: &[String]) -> R<CompOpts> {
     let n = |k: &str| -> R<Option<f64>> { flag(args, k).map(|v| v.parse::<f64>().map_err(|_| format!("{k} takes a number"))).transpose() };
-    Ok(CompOpts {
+    let o = CompOpts {
         composition: flag(args, "--composition"),
         w: n("--w")?.unwrap_or(1080.0) as u32,
         h: n("--h")?.unwrap_or(1920.0) as u32,
         fps: n("--fps")?.unwrap_or(30.0),
         frames: n("--frames")?.unwrap_or(60.0) as i64,
+        given: [("--w", "width"), ("--h", "height"), ("--fps", "fps"), ("--frames", "durationInFrames")].into_iter().filter_map(|(k, key)| Some((k, key, n(k).ok()??))).collect(),
         words: flag(args, "--words").map(|p| json_file(&p).and_then(|v| words_shape(&v).map(|_| v).map_err(|e| format!("--words {p}: {e}")))).transpose()?,
         perception: flag(args, "--perception").map(|p| json_file(&p)).transpose()?,
         input: flag(args, "--input").map(|p| input_file(&p)).transpose()?,
+        props: flag(args, "--props").map(|p| props_arg(&p)).transpose()?,
+        hold: flag(args, "--hold").map(|h| { let (n, m) = h.split_once(':').unwrap_or((&h, "96")); n.parse().ok().zip(m.parse().ok().filter(|m| *m > 0)).ok_or(format!("--hold takes a frame, or FRAME:FRAMES (--hold 1308:96), not {h}")) }).transpose()?,
+        scale: n("--scale")?.map(|s| if s > 0.0 && s <= 8.0 { Ok(s) } else { Err(format!("--scale takes a number above 0, 8 at most (0.5 draws a half-size draft), not {s}")) }).transpose()?,
         lite: args.iter().any(|a| a == "--lite"),
         comps: args.iter().any(|a| a == "--comps"),
-    })
+    };
+    if o.props.is_some() || o.scale.is_some() || o.hold.is_some() {
+        *GIVEN.lock().unwrap() = Some(json!({"props": o.props, "scale": o.scale, "hold": o.hold}));
+    }
+    Ok(o)
 }
 
 /// A composition bundled for the engine (raea-bundle's library: Rolldown, on the Mac): the edit's folder and the SDK beside the engine's
@@ -212,23 +237,20 @@ pub fn bundle_composition(tsx: &Path, out_js: &Path, o: &CompOpts, portable: Opt
     // a bundle made from these same inputs before is copied instead of bundled again (lightspeed F5): the copying and
     // bundling on every open, render and play. Not a portable one (it copies media beside it)
     let cached = if portable.is_none() { bundle_cache(tsx, o) } else { None };
-    if let Some(c) = &cached {
-        if std::fs::copy(c, out_js).is_ok() {
-            let _ = std::fs::File::options().append(true).open(c).and_then(|f| f.set_modified(std::time::SystemTime::now()));
-            return Ok(());
-        }
+    if let Some(c) = &cached && std::fs::copy(c, out_js).is_ok() {
+        let _ = std::fs::File::options().append(true).open(c).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Ok(());
     }
     bundle_fresh(tsx, out_js, o, portable)?;
     if let Some(c) = cached {
         // written whole, then moved in
         let tmp = c.with_extension(format!("{}.tmp", std::process::id()));
-        if c.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::copy(out_js, &tmp).is_ok() && std::fs::rename(&tmp, &c).is_ok() {
-            if let Some(d) = c.parent() {
-                prune_cache(d, "js", 64);
-            }
+        if let Some(d) = c.parent() && std::fs::create_dir_all(d).is_ok() && std::fs::copy(out_js, &tmp).is_ok() && std::fs::rename(&tmp, &c).is_ok() {
+            prune_cache(d, "js", 64);
         } else {
             let _ = std::fs::remove_file(&tmp);
         }
     }
     Ok(())
 }
+

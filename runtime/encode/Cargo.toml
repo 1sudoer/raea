@@ -11,6 +11,7 @@ raea-render = { path = "../../engine/render", default-features = false, features
 raea-core-program = { path = "../../core/program" }
 raea-sys-frame = { path = "../../systems/frame", features = ["native"] }
 raea-runtime-view = { path = "../view" }
+raea-runtime-segments = { path = "../segments" }
 raea-page = { path = "../../engine/page" }
 raea-io-media = { path = "../../io/media", default-features = false, features = ["soft-audio", "apple"] }
 raea-io-home = { path = "../../io/home" }

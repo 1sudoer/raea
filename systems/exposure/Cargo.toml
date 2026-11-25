@@ -1,0 +1,10 @@
+[package]
+name = "raea-sys-exposure"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "What a point on a model is exposed to through the year: the sun on chosen days, driven snow, and where blown things settle (the weathering bake's sun and causes3)"
+
+[dependencies]
+parry3d = "0.31"

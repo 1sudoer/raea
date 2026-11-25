@@ -1,6 +1,7 @@
 // Quat, Transform, Mesh3d and Camera3d.
 import { Children, cloneElement, isValidElement, useId, type ReactNode } from "react";
 import { meshLayers } from "../layers";
+import { detailNode, type Detail } from "../3d/detail";
 import { BevyComponent, DepthOfField, Fog, dofOf, eulerOf, type DepthOfFieldProps, type FogProps, type Vec3 } from "../3d";
 import { AmbientLight as AmbientLight3, Mesh, OrthographicCamera, PerspectiveCamera, type MeshProps } from "../three";
 import { Transform as TransformComponent } from "@raea/app/bevy";
@@ -181,6 +182,8 @@ export interface Mesh3dProps extends Omit<MeshProps, "position" | "rotation" | "
   transform?: TransformValue;
   /** Bevy's Visibility: "Hidden" draws nothing; "Visible" and "Inherited" draw */
   visibility?: "Visible" | "Hidden" | "Inherited";
+  /** where it's drawn: its distances or sizes on screen, cross-faded, and its shadow (Detail; raea-sys-lod) */
+  detail?: Detail;
   /** its material and child entities */
   children?: ReactNode;
 }
@@ -194,9 +197,11 @@ export interface Mesh3dProps extends Omit<MeshProps, "position" | "rotation" | "
  * `layers` is its RenderLayers (a light's and a camera's too): @bevy bevy_camera::visibility::render_layers::RenderLayers
  * shadow="only" draws it with the shadow-only material (engine/render shadow_only.rs):
  * @bevy bevy_pbr::mesh_material::MeshMaterial3d<raea_render::engine::shadow_only::ShadowOnlyMaterial> */
-export function Mesh3d({ transform, visibility, children, ...rest }: Mesh3dProps) {
+export function Mesh3d({ transform, visibility, detail, children: own, ...rest }: Mesh3dProps) {
   const id = useId();
   if (visibility === "Hidden") return null;
+  // appended to the children as a list, not wrapped in a fragment: Mesh reads its shape from its own children
+  const children = detail === undefined ? own : [...Children.toArray(own), detailNode("Mesh3d", detail)];
   const layers = meshLayers("Mesh3d", rest.name ?? `layer${id}`, children, true);
   const at = place(transform, rest.animate !== undefined);
   if (!layers.surface) return <Mesh {...rest} {...at}>{layers.children}</Mesh>;
@@ -228,6 +233,11 @@ export interface Camera3dProps {
   /** Bevy's Viewport: the camera draws into this region of the window only, `physical_position` from its top left and
    *  `physical_size` big (whole px, at a scale factor of 1) */
   viewport?: CameraViewport;
+  /** Bevy's Camera is_active: false and it draws nothing this frame, its lens and ambient with it. Several cameras in
+   *  the scene, one active a frame, cut between them inside one render: the frame another camera becomes active (the
+   *  first active one, in tree order, is the piece's) is a cut, drawn as a shot rendered alone draws its first frame
+   *  (no motion blur from the frame before). True by default */
+  is_active?: boolean;
   /** components on the camera: post effects, tone mapping, a skybox */
   children?: ReactNode;
 }
@@ -247,7 +257,7 @@ export type ClearColorConfig = "Default" | "None" | { Custom: Srgba | LinearRgba
  * @bevy bevy_camera::components::Camera3d
  * @bevy bevy_camera::camera::Camera
  * @bevy bevy_camera::projection::Projection */
-export function Camera3d({ transform, projection = { Perspective: {} }, layers, order, clear_color, viewport, children: kids }: Camera3dProps) {
+export function Camera3d({ transform, projection = { Perspective: {} }, layers, order, clear_color, viewport, is_active, children: kids }: Camera3dProps) {
   if (order !== undefined && !Number.isInteger(order)) throw new TypeError(`Camera3d: order is a whole number, got ${order}`);
   const clear = clearOf(clear_color);
   if (viewport !== undefined) {
@@ -284,10 +294,13 @@ export function Camera3d({ transform, projection = { Perspective: {} }, layers, 
   // its rotation as its Transform holds it, which the engine places it by (rolled or not), exactly; the look-at point
   // is for what reads a camera by where it looks (its lens's focus, picking, sound)
   const look = { position: eye, lookAt, rotation: q, ...(layers ? { layers } : {}), ...(order ? { order } : {}), ...clear, ...(viewport ? { viewport } : {}) };
+  // not drawing this frame: the camera alone, marked, so the scene knows which of its cameras is (a cut, RR2)
+  const off = is_active === false;
   if ("Orthographic" in projection) {
     const o = projection.Orthographic;
     const height = o.scaling_mode?.FixedVertical.viewport_height;
     if (dof) throw new TypeError("Camera3d: DepthOfField needs a Perspective projection");
+    if (off) return <OrthographicCamera {...look} near={o.near} far={o.far} height={height} active={false} />;
     return (
       <>
         <OrthographicCamera {...look} near={o.near} far={o.far} height={height}>{children}</OrthographicCamera>
@@ -296,6 +309,7 @@ export function Camera3d({ transform, projection = { Perspective: {} }, layers, 
     );
   }
   const p = projection.Perspective;
+  if (off) return <PerspectiveCamera {...look} fov={((p.fov ?? Math.PI / 4) * 180) / Math.PI} near={p.near} far={p.far} active={false} />;
   return (
     <>
       <PerspectiveCamera {...look} fov={((p.fov ?? Math.PI / 4) * 180) / Math.PI} near={p.near} far={p.far} {...focus}>{children}</PerspectiveCamera>

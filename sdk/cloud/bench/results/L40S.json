@@ -1,0 +1,104 @@
+{
+ "kind": "L40S",
+ "raea_version": "0.1.6",
+ "blender_version": "5.3.0",
+ "start": 3.0,
+ "device": "NVIDIA L40S, 46068 MiB, 620.70.06",
+ "raea": {
+  "vulkan": [
+   "NVIDIA L40S",
+   "NVIDIA L40S",
+   "llvmpipe (LLVM 19.1.7, 256 bits)"
+  ],
+  "edit": {
+   "ok": true,
+   "s": 109.53,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-1.mp4 (1164.2 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 80074 ms"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 171.22,
+    "sync": 85.57,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.07
+   }
+  },
+  "edit-noclip": {
+   "ok": true,
+   "s": 24.11,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-0.mp4 (247.5 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 162.14,
+    "sync": 68.45,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.04
+   }
+  },
+  "solari": {
+   "ok": true,
+   "s": 8.86,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-1.mp4 (46.3 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 493 ms"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 9.31,
+    "sync": 32.86,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.03
+   }
+  },
+  "solari-noclip": {
+   "ok": true,
+   "s": 5.0,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-0.mp4 (25.1 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 9.3,
+    "sync": 14.89,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.01
+   }
+  }
+ },
+ "blender": {
+  "device": "NVIDIA L40S",
+  "s": 119.55,
+  "samples_per_minute": {
+   "monster": 5493.9,
+   "junkshop": 3736.9,
+   "classroom": 3473.8
+  },
+  "out": null
+ },
+ "frame": {
+  "ok": false,
+  "samples": 10,
+  "load_s": 0.61,
+  "render_s": null,
+  "total_s": 0.69,
+  "out": "00:00.088  system.path      | WARNING Could not get a list of mounted file-systems\n00:00.387  blend            | Read blend: \"/root/.cache/blender-benchmark-launcher/scenes/936f0a528f03eba291c67ea87743a0ebde58938fb87471b262721b89b46b875d/classroom/assets/desks/desks.blend\"\n00:00.393  blend.doversion  | WARNING Region type 4 missing in space type \"Info\" (id: 7) - removing region\n00:00.468  cycles           | WARNING HIPEW initialization failed: Error opening HIP dynamic library\n00:00.471  reports          | ERROR No camera found in scene \"Scene\"\nBlender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:31:18)\nRAEA_SAMPLES 10 RAEA_LOADED 1794935025.193915\n\nBlender quit\n"
+ },
+ "s": 272.5,
+ "usd": 0.1978
+}

@@ -251,3 +251,32 @@ export function brandKit(input: BrandInput, date = new Date().toISOString().slic
   ];
   return { files, said: said.join("\n") };
 }
+
+/** A raster's pixels from its header: PNG, GIF, JPEG, WebP or ICO (a logo's formats), on any system */
+export function pixelsOf(b: Uint8Array): { width: number; height: number } | undefined {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const tag = (at: number, s: string) => String.fromCharCode(...b.subarray(at, at + s.length)) === s;
+  const wh = (width: number, height: number) => (width > 0 && height > 0 ? { width, height } : undefined);
+  try {
+    if (tag(1, "PNG")) return wh(v.getUint32(16), v.getUint32(20));
+    if (tag(0, "GIF8")) return wh(v.getUint16(6, true), v.getUint16(8, true));
+    if (tag(0, "RIFF") && tag(8, "WEBP")) {
+      if (tag(12, "VP8 ")) return wh(v.getUint16(26, true) & 0x3fff, v.getUint16(28, true) & 0x3fff);
+      if (tag(12, "VP8L")) return wh(1 + (((b[22] & 0x3f) << 8) | b[21]), 1 + (((b[24] & 0xf) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6)));
+      if (tag(12, "VP8X")) return wh(1 + (b[24] | (b[25] << 8) | (b[26] << 16)), 1 + (b[27] | (b[28] << 8) | (b[29] << 16)));
+    }
+    if (b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0) return wh(b[6] || 256, b[7] || 256);
+    if (b[0] === 0xff && b[1] === 0xd8) {
+      // JPEG: its segments up to the first frame header (SOF0-15, not DHT, JPG or DAC)
+      for (let i = 2; i + 9 < b.length; ) {
+        if (b[i] !== 0xff) return undefined;
+        const m = b[i + 1];
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return wh(v.getUint16(i + 7), v.getUint16(i + 5));
+        i += 2 + v.getUint16(i + 2);
+      }
+    }
+  } catch {
+    // a header cut short
+  }
+  return undefined;
+}

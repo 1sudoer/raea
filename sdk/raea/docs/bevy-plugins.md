@@ -19,6 +19,26 @@ generates them. TypeScript then drives them two ways:
 
 Rust is written only where a plugin's API isn't data (see "What still needs Rust").
 
+### A project choosing from the catalog (2026-11-19, docs/nobuild.feature NB4a)
+
+raea built with its catalog (raea-cli's `catalog` feature, which engine/bevy-plugins' sync writes: every declared
+plugin but those declared `"catalog": false`, today only `bevy`, Bevy's own optional features) has every plugin
+compiled in, and an Engine adds only the ones its project chooses. An author writes no declaration and runs no build:
+
+```json
+"raea": { "plugins": ["avian", "hanabi"] }
+```
+
+The nearest package.json at or above the composition's folder that names plugins chooses them (a list of names, or
+declarations keyed by name as below; `"raea": true` entries are raea's own and in every build). A plugin a scene's
+components or resources come from (a type under its crate, `avian3d::...`) is added too, and so is every plugin a
+chosen one `needs`. The rest are compiled in and never added, so two that conflict (avian and rapier3d) meet only in a
+scene that asks for both. The run's trace says what was chosen and why (`plugins_chosen`); a name the build lacks is
+said once on stderr. `tools/nobuild.sh catalog` is the check: a project choosing avian and hanabi renders and plays,
+and scenes that choose none draw the same pixels as a raea built without the catalog.
+
+The declaration below is for adding a plugin to the catalog, which is raea's job, not an author's.
+
 ### The declaration, and how the build resolves it
 
 A project's package.json names its plugins under `raea.plugins` (`raea.bevy.plugins`, its first name, is still read). Each key is the plugin's name, which is also its
@@ -232,7 +252,10 @@ They are, by group:
 - rendering: area_light_luts (rect lights), experimental_pbr_pcss (soft shadows), every pbr_* texture, the dfg, smaa
   and tonemapping LUTs, bluenoise_texture, meshlet and meshlet_processor, bevy_solari;
 - images: png, jpeg, ktx2, zstd_rust, basis-universal, exr, hdr, webp, dds, tga, bmp, gif, ico, qoi, pnm, tiff, and
-  the compressed image saver;
+  compressed_image_saver_universal. compressed_image_saver is left out (0.1.8): its encoders (ctt's etcpak, astcenc and
+  compressonator) build a copy for AVX2 whose C++ tables are set up before main on every CPU, so raea.exe stopped at
+  start on a PC without AVX (a Goldmont Celeron, a Nehalem; Intel's SDE showed it), and raea never runs Bevy's asset
+  processing, its only user;
 - audio: bevy_audio with mp3, flac, vorbis, wav and aac;
 - animation: bevy_animation, gltf_animation, morph and morph_animation;
 - tools: bevy_gizmos, bevy_dev_tools, debug, bevy_ui_debug, bevy_debug_stepping, sysinfo_plugin, reflect_functions,

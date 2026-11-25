@@ -83,7 +83,7 @@ export function buildDb(skel: Skeleton, clips: Iterable<BuildClip>, log: (s: str
     for (let i = 0; i < NS; i++) S[k * SS + i] = q16((raw[k * C + NF + 5 + i] - stateMean[i]) / stateSd[i]);
     G[k * 3] = raw[k * C + NF]; G[k * 3 + 1] = raw[k * C + NF + 1]; G[k * 3 + 2] = raw[k * C + NF + 2];
   }
-  const ankleRest = skel.joints.find((j) => j.name === B.foot("L"))!.head[1], restHips = skel.joints[0].head[1], hz = bodyScale(skel);
+  const ankleRest = skel.joints[joint(skel, B.foot("L"))].head[1], restHips = skel.joints[0].head[1], hz = bodyScale(skel);
   const hipY = new Float32Array(n0);
   { let a = 0; for (const b of rootParts) { hipY.set(b, a); a += b.length; } }
   const clipBits = metas.map((mt) => { const b: [number, number] = [0, 0]; for (const t of mt.tags) { const i = TAG_INDEX.get(t)!; b[i >> 5] |= 1 << (i & 31); } return b; });

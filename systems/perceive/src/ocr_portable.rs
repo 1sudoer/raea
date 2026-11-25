@@ -11,7 +11,7 @@ const MODELS: [(&str, &str); 2] = [
 ];
 
 fn model(name: &str, url: &str) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/raea/ocrs");
+    let dir = raea_io_home::user_home().unwrap_or_default().join(".cache/raea/ocrs");
     let p = dir.join(name);
     if !p.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

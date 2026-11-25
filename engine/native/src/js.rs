@@ -121,7 +121,7 @@ fn rewrite_node(url: &str, js: &str) -> String {
         if SOURCES.with(|s| s.borrow().contains_key(&u)) {
             return Some(u);
         }
-        match crate::node::load(&path) {
+        match crate::node::load(&path, false) {
             Ok(src) => {
                 SOURCES.with(|s| s.borrow_mut().insert(u.clone(), src));
                 Some(u)
@@ -186,7 +186,9 @@ fn run_here(root: &Path, cwd: &Path, entry: Entry, argv: Vec<String>, env: serde
     let globals = [
         ("__raea_argv", json!(argv)),
         ("__raea_env", Value::Object(env)),
-        ("__raea_platform", json!(if cfg!(target_os = "ios") { "ios" } else { std::env::consts::OS })),
+        // process.platform in Node's words (darwin, win32, linux): until 0.1.8 Rust's (macos, windows), so the agent
+        // shell's every test for a Mac or a Windows PC was false (#169)
+        ("__raea_platform", json!(match std::env::consts::OS { "macos" => "darwin", "windows" => "win32", os => os })),
         ("__raea_stdin", json!(stdin)),
         ("__raea_cwd", json!(cwd.display().to_string())),
     ];
@@ -208,7 +210,7 @@ fn run_here(root: &Path, cwd: &Path, entry: Entry, argv: Vec<String>, env: serde
     // the entry module
     let (url, js) = match &entry {
         // import.meta.main (Bun's and Node 24's): true in the entry, false in the modules it imports (node.rs)
-        Entry::File(p) if node => crate::node::load_entry(p).map(|src| (format!("file://{}", p.display()), src)),
+        Entry::File(p) if node => crate::node::load(p, true).map(|src| (format!("file://{}", p.display()), src)),
         Entry::File(p) => LOADER.with(|l| {
             let mut l = l.borrow_mut();
             let l = l.as_mut().unwrap();
@@ -278,6 +280,13 @@ fn run_here(root: &Path, cwd: &Path, entry: Entry, argv: Vec<String>, env: serde
         } else {
             exit = 1;
             OUT.with(|o| o.borrow_mut().1.push_str(&format!("{e}\n")));
+        }
+    } else if node {
+        // Node's process.exitCode: the status a script that ends on its own leaves (engine/cli's native.ts sets it, so a
+        // shell verb's refusal exits 1)
+        let _ = c.eval("globalThis.__raea_exit_code = () => { const n = Number(globalThis.process?.exitCode ?? 0); return Number.isInteger(n) ? n : 1; };", "exit-code");
+        if let Some(Ok(n)) = c.call("__raea_exit_code", &[]) {
+            exit = n as i32;
         }
     }
     drop(c);

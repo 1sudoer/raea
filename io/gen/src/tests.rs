@@ -135,6 +135,25 @@ fn keys_change_with_what_a_step_reads() {
 }
 
 #[test]
+fn a_loaded_file_changed_in_place_is_a_new_input() {
+    let dir = std::env::temp_dir().join(format!("raea-gen-keys-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("front.jpeg"), b"one face").unwrap();
+    let mut f = Flow::default();
+    f.steps.insert("ref".into(), Step::new("media.load", json!({"path": "front.jpeg"})));
+    f.steps.insert("bald".into(), Step::new("image.edit", json!({"image": "@ref", "prompt": "shaved"})));
+    f.out = vec!["bald".into()];
+    let k1 = f.keys_in(Some(&dir)).unwrap();
+    std::fs::write(dir.join("front.jpeg"), b"another face").unwrap();
+    let k2 = f.keys_in(Some(&dir)).unwrap();
+    assert_ne!(k1["ref"], k2["ref"]);
+    assert_ne!(k1["bald"], k2["bald"]);
+    // without a base (or with the file gone) the key is the path's, as before
+    assert_eq!(f.keys().unwrap(), f.keys_in(None).unwrap());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn made_bodies_fit_the_model() {
     let model = json!({"id": "kling_3_pro_i2v", "durations": [3, 4, 5, 10], "mediaRoles": {"start_image": "x", "end_image": "y"}, "allowedParams": ["negative_prompt"], "inputMap": {"audio": {}}});
     let s = Step::new("video.generate", json!({"prompt": "push in", "seconds": 6.2, "start_image": "@a", "seed": 3, "negative": "blur"}));

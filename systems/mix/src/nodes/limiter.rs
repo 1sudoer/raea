@@ -18,7 +18,18 @@ pub struct Limiter {
     /// each channel's last TAPS samples in
     hist: [[f32; TAPS]; 2],
     taps: [[f32; TAPS]; 3],
+    /// the leveller's mean square of the mix, followed
+    env: f32,
 }
+
+/// The leveller ahead of the limiter (raea's master, 11-19): from LEVEL dB under the ceiling, RATIO to 1 on the mix's
+/// RMS (ATTACK in, RELEASE out), so phone speech brought up to a delivery's loudness rounds its peaks instead of the
+/// limiter flattening them (the walkaround's lines peaked 15-19 dB over their loudness: the limiter alone flat-topped
+/// them, and raea check found the sound clipping). Under it, nothing changes.
+pub const LEVEL: f32 = 9.0;
+pub const RATIO: f32 = 3.0;
+pub const ATTACK: f64 = 0.010;
+pub const RELEASE: f64 = 0.150;
 
 const TAPS: usize = 12;
 
@@ -41,7 +52,7 @@ impl Limiter {
                 *t = (sinc * w) as f32;
             }
         }
-        Limiter { delay: Vec::new(), need: Vec::new(), at: 0, gain: 1.0, pre: 1.0, ceiling: CEILING, hist: [[0.0; TAPS]; 2], taps }
+        Limiter { delay: Vec::new(), need: Vec::new(), at: 0, gain: 1.0, pre: 1.0, ceiling: CEILING, hist: [[0.0; TAPS]; 2], taps, env: 0.0 }
     }
 
     pub fn run(&mut self, l: &mut [f32], r: &mut [f32], rate: f64) {
@@ -56,8 +67,16 @@ impl Limiter {
         // aimed 0.26 dB under: the 12-tap meter reads a peak between samples up to ~1% low
         let (pre, ceiling) = (self.pre, self.ceiling * 0.97);
         let need = |v: f32| if v > ceiling { ceiling / v } else { 1.0 };
+        let (up, down) = ((1.0 - (-1.0 / (ATTACK * rate)).exp()) as f32, (1.0 - (-1.0 / (RELEASE * rate)).exp()) as f32);
+        let floor = (self.ceiling * 10f32.powf(-LEVEL / 20.0)).powi(2);
         for i in 0..l.len() {
-            let frame = [l[i] * pre, r[i] * pre];
+            let mut frame = [l[i] * pre, r[i] * pre];
+            let p = 0.5 * (frame[0] * frame[0] + frame[1] * frame[1]);
+            self.env += if p > self.env { up } else { down } * (p - self.env);
+            if self.env > floor {
+                let lg = (floor / self.env).powf(0.5 * (1.0 - 1.0 / RATIO));
+                frame = [frame[0] * lg, frame[1] * lg];
+            }
             // the sample leaving the window: its own need, settled
             let own = self.need[self.at];
             let late = std::mem::replace(&mut self.delay[self.at], frame);

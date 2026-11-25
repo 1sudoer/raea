@@ -38,3 +38,33 @@ fn signal_name(n: i32) -> String {
         n => format!("SIG{n}"),
     }
 }
+
+/// process.arch: Node's word for the CPU this was built for
+pub(super) fn node_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "ia32",
+        other => other,
+    }
+}
+
+/// process.ppid: the process that started this one. Windows keeps it in a process's own record, read here through
+/// PowerShell (once, when asked: the agent shell asks only to find the harness that ran `raea show`).
+pub(super) fn parent_pid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        // SAFETY: getppid takes nothing and can't fail
+        Some(unsafe { libc::getppid() } as u32)
+    }
+    #[cfg(windows)]
+    {
+        let q = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={}').ParentProcessId", std::process::id());
+        let o = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &q]).stdin(std::process::Stdio::null()).output().ok()?;
+        String::from_utf8_lossy(&o.stdout).trim().parse().ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}

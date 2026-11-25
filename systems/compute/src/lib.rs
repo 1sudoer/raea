@@ -20,6 +20,7 @@ use bevy::render::{
         *,
     },
     renderer::{RenderContext, RenderDevice, RenderGraph},
+    storage::GpuShaderBuffer,
     texture::GpuImage,
     Render, RenderApp, RenderSystems,
 };
@@ -28,6 +29,7 @@ use raea_sys_shader::{accessors, register, Inputs};
 use serde_json::Value;
 
 mod slab;
+pub mod three;
 pub mod written;
 
 /// Buffers and images a compute may have.
@@ -45,6 +47,8 @@ pub struct Compute {
     pub images: Vec<Handle<Image>>,
     /// a compute as written (a <Compute file>): its own bindings, entry and images (written.rs)
     pub written: Option<written::Written>,
+    /// three.js's compute nodes (a <Compute kernels>): its kernels, shared buffers and this frame's runs (three.rs)
+    pub three: Option<three::Three>,
     /// its row's id, whose keyed `uniforms` column it follows frame by frame; its uniforms' names, in slot order; the
     /// column last followed
     pub id: String,
@@ -82,10 +86,13 @@ pub fn module(source: &str, uniforms: &[(String, &'static str)], buffers: &[Stri
 /// made storage-capable here.
 pub fn build(world: &mut World, v: &Value, id: &str, mut image: impl FnMut(&mut World, &Value) -> Result<Handle<Image>, String>) -> Result<Compute, String> {
     let o = v.as_object().ok_or_else(|| format!("a compute is {{wesl, workgroups, uniforms, buffers, images}}, got {v}"))?;
+    if o.contains_key("three") {
+        return Ok(three::build(id));
+    }
     let workgroups = workgroups(o)?;
     if o.contains_key("file") {
         let (shader, w) = written::build(world, o, id, &mut image)?;
-        return Ok(Compute { shader, workgroups, slots: [Vec4::ZERO; SLOTS], buffers: vec![], images: vec![], written: Some(w), id: id.to_string(), names: vec![], given: String::new() });
+        return Ok(Compute { shader, workgroups, slots: [Vec4::ZERO; SLOTS], buffers: vec![], images: vec![], written: Some(w), three: None, id: id.to_string(), names: vec![], given: String::new() });
     }
     let ins = Inputs::read(world, o, "a compute", &mut image)?;
     if !ins.textures.is_empty() || ins.array.is_some() {
@@ -137,24 +144,34 @@ pub fn build(world: &mut World, v: &Value, id: &str, mut image: impl FnMut(&mut 
     let bnames: Vec<String> = buffers.iter().map(|b| b.0.clone()).collect();
     let shader = register(world, module(&ins.src, &names, &bnames, &inames), &ins.defs, "raea compute", "raea_sys_compute");
     let uniforms = names.iter().map(|(n, _)| n.clone()).collect();
-    Ok(Compute { shader, workgroups, slots: ins.slots(), buffers, images, written: None, id: id.to_string(), names: uniforms, given: String::new() })
+    Ok(Compute { shader, workgroups, slots: ins.slots(), buffers, images, written: None, three: None, id: id.to_string(), names: uniforms, given: String::new() })
 }
 
 /// A spec's workgroups, [x(, y(, z))], each 1 to 65535.
 fn workgroups(o: &serde_json::Map<String, Value>) -> Result<[u32; 3], String> {
-    match o.get("workgroups").and_then(Value::as_array) {
-        Some(a) if (1..=3).contains(&a.len()) && a.iter().all(|x| x.as_u64().is_some_and(|n| (1..=65535).contains(&n))) => {
-            let n = |i: usize| a.get(i).and_then(Value::as_u64).unwrap_or(1) as u32;
-            Ok([n(0), n(1), n(2)])
-        }
-        _ => Err(format!("a compute's workgroups are [x, y, z], each 1 to 65535, got {}", o.get("workgroups").unwrap_or(&Value::Null))),
+    groups_of(o.get("workgroups")).ok_or_else(|| format!("a compute's workgroups are [x, y, z], each 1 to 65535, got {}", o.get("workgroups").unwrap_or(&Value::Null)))
+}
+
+/// Workgroups as [x(, y(, z))], each 1 to 65535 (a missing one 1); None for anything else.
+pub(crate) fn groups_of(v: Option<&Value>) -> Option<[u32; 3]> {
+    let a = v?.as_array()?;
+    if !(1..=3).contains(&a.len()) || !a.iter().all(|x| x.as_u64().is_some_and(|n| (1..=65535).contains(&n))) {
+        return None;
     }
+    let n = |i: usize| a.get(i).and_then(Value::as_u64).unwrap_or(1) as u32;
+    Some([n(0), n(1), n(2)])
+}
+
+/// Row `r`'s keyed string column `k` this frame ("" when it has none).
+pub(crate) fn column(frame: &raea_sys_frame::FrameRows, r: usize, k: &str) -> String {
+    raea_sys_frame::keyed(|col| frame.at(r, col), k).unwrap_or_default()
 }
 
 pub fn install(app: &mut App) {
     app.init_resource::<Computes>();
+    app.init_resource::<raea_sys_shader::shared::SharedBuffers>();
     app.add_plugins(ExtractResourcePlugin::<Computes>::default());
-    app.add_systems(PostUpdate, (follow, stamp));
+    app.add_systems(PostUpdate, (follow, three::follow, stamp).chain());
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
     render_app.init_resource::<State>();
     render_app.add_systems(Render, queue.in_set(RenderSystems::Queue));
@@ -180,7 +197,7 @@ fn follow(frame: Option<Res<raea_sys_frame::FrameRows>>, mut c: ResMut<Computes>
     let cols = &frame.cols;
     for c in c.list.iter_mut() {
         let Some(r) = cols.id.iter().position(|i| *i == c.id) else { continue };
-        let s = |k: &str| raea_sys_frame::keyed(|col| frame.at(r, col), k).unwrap_or_default();
+        let s = |k: &str| column(&frame, r, k);
         let Some(w) = c.written.as_mut() else {
             if let Err(e) = inline_uniforms(c, &s("uniforms")) {
                 error!("Compute {}: {e}", c.id);
@@ -231,11 +248,30 @@ struct State {
     buffers: HashMap<(usize, u128, String), Buffer>,
     /// a compute as written's pipelines, by its shader and entry point
     written: HashMap<(u128, String), (BindGroupLayoutDescriptor, CachedComputePipelineId)>,
+    /// three's kernels' pipelines by shader; the runs not yet dispatched, in order; each compute's runs last taken
+    three: HashMap<u128, (BindGroupLayoutDescriptor, CachedComputePipelineId)>,
+    backlog: Vec<three::Run>,
+    taken: HashMap<usize, (i64, i64)>,
 }
 
 fn queue(c: Option<Res<Computes>>, mut s: ResMut<State>, cache: Res<PipelineCache>) {
     let Some(c) = c else { return };
-    for k in &c.list {
+    for (n, k) in c.list.iter().enumerate() {
+        if let Some(t) = &k.three {
+            let new: Vec<_> = t.kernels.values().filter(|x| !s.three.contains_key(&x.shader)).cloned().collect();
+            for kernel in new {
+                let layout = BindGroupLayoutDescriptor::new("raea_compute_three", &written::layout(&kernel.decls));
+                let shader = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(kernel.shader), core::marker::PhantomData);
+                let id = cache.queue_compute_pipeline(ComputePipelineDescriptor { label: Some("raea_compute_three".into()), layout: vec![layout.clone()], shader, entry_point: Some(three::ENTRY.into()), ..default() });
+                s.three.insert(kernel.shader, (layout, id));
+            }
+            // this frame's runs onto the backlog once (a frame extracted again holds the same runs)
+            if let Some(at) = t.seen.filter(|at| !t.runs.is_empty() && s.taken.get(&n) != Some(at)) {
+                s.taken.insert(n, at);
+                s.backlog.extend(t.runs.iter().cloned());
+            }
+            continue;
+        }
         if let Some(w) = &k.written {
             let key = w.entry.as_ref().map(|e| (k.shader, e.clone()));
             if let Some(key) = key.filter(|key| !s.written.contains_key(key)) {
@@ -270,11 +306,19 @@ fn queue(c: Option<Res<Computes>>, mut s: ResMut<State>, cache: Res<PipelineCach
 }
 
 /// Each compute whose pipeline and images are ready, dispatched in order in one compute pass.
-fn dispatch(c: Option<Res<Computes>>, mut s: ResMut<State>, cache: Res<PipelineCache>, images: Res<RenderAssets<GpuImage>>, slabs: Slabs, mut ctx: RenderContext) {
+fn dispatch(c: Option<Res<Computes>>, mut s: ResMut<State>, cache: Res<PipelineCache>, images: Res<RenderAssets<GpuImage>>, shared: Res<RenderAssets<GpuShaderBuffer>>, slabs: Slabs, mut ctx: RenderContext) {
     let Some(c) = c else { return };
     let device = ctx.render_device().clone();
     let mut groups = vec![];
+    // three's runs first, in order, up to the first whose pipeline or buffers aren't on the GPU yet (held, with every
+    // run after it, for the next frame)
+    let ready = s.backlog.iter().map_while(|r| three_group(&device, &cache, &s.three, &shared, r)).collect::<Vec<_>>();
+    s.backlog.drain(..ready.len());
+    groups.extend(ready);
     'computes: for (n, k) in c.list.iter().enumerate() {
+        if k.three.is_some() {
+            continue;
+        }
         if let Some(w) = &k.written {
             let Some((layout, id)) = w.entry.as_ref().and_then(|e| s.written.get(&(k.shader, e.clone()))) else { continue };
             let (Some(pipeline), layout) = (cache.get_compute_pipeline(*id), cache.get_bind_group_layout(layout)) else { continue };
@@ -339,6 +383,22 @@ fn dispatch(c: Option<Res<Computes>>, mut s: ResMut<State>, cache: Res<PipelineC
         pass.set_bind_group(0, group, &[]);
         pass.dispatch_workgroups(*x, *y, *z);
     }
+}
+
+/// A three run's pipeline and bind group (its uniforms' bytes, its shared buffers) and workgroups, once all are ready.
+fn three_group<'a>(device: &RenderDevice, cache: &'a PipelineCache, pipelines: &HashMap<u128, (BindGroupLayoutDescriptor, CachedComputePipelineId)>, shared: &RenderAssets<GpuShaderBuffer>, r: &three::Run) -> Option<(&'a ComputePipeline, BindGroup, [u32; 3])> {
+    let (layout, id) = pipelines.get(&r.kernel.shader)?;
+    let pipeline = cache.get_compute_pipeline(*id)?;
+    let mut buffers: Vec<(u32, Buffer)> = Vec::new();
+    for d in &r.kernel.decls {
+        match d {
+            written::Decl::Uniform { binding, name, .. } => buffers.push((*binding, device.create_buffer_with_data(&BufferInitDescriptor { label: Some("raea_compute_three"), contents: r.uniforms.get(name)?, usage: BufferUsages::UNIFORM }))),
+            written::Decl::Buffer { binding, name, .. } => buffers.push((*binding, shared.get(*r.buffers.get(name)?)?.buffer.clone())),
+            written::Decl::Storage { .. } => return None,
+        }
+    }
+    let group = device.create_bind_group("raea_compute_three", &cache.get_bind_group_layout(layout), &raea_sys_shader::bindings::entries(&buffers, vec![]));
+    Some((pipeline, group, r.workgroups))
 }
 
 /// The mesh allocator and the meshes on the GPU, for a compute that binds a mesh's slab.

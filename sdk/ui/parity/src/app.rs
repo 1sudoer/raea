@@ -126,7 +126,7 @@ pub fn run(o: Opts) -> Result<i32, String> {
     let html = std::fs::read_to_string(&index).map_err(|e| format!("dist/index.html: {e}"))?;
     let html = html.replacen("<head>", &format!("<head><script>{CLOCK}</script>"), 1);
     std::fs::write(&index, html.replacen("</head>", &format!("<style>{PIN}</style></head>"), 1)).map_err(|e| e.to_string())?;
-    let base = crate::wpt::serve(o.app.join("dist").canonicalize().map_err(|e| e.to_string())?)?;
+    let base = crate::wpt::serve(dunce::canonicalize(&o.app.join("dist")).map_err(|e| e.to_string())?)?;
     let js = std::fs::read_to_string(o.app.join("blitz/out/app.js")).map_err(|e| format!("blitz/out/app.js: {e}"))?;
     let sheet = std::fs::read_to_string(o.app.join("blitz/out/app.css")).map_err(|e| format!("blitz/out/app.css: {e}"))?;
     std::fs::write(o.app.join("blitz/out/app.pinned.css"), format!("{sheet}\n{PIN}\n")).map_err(|e| e.to_string())?;

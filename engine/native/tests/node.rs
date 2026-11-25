@@ -79,3 +79,69 @@ process.exit(5);
     });
     assert_eq!(got, want);
 }
+
+#[test]
+fn a_script_that_sets_exit_code_exits_with_it() {
+    let d = std::env::temp_dir().join(format!("raea-node-exitcode-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("set.ts"), "process.stderr.write(\"refused\\n\");\nprocess.exitCode = 3;\n").unwrap();
+    std::fs::write(d.join("plain.ts"), "process.stdout.write(\"ok\");\n").unwrap();
+    let set = raea_native::js::run_node(&d.join("set.ts"), &[], String::new(), Duration::from_secs(20));
+    let plain = raea_native::js::run_node(&d.join("plain.ts"), &[], String::new(), Duration::from_secs(20));
+    let _ = std::fs::remove_dir_all(&d);
+    // as Node: the status it set, and what it wrote before ending
+    assert_eq!((set.exit, set.stderr.as_str()), (3, "refused\n"));
+    assert_eq!((plain.exit, plain.stdout.as_str()), (0, "ok"));
+}
+
+/// The system as Node names it, and Windows' paths parsed as Windows does (#169: on a Windows PC raea's Node core said
+/// it was an arm64 Mac, process.platform was Rust's "windows", resolve(".") named "/C:\Users\...", no folder at all, and
+/// there was no process.ppid on any system, so `raea show` never found the harness that ran it). path.win32 parses
+/// Windows' paths on any system, as the Windows path does there, writing them with /. Each answer is Node 22's, its \
+/// written as /.
+#[test]
+fn names_the_system_as_node_does_and_parses_windows_paths() {
+    let d = std::env::temp_dir().join(format!("raea-node-system-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("system.ts"), r#"
+import { arch, platform, type, tmpdir, homedir } from "os";
+import path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+const w = path.win32;
+process.stdout.write(JSON.stringify({
+  system: [process.platform === platform(), process.arch === arch(), process.pid > 1, process.ppid > 1 && process.ppid !== process.pid, type()],
+  here: [path.isAbsolute(process.cwd()), path.resolve(".") === process.cwd(), path.isAbsolute(tmpdir()), !/[\\/]$/.test(tmpdir()), path.isAbsolute(homedir())],
+  resolve: [w.resolve("C:\\a", "b\\..\\c"), w.resolve("C:\\a", "D:\\x", "y"), w.resolve("\\\\nas\\clips\\", "a.mp4"), w.resolve("C:/a/", "..", "..")],
+  absolute: ["C:\\x", "c:/x", "\\\\nas\\clips", "\\x", "x", "C:x"].map((p) => w.isAbsolute(p)),
+  parts: [w.dirname("C:\\a\\b.txt"), w.dirname("C:\\a"), w.dirname("C:\\"), w.basename("C:\\a\\b.txt", ".txt"), w.extname("C:\\a.b\\c.mp4"), w.basename("C:\\")],
+  join: [w.join("C:\\Users\\me", ".raea", "app-host.json"), w.normalize("C:\\a\\.\\b\\..\\c\\"), w.parse("C:\\a\\b.txt").root],
+  relative: [w.relative("C:\\a\\b", "C:\\a\\c\\d"), w.relative("C:\\A\\b", "c:\\a\\B\\x"), w.relative("C:\\a", "D:\\b")],
+  delimiter: [w.delimiter, path.posix.delimiter, path.posix.resolve("/a", "b"), path.posix.isAbsolute("C:\\x")],
+  url: [fileURLToPath(pathToFileURL(path.resolve("a b#1.txt"))) === path.resolve("a b#1.txt"), pathToFileURL("/x y").href.startsWith("file:///")],
+}));
+"#).unwrap();
+    let r = raea_native::js::run_node(&d.join("system.ts"), &[], String::new(), Duration::from_secs(20));
+    let _ = std::fs::remove_dir_all(&d);
+    let got: serde_json::Value = serde_json::from_str(&r.stdout).unwrap_or_else(|e| panic!("{e}: {} / {}", r.stdout, r.stderr));
+    let kind = match std::env::consts::OS { "macos" => "Darwin", "windows" => "Windows_NT", "linux" => "Linux", os => os };
+    let want = serde_json::json!({
+        "system": [true, true, true, true, kind],
+        "here": [true, true, true, true, true],
+        "resolve": ["C:/a/c", "D:/x/y", "//nas/clips/a.mp4", "C:/"],
+        "absolute": [true, true, true, true, false, false],
+        "parts": ["C:/a", "C:/", "C:/", "b", ".mp4", ""],
+        "join": ["C:/Users/me/.raea/app-host.json", "C:/a/c/", "C:/"],
+        "relative": ["../c/d", "x", "D:/b"],
+        "delimiter": [";", ":", "/a/b", false],
+        "url": [true, true],
+    });
+    assert_eq!(got, want);
+    // and Node's own words for this system
+    let platform = match std::env::consts::OS { "macos" => "darwin", "windows" => "win32", os => os };
+    let probe = d.with_extension("platform.ts");
+    std::fs::write(&probe, "process.stdout.write(process.platform + ' ' + process.arch);\n").unwrap();
+    let r = raea_native::js::run_node(&probe, &[], String::new(), Duration::from_secs(20));
+    let _ = std::fs::remove_file(&probe);
+    let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", a => a };
+    assert_eq!(r.stdout, format!("{platform} {arch}"));
+}

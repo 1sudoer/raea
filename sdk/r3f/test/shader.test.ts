@@ -54,3 +54,20 @@ describe("ShaderMaterial → raea's ThreeShaderMaterial", () => {
     expect(ownAttributes(g)).toEqual({ aRandom: { size: 1, values: [0.25, 0.75] } });
   });
 });
+
+describe("the pictures a ShaderMaterial is given where three has none", () => {
+  test("are PNGs that decode: one white pixel, one opaque black", async () => {
+    const { inflateSync, crc32 } = await import("node:zlib");
+    const { WHITE, BLACK } = await import("../src/input/shader");
+    const pixel = (url: string) => {
+      const png = Buffer.from(url.split(",")[1], "base64");
+      const at = png.indexOf("IDAT");
+      const len = png.readUInt32BE(at - 4);
+      // the chunk's CRC covers its type and its data
+      expect(crc32(png.subarray(at, at + 4 + len))).toBe(png.readUInt32BE(at + 4 + len));
+      return [...inflateSync(png.subarray(at + 4, at + 4 + len))];
+    };
+    expect(pixel(WHITE)).toEqual([0, 255, 255, 255, 255]);
+    expect(pixel(BLACK)).toEqual([0, 0, 0, 0, 255]);
+  });
+});

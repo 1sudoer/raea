@@ -12,7 +12,7 @@
 // finding is measured again at every stage of the performance (the clip's frame as chosen, blended in, the feet
 // planted, the elbows relaxed, the gaze), and the first stage where it shows is the one that made it.
 import type { Quat } from "raea/character";
-import { B, isFinger, sideOf as sideOfJoint, captured, joint, qinv, qmul, qrot, qyaw, type Pose, type Skeleton } from "raea/character";
+import { B, SIDES, isFinger, somaName, sideOf as sideOfJoint, captured, joint, qinv, qmul, qrot, qyaw, type Pose, type Skeleton } from "raea/character";
 import { framePose } from "./clip";
 import { qlog } from "./effects";
 import type { MotionLibrary, Performance } from "./matching";
@@ -59,6 +59,8 @@ function localTurn(p: Pose, i: number): Quat {
 const step = (a: Pose, b: Pose, i: number) => qlog(qmul(qinv(localTurn(a, i)), localTurn(b, i)));
 const DEG = 180 / Math.PI;
 const watched = (name: string) => !isFinger(name);
+/** the joints a foot's plant or the hips' drop can cause a jump on */
+const LEGS = new Set([B.pelvis, ...SIDES.flatMap((s) => [B.thigh(s), B.calf(s), B.foot(s), B.ball(s)])]);
 
 const refs = new WeakMap<MotionLibrary, { speed: number[]; jerk: number[] }>();
 /** each joint's 99.5th percentile turn speed and change of speed over the library's frames (degrees a frame) */
@@ -110,7 +112,7 @@ export function motionLint(lib: MotionLibrary, perf: Performance, o: { margin?: 
     return kind === "speed" ? Math.max(2, lim.speed[i] * r * m) : Math.max(1.5, lim.jerk[i] * r * r * m * 1.2);
   };
   const causes = (t: number, name: string): string[] => {
-    const out: string[] = [], side = sideOf(name), leg = /^(thigh|calf|foot|ball)_|^pelvis$/.test(name);
+    const out: string[] = [], side = sideOf(name), leg = LEGS.has(somaName(name));
     for (const s of tr.switches) if (Math.abs(s - t) <= 3) out.push(`clip switch @${s}`);
     if (tr.plant) {
       for (const e of tr.plant.events) if (Math.abs(e.t - t) <= 3 && leg && (side < 0 || side === e.foot)) out.push(`${e.foot ? "R" : "L"} ${e.what} @${e.t}`);

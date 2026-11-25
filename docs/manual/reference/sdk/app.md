@@ -32,7 +32,7 @@ app.step(10);
 import { App, BevyApp, clearRegistry, Composition } from "raea/app"
 ```
 
-`raea/app` exports 1 component, 4 functions, 3 classes, 17 values, 8 types. Bevy's counterpart: `bevy_app`. Source: [sdk/raea/src/app.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/app.ts).
+`raea/app` exports 1 component, 1 hook, 5 functions, 3 classes, 17 values, 18 types. Bevy's counterpart: `bevy_app`. Source: [sdk/raea/src/app.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/app.ts).
 
 ## Components
 
@@ -49,7 +49,21 @@ Declares a composition inside the root. It draws nothing itself; a renderer find
 | `fps` (required) | `number` | frames a second |
 | `durationInFrames` (required) | `number` | its length in frames |
 | `defaultProps` | `P` | the props it's rendered with (JSON-like values only) |
+| `calculateMetadata` | `CalculateMetadata<P>` | its size, rate, length or props worked out from the props it's rendered with (`defaultProps` under the command line's `--props`): what it returns replaces the values above, so one composition renders a video per props file. It returns its values directly, not a promise |
+| `controls` | `Controls<P>` | the composition's controls: which of its defaultProps a person may tune, and how. Each names a defaultProps key, whose value is the control's; the feed's Controls panel shows them on the timeline and a change reaches the live picture as that prop |
 | `edit` | `Edit` | a hand edit laid over the composition (docs/craft-system.md, L): written back by the app's timeline |
+
+## Hooks
+
+### `useControl`
+
+A control's value as the frame is drawn: the composition's prop of that name, the
+value a person set on the live stage or, in a render, its defaultProps. For a part deep in the tree, so the value
+needn't be passed down as a prop; the root component can read its props as any component does.
+
+```ts
+function useControl<T = unknown>(name: string): T
+```
 
 ## Functions
 
@@ -75,6 +89,15 @@ The compositions the registered root declares, in order.
 
 ```ts
 function getCompositions(): RegisteredComposition[]
+```
+
+### `getInputProps`
+
+The props given on the command line (`raea render --props '{"n": 2}'` or `--props props.json`), anywhere in a
+program; `{}` when none were. A composition's component gets them over its `defaultProps`.
+
+```ts
+function getInputProps<T extends Record<string, unknown> = Record<string, unknown>>(): T
 ```
 
 ### `registerRoot`
@@ -227,6 +250,39 @@ The frame's main schedules: Update for game logic, then SpawnScene, PostUpdate a
 
 ## Types
 
+### `CalculateMetadata`
+
+What `calculateMetadata` is given and may return.
+
+```ts
+type CalculateMetadata = (given: { defaultProps: P; props: P; compositionId: string }) => { durationInFrames?: number; width?: number; height?: number; fps?: number; props?: P; } | void
+```
+
+### `ChoiceControl`
+
+One of a list: a string or a number from `options`.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"choice"` | what it is: one of a list |
+| `options` (required) | `readonly (string \| number)[]` | what it may be, in the order the panel lists them (at least one, none twice) |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
+### `ColourControl`
+
+A colour: a hex string, "#rgb", "#rgba", "#rrggbb" or "#rrggbbaa".
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"colour"` | what it is: a colour |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
 ### `CompositionProps`
 
 The props of [`Composition`](#composition), tabled there.
@@ -239,6 +295,31 @@ A run condition: asked on the frame's World before a system or set runs; false s
 type Condition = (app: BevyApp, frame: number) => boolean
 ```
 
+### `Control`
+
+```ts
+type Control = NumberControl | SwitchControl | ChoiceControl | ColourControl | TextControl
+```
+
+### `ControlCost`
+
+How a change to a control reaches the picture. `live` (the default): the running stage draws it at once, as a
+prop. `reopen`: the stage opens the file again first, for what a running 3D world keeps from its first frame (a
+shape, a model's file, an instance count, a picture map, a shader). `resim`: everything from the frame it changes
+on is worked out again, for state carried from frame to frame (physics, particles, a game's fold).
+
+```ts
+type ControlCost = "live" | "reopen" | "resim"
+```
+
+### `Controls`
+
+A composition's controls, by the defaultProps key each one tunes.
+
+```ts
+type Controls = { readonly [K in keyof P & string]?: Control }
+```
+
 ### `Edit`
 
 A hand edit: `segments` are the composition's own frame ranges, [from, to), played one after another, so a trim,
@@ -247,6 +328,23 @@ a split, a cut word or a moved span is a change to this list; the length becomes
 | Field | Type | What it is |
 | --- | --- | --- |
 | `segments` | `readonly (readonly [number, number])[]` | the composition's own frame ranges, [from, to), played one after another |
+| `scale` | `number` | the composition drawn at this fraction of its size (above 0, at most 1), what is where kept: it is laid out at its width and height (useVideoConfig still says them) and the whole drawn smaller, so a 3D view traces fewer pixels. A draft's, where a smaller picture changes nothing that ships: the app's composition drafts and a scene's kept frames draw at 0.5 |
+
+### `NumberControl`
+
+A number, dragged on a slider when it has both ends.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"number"` | what it is: a number |
+| `min` | `number` | the least it may be |
+| `max` | `number` | the most it may be |
+| `step` | `number` | what one step of the slider or an arrow key moves it by (above 0) |
+| `unit` | `string` | its unit, shown after it ("px", "°", "s") |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
 
 ### `OpenOptions`
 
@@ -291,6 +389,27 @@ type PluginRef = string | { readonly plugin: string } | Plugin | PluginGroup
 | `fps` (required) | `number` | frames a second |
 | `durationInFrames` (required) | `number` | its length in frames |
 | `defaultProps` (required) | `Record<string, unknown>` | the props it's rendered with (JSON-like values only) |
+| `controls` (required) | `Readonly<Record<string, RegisteredControl>>` | its controls, by defaultProps key, in the order they're declared ({} when it has none) |
+
+### `RegisteredControl`
+
+A control as a registered composition holds it: its cost said.
+
+```ts
+type RegisteredControl = Control & { cost: ControlCost }
+```
+
+### `SwitchControl`
+
+On or off: a boolean.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"switch"` | what it is: on or off |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
 
 ### `SystemOptions`
 
@@ -301,5 +420,19 @@ type PluginRef = string | { readonly plugin: string } | Plugin | PluginGroup
 | `when` | `Condition` | its run condition |
 | `before` | `string \| string[]` | systems or sets (by name) it runs before |
 | `after` | `string \| string[]` | systems or sets (by name) it runs after |
+
+### `TextControl`
+
+A string: a title, a caption, a name.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"text"` | what it is: a string |
+| `multiline` | `boolean` | a box of several lines rather than one |
+| `maxLength` | `number` | the most characters it may hold |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
 
 <!-- generated:end -->

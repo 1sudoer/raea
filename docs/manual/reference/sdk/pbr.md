@@ -29,7 +29,7 @@ const Ball = () => (
 import { AmbientOcclusion, Decal, ExtendedMaterial, Fire } from "raea/pbr"
 ```
 
-`raea/pbr` exports 22 components, 1 function, 1 value, 35 types. Bevy's counterpart: `bevy_pbr, bevy_material`. Source: [sdk/raea/src/pbr.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/pbr.ts).
+`raea/pbr` exports 23 components, 1 function, 1 value, 37 types. Bevy's counterpart: `bevy_pbr, bevy_material`. Source: [sdk/raea/src/pbr.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/pbr.ts).
 
 ## Components
 
@@ -38,7 +38,7 @@ import { AmbientOcclusion, Decal, ExtendedMaterial, Fire } from "raea/pbr"
 Screen-space ambient occlusion: creases, corners and the ground under things darken where the sky's and the room's
 light can't reach. It darkens ambient and environment light (an <AmbientLight>, an <Environment>), not the direct
 light of a sun or a lamp. Turns multisampling off, so the edges are smoothed by SMAA instead (see <AntiAliasing>).
-Put it inside the Canvas3D, once; the first frame's holds for the piece.
+Put it inside the Canvas3D, once; each frame's is its own, so a shot can have it and the next not.
 
 Bevy: `bevy_pbr::ssao::ScreenSpaceAmbientOcclusion`.
 
@@ -140,6 +140,7 @@ Used in: [3d/lightmaps](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/
 | `scale` | `number` | the noise's size in metres (1) |
 | `color` | `string` | the colour patches take |
 | `amount` | `number` | how far toward `color` the patches go (0.6) |
+| `world` | `number` | under a <Look cuts>: the world this mesh is in. 0 (the default): outside every cut. 1 to 4: inside that cut and no later one. -1: everywhere. Given alone it leaves the breakup off |
 
 ### `ProceduralExtension`
 
@@ -178,6 +179,19 @@ colour, texture or finish each gives, the rest of it kept (a run of cabinets pai
 | `materials` (required) | `MeshStandardMaterialProps[]` | the finishes, each a <MeshStandardMaterial>'s props, over every glTF material or the one its `material` names |
 | `children` | `ReactNode` | the models refinished |
 
+### `ShaderConstants`
+
+Sets constants in one of the engine's own shaders (raea's, Bevy's, Solari's) for this scene. Each `const NAME =...;`
+named is rewritten when the scene loads, before anything compiles, so a value is tried in a composition instead of a
+build; the shader's own value is the default. Compiled in once: a value that changes later in the composition isn't
+drawn, and raea says so. A name the shader doesn't declare is reported and left. One per shader. The common ones have
+typed props (<SolariLighting constants>); this reaches the rest.
+
+| Prop | Type | What it does |
+| --- | --- | --- |
+| `shader` (required) | `string` | the shader as the engine embeds it, `<crate>/<path under its src>`: "bevy_solari/realtime/restir.wesl", "raea_render_raytrace/emit_taa.wgsl". To read its constants, put an empty file of that name in the project's engine-shaders/ folder and render once: raea fills it with the shader |
+| `values` (required) | `Record<string, ShaderConstantValue>` | each `const NAME` to set, and its value; the const keeps its type (an array's or a vector's values as a list) |
+
 ### `ShaderExtension`
 
 Also takes the props of [`SurfaceShaderSpec`](3d.md#surfaceshaderspec).
@@ -214,7 +228,7 @@ Bevy: `bevy_pbr::pbr_material::StandardMaterial`.
 
 Also takes the props of [`StandardMaterialProps`](#standardmaterialprops).
 
-Used in: [ui/render_ui_to_texture](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/render_ui_to_texture.tsx), [ui/widgets/viewport_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/widgets/viewport_node.tsx), [3d/fog](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/fog.tsx), [3d/vertex_colors](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/vertex_colors.tsx), [3d/rotate_environment_map](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/rotate_environment_map.tsx), [3d/transparency_3d](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/transparency_3d.tsx), [3d/spherical_area_lights](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/spherical_area_lights.tsx), [3d/lightmaps](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/lightmaps.tsx), and 41 more.
+Used in: [ui/render_ui_to_texture](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/render_ui_to_texture.tsx), [ui/widgets/viewport_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/widgets/viewport_node.tsx), [3d/fog](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/fog.tsx), [3d/vertex_colors](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/vertex_colors.tsx), [3d/rotate_environment_map](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/rotate_environment_map.tsx), [3d/transparency_3d](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/transparency_3d.tsx), [3d/spherical_area_lights](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/spherical_area_lights.tsx), [3d/lightmaps](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/lightmaps.tsx), and 42 more.
 
 ### `SurfaceShader`
 
@@ -270,9 +284,8 @@ Used in: [3d/fog_volumes](https://github.com/shinyobjectz/raea/blob/main/sdk/rae
 
 ### `WearExtension`
 
-raea's chips, grime and rust over a StandardMaterial, as an ExtendedMaterial's extension (systems/wear):
-
-Bevy: `bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMaterial<bevy_pbr::pbr_material::StandardMaterial, raea_sys_wear::Wear>>`.
+raea's chips, grime and rust over a StandardMaterial, as an ExtendedMaterial's extension: a surface shader of
+raea's own (worn.ts) on the hook a ShaderExtension uses, so its Bevy type is ShaderExtension's.
 
 | Prop | Type | What it does |
 | --- | --- | --- |
@@ -386,6 +399,8 @@ The props of [`ExtendedMaterial`](#extendedmaterial), tabled there.
 | `scattering` | `number` | how much light it throws back toward the eye (0.3 by default): higher reads as bright dust or mist |
 | `anisotropy` | `number` | how far forward it scatters, -1 to 1 (0.5 by default): near 1 the shafts glow when you look toward the light |
 | `falloff` | `number` | how fast it thins going up, per metre from the box's floor (0 by default: even throughout): 0.5 is a ground fog that's a third as thick two metres up. A box wide and tall with a falloff is height fog. Only <VolumetricFog mode="froxel"> draws it; the march draws the box evenly |
+| `soft` | `number` | how far in from each face its density ramps up, as a share of the box's half-size, 0 to 1 (0 by default: a hard box): 0.5 and up hides a small volume's edges (steam, a smoke column). Only <VolumetricFog mode="froxel"> |
+| `taper` | `number` | how much narrower its floor is than its top, 0 to 1 (0 by default: a box): 0.7 is a plume rising off a tank, widening as it climbs. Only <VolumetricFog mode="froxel"> |
 | `density_texture` | `string` | Bevy's density_texture: a 3D.ktx2 image in the media folder whose values scale the density through the box (a cloud, a bunny of smoke); the box draws evenly without one. Only the march draws it |
 
 ### `GridExtensionProps`
@@ -441,6 +456,19 @@ ImageSamplerDescriptor ({ path: "checker.png", sampler: { filter: "nearest" } } 
 | --- | --- | --- |
 | `path` (required) | `string` | the picture, in the media folder |
 | `sampler` (required) | `SamplerSpec` | how it's sampled: filter, address modes |
+
+### `ShaderConstantsProps`
+
+The props of [`ShaderConstants`](#shaderconstants), tabled there.
+
+### `ShaderConstantValue`
+
+A shader constant's value: a number (a float or a whole number, as the const is), a boolean, or for an array or a
+vector its values in order (as many as it holds)
+
+```ts
+type ShaderConstantValue = number | boolean | readonly number[]
+```
 
 ### `ShaderExtensionProps`
 
@@ -626,7 +654,7 @@ from the first frame.
 | Field | Type | What it is |
 | --- | --- | --- |
 | `glsl` | `{ vertex: string; fragment: string; raw?: boolean; vertexColors?: boolean }` | a ShaderMaterial's GLSL, its `#include`s expanded and its `defines` as #define lines in front; `raw` for a RawShaderMaterial (which declares three's built-ins itself), `vertexColors` as the material's |
-| `wgsl` | `{ vertex: string; fragment: string; uniforms?: { name: string; type: string; array?: nu…` | a node material's WGSL, as three's TSL builder writes it for raea (sdk/r3f's input/tsl.ts): the contract's `three_vertex` and `three_fragment`, its uniforms' types, the mesh attributes it reads beyond the standard four |
+| `wgsl` | `{ vertex: string; fragment: string; uniforms?: { name: string; type: string; array?: nu…` | a node material's WGSL, as three's TSL builder writes it for raea (sdk/r3f's input/tsl.ts): the contract's `three_vertex` and `three_fragment`, its uniforms' types, the mesh attributes it reads beyond the standard four, whether it is a lit surface (three_surface), and the storage buffers it reads (`tsl_s0`, `tsl_s1`: each a buffer a <Compute>'s kernels share by key, its size in bytes and first contents) |
 | `uniforms` | `Record<string, ThreeUniform>` | each uniform's value this frame |
 | `textures` | `Record<string, string \| { src: string; colorSpace?: "srgb" \| "linear"; sampler?: Record…` | each sampler's picture: a file, a data URL, "render:NAME" (at most four); `colorSpace: "linear"` for one three samples raw (NoColorSpace: a distance field, a data map), "srgb" (the default) for a colour picture |
 | `output` | `"display" \| "linear"` | "display": its colour is what three's canvas shows (a ShaderMaterial's); "linear": scene light, tone-mapped as the rest of the frame is (a node material's) |
@@ -788,10 +816,15 @@ where density and heat come in: a burner, or an engine moving `at` -> `to` (a co
 | `tile` | `number` | the grid's cells across the frame, in pixels a side (16 by default; 4, 8 or 16) |
 | `samples` | `number` | points lit in each cell, spread along its depth (1 by default; 1 to 8): more keeps thin shadows in the grid's soft light (a hero light's shafts don't need them) |
 | `hero` | `boolean` | the grid's shafts: true (the default) integrates the first two volumetric spot lights and the first two volumetric directional lights exactly, over their shadow maps texel by texel, so a blind's bars or a doorway's edge are as crisp as the shadow map: integrated at samples along lines from the light across the frame (Chen et al.'s epipolar sampling), more of them where the depth or the light changes, and each pixel read from the samples either side of it at its depth; false lights them in the grid's cells with the rest |
+| `shadow` | `"absorb" \| "delta" \| "full" \| "off" \| "bevy"` | what dims a light on its way through a volume to a point of it: "absorb" (the default: what the medium absorbs, which matched the path tracer best), "delta" (absorption and the share of scattering that turns light aside), "full" (the whole extinction), "off" (not dimmed) or "bevy" (Bevy's march's rule: each volume's light dimmed once by its own radius) |
+| `heroExact` | `boolean` | the hero lights integrated at every pixel instead of at epipolar samples (false by default): several times slower, the reference the samples are measured against |
+| `epipolar` | `{ lineGap?: number; spacing?: number; every?: number; relTolerance?: number; absToleran…` | the hero lights' epipolar samples: lines `lineGap` pixels apart round each light's rectangle on screen (8), samples `spacing` pixels apart along each (6), every `every`th traced (16) and those between traced too where they differ by more than `relTolerance` (0.2), `absTolerance` (2/255) or `depthTolerance` (0.02, relative) |
+| `tricubic` | `boolean` | the hero passes read the grid's transmittance tricubic, as the apply pass reads its light (false by default: trilinear) |
+| `solari` | `boolean \| { candidates?: number; frames?: number; skyRays?: number; lamps?: boolean; sk…` | under <SolariLighting>, the fog's light from Solari's scene: false lights it as without Solari; or its settings: light candidates a cell (8), frames its history averages (16), sky rays a cell (1), what lights it (`lamps`, the emissive meshes, and `sky`, both on), the history's filter (on), and what the sky's guide is made of (`guide` 3: 1 the cell's own last, 2 half a neighbour's, 3 both, 0 none) |
 
 ### `WearExtensionProps`
 
-raea's extension of StandardMaterial that wears it (the engine's Wear MaterialExtension, systems/wear): its paint
+raea's extension of StandardMaterial that wears it (a surface shader of raea's own, worn.ts): its paint
 mottled, chipped back to `chip_color` on edges and a few spots, `grime` gathered low and underneath and `rust` run
 down in streaks, fixed in the part's own space as it moves. `amount` 0-1; `chips`, `grime` and `rust` each 0-1 of it
 (0.6, 0.5, 0.25); `scale` a blotch's size in metres (0.08); `seed` moves the pattern. It goes in an

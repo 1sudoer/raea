@@ -14,7 +14,7 @@ const ROOT = path.resolve(import.meta.dir, "../..")
 const ts = createRequire(path.join(ROOT, "sdk/shell/package.json"))("typescript") as typeof import("typescript")
 const SRC = path.join(ROOT, "sdk/raea/src")
 const REPO = "https://github.com/shinyobjectz/raea/blob/main"
-const SKIP = /(\.gen\.ts|^test\.tsx|^native-calls\.ts|^prelude\.ts|^pure\.ts)$/
+const SKIP = /(\.gen\.ts|^test\.tsx|^native-calls\.ts|^prelude\.ts|^pure\.ts|^frame-globals\.ts|^canvas2d\.ts|^random-colors\.ts|^page-layout\.ts|^dom-[a-z-]+\.ts)$/
 const [mode = "check", dirArg] = process.argv.slice(2)
 if (mode !== "gen" && mode !== "check") throw new Error("usage: sdk.ts gen|check [DIR]")
 const out = path.resolve(dirArg ?? path.join(ROOT, "docs/manual/reference/sdk"))
@@ -22,12 +22,12 @@ const problems: string[] = []
 
 // the index's groups, in the order a reader meets them; every import path is in one
 const GROUPS: [string, string, string[]][] = [
-  ["Start here", "The composition, the app and the specs an agent writes.", ["raea", "app", "brief"]],
-  ["Time and motion", "Frames, animation, springs, states and input.", ["time", "animation", "math", "state", "input"]],
-  ["Video, sound and text", "Footage, pictures, sound, words and colour.", ["video", "audio", "text", "image", "asset", "color"]],
+  ["Start here", "The composition, the app, and the specs and notes an agent writes.", ["raea", "app", "brief", "note"]],
+  ["Time and motion", "Frames, animation, springs, states and input, and holding a frame until it's ready.", ["time", "animation", "math", "state", "input", "hold"]],
+  ["Video, sound and text", "Footage, pictures, sound, words and colour, and the timeline they are edited on.", ["video", "audio", "text", "image", "asset", "color", "editor"]],
   ["3D", "Bevy's 3D: cameras, lights, materials, meshes and the frame after it's drawn.", ["3d", "camera", "light", "pbr", "mesh", "transform", "post_process", "picking", "gizmos"]],
   ["2D and UI", "Sprites and flat shapes, bevy_ui and Bevy's widgets.", ["sprite", "ui", "feathers"]],
-  ["Tools", "Checks, lints and a headless App you can drive.", ["dev_tools", "remote"]],
+  ["Tools", "Checks, lints and a headless App you can drive.", ["check", "fingerprint", "dev_tools", "remote", "ask"]],
 ]
 const groupAt = new Map(GROUPS.flatMap(([, , ps], g) => ps.map((p, i) => [p, g * 20 + i + 2] as const)))
 const BEGIN = "<!-- generated:begin by tools/manual-ref/sdk.ts from the SDK's exports and doc comments; edit outside this block -->"

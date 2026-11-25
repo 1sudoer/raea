@@ -51,6 +51,13 @@ goes once a release has it. It pins Firewheel, and raea-mixer has to move to the
 tap = bounce check (step 5) belongs to the same change. Firewheel 0.12 is vendored under vendor/firewheel* only for its
 Bevy 0.20 port (bevy_reflect 0.20 and a glam-33 feature); drop the copy and both [patch] blocks once a release has it.
 
+bevy_pbr is vendored (vendor/bevy_pbr, the root [patch]) for one change Bevy has no hook for: the sun's far shadow map
+(raea-sys-rt far.rs; docs/realism.feature LT21) bound at 39 and 40 of every mesh view group, a texture and its uniform
+(`RaeaFarSun` and `RAEA_FAR_SUN_BYTES` in render/mesh_view_bindings.rs, the struct and bindings in
+render/mesh_view_bindings.wesl, a stand-in and a uniform of zeros where there's none). Every change is marked `raea:`.
+Re-take the new release's crate, apply those hunks again, and check that the indices are still free; shadows.wesl is
+left as Bevy's, because raea-sys-lod swaps it at load (its hash checked) to read the map past the last cascade.
+
 ## 2. Bump every pin together
 
 All of these move in one commit. Mixed Bevy versions don't build, and mixed wgpu versions can't share a device.
@@ -176,6 +183,8 @@ the adopt-0.20 pass (2026-10-22); stills in that pass's report. Anything not lis
   its formats), so a base colour would be averaged in gamma, not linear light; panels need premultiplied averages; and
   CompressedImageSaver runs only in Bevy's asset processing (lossy BC7/ASTC through ctt), not on images loaded at run
   time. Goes for baked assets once lightspeed's bake (F5) runs CompressedImageSaver; mip_chain stays for run-time images.
+  Its feature (compressed_image_saver) is out of the build since 0.1.8: ctt's AVX2 encoders run C++ initializers before
+  main on any CPU, so the bake has to bring it back without them (sdk/raea/docs/bevy-plugins.md).
 - rt.rs (the traced-AO and passes' BLAS/TLAS) beside bevy_solari's scene layer. Solari's binder skips any mesh that
   isn't u32-indexed with exactly position, normal, UV0 and tangent and `enable_raytracing` (raea's own shapes are
   unindexed), and writes ray mask 0xFF on every instance (rt.rs's CASTS bit keeps NotShadowCaster stand-ins out of sun

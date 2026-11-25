@@ -1,5 +1,6 @@
-//! A project's brief: who it's for, the one thing they should believe, what it delivers and the work to get there.
-//! The facts an agent guessed are listed in `assumed`, for the person to confirm.
+//! A project's brief: who it's for, the one thing they should believe and what it delivers. The facts an agent guessed
+//! are listed in `assumed`, for the person to confirm. Its tasks are in the project's plan.org, not here
+//! (docs/plan.feature PL8a).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -47,13 +48,24 @@ pub struct Brief {
     #[serde(default)]
     #[ts(as = "Option<Vec<Reference>>", optional)]
     pub references: Vec<Reference>,
-    /// the tasks, in stages ("Act one", "The cut")
-    #[serde(default)]
-    #[ts(as = "Option<Vec<Stage>>", optional)]
-    pub stages: Vec<Stage>,
+    /// an older brief's tasks, read only so it still loads: they belong in plan.org (docs/plan.feature PL8a), and
+    /// `raea doctor` says so; never written, and not in the schema an agent writes to
+    #[serde(default, skip_serializing)]
+    #[ts(skip)]
+    pub stages: Option<serde_json::Value>,
     #[serde(default)]
     #[ts(as = "Option<Vec<Agent>>", optional)]
     pub agents: Vec<Agent>,
+    /// the project's stories, imported explicitly (raea/story, docs/story.md): one, or several by name. Kept as written:
+    /// raea reads nothing in it, the story SDK and the checks that import it do
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown", optional)]
+    pub story: Option<serde_json::Value>,
+    /// a scene, kit or shot made to a frozen plan and held to the review loop (docs/make.feature): `scene()`, `kit()`
+    /// or `shot()` from "raea/brief"; `raea make status` decides when it's done
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub make: Option<crate::make::Make>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -90,43 +102,6 @@ pub struct Reference {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct Stage {
-    pub name: String,
-    pub tasks: Vec<Task>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum Mark {
-    #[default]
-    Todo,
-    Done,
-    Dropped,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[ts(optional_fields)]
-pub struct Task {
-    pub text: String,
-    /// a task linked to an item takes the item's state (the work is the truth); this is for unlinked ones
-    #[serde(default)]
-    #[ts(as = "Option<Mark>", optional)]
-    pub mark: Mark,
-    #[serde(default)]
-    #[ts(as = "Option<Vec<String>>", optional)]
-    pub agents: Vec<String>,
-    pub item: Option<String>,
-    #[serde(default)]
-    #[ts(as = "Option<Vec<String>>", optional)]
-    pub tags: Vec<String>,
-    pub due: Option<String>,
-    /// the craft verb it was written as ("quieter"): agents read it, the page shows the text
-    pub verb: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 #[ts(optional_fields)]
 pub struct Agent {
     pub name: String,
@@ -153,6 +128,9 @@ pub fn doctor(b: &Brief) -> Vec<String> {
     }
     for a in &b.assumed {
         out.push(format!("`{a}` is assumed: confirm it with the person"));
+    }
+    if let Some(m) = &b.make {
+        out.extend(crate::make::doctor(m).into_iter().map(|d| format!("make: {d}")));
     }
     out
 }

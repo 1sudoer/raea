@@ -22,14 +22,30 @@ pub use skipped::wait_drawn;
 /// a page's loads (raea-sys-page-net: FileNet, FrameNet, the page's fetch, the image decoder)
 pub use raea_sys_page_net as net;
 pub use blitz_dom::not_applied; // what the page asked for and didn't get, said once when a render ends (#34)
+
+/// What `raea render` says once its frames are out: the fonts the page asked for and didn't have (#174) as warnings,
+/// printed and counted with its findings (raea-app-direction's `rendered` keeps them in the manifest), and the note of
+/// what else it didn't apply (#34), returned for the render to print.
+pub fn render_said() -> Option<String> {
+    let fix = "load it with @font-face (a staticFile font), install it, or name a family that's there";
+    let fs: Vec<raea_core_facts::Finding> = not_applied::fonts_missing().into_iter().map(|says| raea_core_facts::Finding::new("font-missing", raea_core_facts::Level::Warn, says, "raea render").fix(fix)).collect();
+    for f in &fs {
+        eprintln!("raea: {}", f.line());
+    }
+    raea_core_facts::finding::said(&fs);
+    not_applied::said()
+}
+
 /// Blitz's extension points as Bevy resources (S6d)
 pub mod providers;
 pub mod widgets;
-pub use providers::{PageFonts, PageHtmlParser, PageNavigation, PageNet};
+pub use providers::{PageFonts, PageHtmlParser, PageNavigation, PageNet, PageShell};
 pub use raea_sys_page_ops as ops;
+mod snapshot;
+pub use snapshot::{OFFSET_BODY, OFFSET_NONE, OFFSETS, STRIDE, snapshot, snapshot_by};
 pub mod view3d;
 
-pub use draw::{Placed, view, view_at};
+pub use draw::{DRAWS, Placed, view, view_at};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -51,10 +67,24 @@ pub struct Page {
     pub scale: f32,
 }
 
+impl Page {
+    /// The page's size in device pixels: its image's size, and the viewport Blitz is given (Blitz's `window_size` is
+    /// in device pixels: it divides by `hidpi_scale` for the CSS viewport). Rounded up, so the image is never short
+    /// of the page: at a fractional scale the CSS viewport can be a fraction of a CSS pixel wider than `size`.
+    pub fn px(&self) -> UVec2 {
+        (self.size.as_vec2() * self.scale).ceil().as_uvec2().max(UVec2::ONE)
+    }
+}
+
 /// The time pages' CSS animations and transitions are at, in seconds: a render's frame time (`BlitzPage::at_frame`);
 /// None, the App's clock (live play).
 #[derive(Resource, Default)]
 pub struct PageClock(pub Option<f64>);
+
+/// The colour scheme pages are drawn in, `@media (prefers-color-scheme)` and matchMedia's: light (a render's, always),
+/// or what the window says (raea-page-host scheme.rs).
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
+pub struct PageScheme(pub blitz_traits::shell::ColorScheme);
 
 /// A page whose image is straight alpha, not premultiplied: one Bevy's UI or sprites draw (they blend straight), as
 /// an overlay over a scene (docs/blitz-bevy.feature B3 H5).
@@ -78,7 +108,8 @@ impl Docs {
 
 /// A document's settings for a page: its viewport, styled on this thread (stylo's own pool would compete with Bevy's).
 pub fn config(at: Page) -> DocumentConfig {
-    let viewport = Viewport { window_size: (at.size.x, at.size.y), hidpi_scale: at.scale, ..default() };
+    let px = at.px();
+    let viewport = Viewport { window_size: (px.x, px.y), hidpi_scale: at.scale, ..default() };
     let mut config = DocumentConfig { viewport: Some(viewport), style_threading: blitz_dom::StyleThreading::Sequential, ..default() };
     // an <iframe> loads its document, parsed by blitz-html, through FrameNet (files under RAEA_PAGE_ROOT only;
     // docs/blitz-bevy.feature B5c, off with RAEA_PAGE_IFRAMES=0)
@@ -93,7 +124,7 @@ pub fn config(at: Page) -> DocumentConfig {
 /// offscreen target), so whatever draws or reads one page draws or reads the other.
 fn size_images(mut commands: Commands, pages: Query<(Entity, &Page, Option<&PageImage>)>, mut images: ResMut<Assets<Image>>) {
     for (e, page, have) in &pages {
-        let px = (page.size.as_vec2() * page.scale).ceil().as_uvec2().max(UVec2::ONE);
+        let px = page.px();
         if have.and_then(|h| images.get(&h.0)).is_some_and(|i| i.size() == px) {
             continue;
         }
@@ -128,7 +159,7 @@ impl Times {
     pub fn report(&self) -> Option<String> {
         use std::sync::atomic::Ordering::Relaxed;
         let n = self.frames.load(Relaxed);
-        (std::env::var_os("RAEA_PAGE_TIMES").is_some() && n > 0).then(|| {
+        (raea_io_trace::stat("RAEA_PAGE_TIMES") && n > 0).then(|| {
             let (r, e) = (self.resolve_us.load(Relaxed), self.encode_us.load(Relaxed));
             format!("{{\"page_frames\": {n}, \"resolve_ms\": {:.3}, \"encode_ms\": {:.3}}}", r as f64 / n as f64 / 1e3, e as f64 / n as f64 / 1e3)
         })
@@ -145,15 +176,18 @@ pub struct Painted(pub Arc<Mutex<Vec<Drawn>>>);
 pub type Drawn = (Handle<Image>, UVec2, vello::Scene, Vec<raea_sys_filters::Filtered>, u64, bool, bool);
 
 /// Each page restyled and laid out (what changed).
-pub fn resolve(mut docs: NonSendMut<Docs>, pages: Query<(Entity, &Page)>, time: Res<Time>, clock: Res<PageClock>, mut scanned: Local<HashMap<Entity, usize>>) {
+pub fn resolve(mut docs: NonSendMut<Docs>, pages: Query<(Entity, &Page)>, time: Res<Time>, clock: Res<PageClock>, scheme: Option<Res<PageScheme>>, mut scanned: Local<HashMap<Entity, usize>>) {
+    let scheme = scheme.map(|s| s.0).unwrap_or_default();
     for (e, page) in &pages {
         let Some(doc) = docs.0.get_mut(&e) else { continue };
         let at = clock.0.unwrap_or_else(|| time.elapsed_secs_f64());
         // a page resized or rescaled (the iPad sets its scale late): its viewport follows, or text lays out off its box
-        if doc.viewport().window_size != (page.size.x, page.size.y) || doc.viewport().hidpi_scale != page.scale {
+        let px = page.px();
+        if doc.viewport().window_size != (px.x, px.y) || doc.viewport().hidpi_scale != page.scale || doc.viewport().color_scheme != scheme {
             let mut v = doc.viewport().clone();
-            v.window_size = (page.size.x, page.size.y);
+            v.window_size = (px.x, px.y);
             v.hidpi_scale = page.scale;
+            v.color_scheme = scheme;
             doc.set_viewport(v);
         }
         let t0 = std::time::Instant::now();
@@ -184,7 +218,7 @@ pub fn paint(mut docs: NonSendMut<Docs>, pages: Query<(Entity, &Page, &PageImage
     let mut out = vec![];
     for (e, page, image, straight) in &pages {
         let Some(doc) = docs.0.get_mut(&e) else { continue };
-        let px = (page.size.as_vec2() * page.scale).ceil().as_uvec2().max(UVec2::ONE);
+        let px = page.px();
         // a scene the render world drew last frame, reset: its encoding keeps its capacity (ZeroHeap)
         let mut scene = SPARE.lock().unwrap().pop().unwrap_or_default();
         scene.reset();
@@ -301,7 +335,13 @@ pub fn iframes() -> bool {
     std::env::var_os("RAEA_PAGE_IFRAMES").is_none_or(|v| v != "0")
 }
 
-pub use ops::ALL_DAMAGE;
+pub use ops::{ALL_DAMAGE, REPAINT_DAMAGE};
+
+/// A picture's halvings handed to the painter ready made (blitz-paint preload_mips): a video's frame is then drawn
+/// from the one nearest its drawn size. On the page's thread, where it is painted.
+pub fn preload_mips(image: &blitz_dom::node::RasterImageData, levels: Vec<(u32, u32, Vec<u8>)>) {
+    blitz_paint::preload_mips(image, levels.into_iter().map(|(w, h, px)| blitz_dom::node::RasterImageData::new(w, h, std::sync::Arc::new(px))).collect());
+}
 
 /// A document for a page `w` x `h` on its own entity: html, head and a body with no margin and no background (the
 /// page is drawn over 3D and video), which is the root the composition's elements go in. (host.rs opens a root's so.)

@@ -7,14 +7,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, extname } from "node:path";
-import { brandKit } from "./brand";
+import { brandKit, pixelsOf } from "./brand";
 import { readSite, stylesOf } from "./scrape";
 import { wordsOf } from "./heard";
+import { harness, library, show, task } from "./app";
+import { fromCwd } from "./show";
+import { clothesHost } from "./wardrobe";
 import { raeaHandler, type Engine, type Host } from "./index";
 
 const [raea, ...args] = process.argv.slice(2);
 const cwd = process.cwd();
-const at = (p: string) => (p.startsWith("/") ? p : `${cwd}/${p}`);
+const at = (p: string) => fromCwd(cwd, p);
 
 /** The project's shape: its cut's (cuts.json's edit), else a 1080x1920 vertical at 30 fps */
 function shape() {
@@ -34,6 +37,10 @@ function engineRun(a: string[]): string {
 const engineJson = (a: string[]): any => JSON.parse(engineRun(a));
 
 const VIDEO = ["mp4", "mov", "m4v", "mkv", "webm"];
+/** a take with sound alone (a voice recording, a bed): cut on its words as a video is, played as <Audio> (#89) */
+const AUDIO = ["wav", "mp3", "m4a", "aac", "flac", "aif", "aiff", "ogg", "opus"];
+const extOf = (f: string) => extname(f).slice(1).toLowerCase();
+const isAudio = (f: string) => AUDIO.includes(extOf(f));
 
 /** Every take under media/: its path from the project's root */
 function takes(): string[] {
@@ -42,7 +49,7 @@ function takes(): string[] {
     for (const e of existsSync(at(dir)) ? readdirSync(at(dir), { withFileTypes: true }) : []) {
       const p = `${dir}/${e.name}`;
       if (e.isDirectory()) walk(p);
-      else if (VIDEO.includes(extname(e.name).slice(1).toLowerCase())) out.push(p);
+      else if (VIDEO.includes(extOf(e.name)) || AUDIO.includes(extOf(e.name))) out.push(p);
     }
   };
   walk("media");
@@ -92,6 +99,9 @@ function ensure(name: string): string {
 }
 
 function hearTake(take: string, out: string) {
+  // parakeet-mlx is Apple silicon's (MLX); elsewhere raea has no transcriber yet, so the two ways that work there
+  if (process.platform !== "darwin")
+    throw new Error(`cutting ${take} by its words needs its transcript, and raea transcribes only on a Mac so far: give it one as ${basename(out)} ([{ "text", "start_ms", "end_ms" }], beside it), or cut it by time: --at A-B`);
   const dir = mkdtempSync(`${tmpdir()}/raea-hear-`);
   try {
     const wav = `${dir}/take.wav`;
@@ -114,7 +124,8 @@ function hearTake(take: string, out: string) {
 function cutPlan(take: string, ws: Word[], lines: string[]): { plan: [number, number, string][]; notes: string[] } {
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, "");
   const toks = ws.map((w) => norm(w.text).trim());
-  const cuts = (engineJson(["media", "cuts", at(take), "--threshold", "0.08"]).cuts as { at: number }[]).map((c) => c.at);
+  // a sound-only take has no jump cuts to keep off, and its grid is the edit's usual 30 (a probe has no video fps)
+  const cuts = isAudio(take) ? [] : (engineJson(["media", "cuts", at(take), "--threshold", "0.08"]).cuts as { at: number }[]).map((c) => c.at);
   const fps = (engineJson(["media", "probe", at(take)]).video?.fps as number) || 30;
   let from = 0;
   const spans: [number, number][] = [];
@@ -171,7 +182,7 @@ function cutPlan(take: string, ws: Word[], lines: string[]): { plan: [number, nu
 const framesOf = (from: number, to: number, fps: number) => Math.max(1, Math.round((to - from) * fps));
 const ms = (s: number) => Math.round(s * 1000) / 1000;
 
-type Clip = { take: string; file: string; from: number; to: number; line: string };
+type Clip = { take: string; file: string; from: number; to: number; line: string; kind?: "video" | "audio" };
 
 /** `raea cut`'s host step: the clips for the lines (or --at spans), the words in the edit's frames, and what was cut */
 function cut(a: { take: string; lines: string[]; spans: number[][]; keep: Clip[] }) {
@@ -179,19 +190,20 @@ function cut(a: { take: string; lines: string[]; spans: number[][]; keep: Clip[]
   if (!a.lines.length && !a.spans.length) throw new Error(`cut needs lines ("what's said") or spans (--at A-B, in the take's seconds)`);
   const edit = shape();
   const stem = basename(file, extname(file));
+  const kind = isAudio(file) ? "audio" as const : "video" as const;
   const clips: Clip[] = [...a.keep];
   let notes: string[] = [];
   if (a.lines.length) {
     const r = cutPlan(file, words(file, true), a.lines);
     notes = r.notes;
-    for (const [from, to, line] of r.plan) clips.push({ take: stem, file, from: ms(from), to: ms(to), line });
+    for (const [from, to, line] of r.plan) clips.push({ take: stem, file, from: ms(from), to: ms(to), line, kind });
   }
   const { dur } = probeOf(file);
   for (const [s, e] of a.spans) {
     const [from, to] = [Math.max(s, 0), dur > 0 ? Math.min(e, dur) : e];
     if (!(to > from)) throw new Error(`the span ${s}-${e} is outside ${file} (${dur.toFixed(1)} s)`);
     const line = words(file).filter((w) => w.from >= from - 0.02 && w.to <= to + 0.08).map((w) => w.text).join(" ");
-    clips.push({ take: stem, file, from: ms(from), to: ms(to), line });
+    clips.push({ take: stem, file, from: ms(from), to: ms(to), line, kind });
   }
   // the words in the edit's frames, for captions (useWords())
   let t = 0;
@@ -255,6 +267,8 @@ function perception(edit: { width: number; height: number; fps: number }, clips:
   for (const c of clips) {
     const mid = (c.from + c.to) / 2;
     const key = `${c.file}|${Math.floor(mid * 10)}`;
+    // a sound-only clip has no face to find: the band alone
+    if (!seen.has(key) && (c.kind === "audio" || isAudio(c.file))) seen.set(key, undefined);
     if (!seen.has(key)) {
       let face: Box | undefined;
       try {
@@ -294,6 +308,27 @@ function frame(a: { take: string; at?: number }): string {
   return lines.join("\n");
 }
 
+/** `raea bug`'s report (bug.ts) to raea's server, with raea's version and the OS added; RAEA_API names the server
+ *  (https://raea.io, where raea's server takes reports). No account: the server takes a report from anyone. */
+function bug(a: { report: Record<string, unknown>; dry?: boolean }) {
+  const version = (spawnSync(raea, ["--version"], { encoding: "utf8" }).stdout ?? "").trim().split(/\s+/).pop() || undefined;
+  const mac = process.platform === "darwin" ? (spawnSync("sw_vers", ["-productVersion"], { encoding: "utf8" }).stdout ?? "").trim() : "";
+  const sent = { ...a.report, raea: version, os: mac ? `macOS ${mac}` : `${process.platform} ${process.arch}` };
+  if (a.dry) return { sent };
+  const api = (process.env.RAEA_API ?? "https://raea.io").replace(/\/$/, "");
+  const r = spawnSync("curl", ["-sS", "--max-time", "20", "-X", "POST", "-H", "content-type: application/json", "--data-binary", "@-", "-w", "\n%{http_code}", `${api}/v1/bugs/agent`], { input: JSON.stringify(sent), encoding: "utf8" });
+  const text = r.stdout ?? "";
+  const cut = text.lastIndexOf("\n");
+  const status = Number(text.slice(cut + 1)) || 0;
+  let answer: { id?: string; count?: number; known?: boolean; message?: string } = {};
+  try {
+    answer = JSON.parse(text.slice(0, cut));
+  } catch {
+    answer = { message: (r.stderr ?? "").trim() || text.slice(0, 200) };
+  }
+  return { ...answer, status, sent };
+}
+
 /** One request by curl (the host steps are synchronous): its body and where it ended up, or why it failed */
 function curl(url: string, o: { out?: string; secs?: number } = {}): { body: string; url: string } {
   // a browser's agent: some sites send a bare page, or none, to anything else
@@ -308,13 +343,15 @@ function curl(url: string, o: { out?: string; secs?: number } = {}): { body: str
   return { body, url: final || url };
 }
 
-/** A logo's size: an SVG's viewBox or width/height, a raster's pixels by sips */
+/** A logo's size: an SVG's viewBox or width/height, a raster's pixels from its header (else, on a Mac, by sips) */
 function sizeOf(file: string): { width?: number; height?: number } {
   if (file.endsWith(".svg")) {
     const head = readFileSync(file, "utf8").slice(0, 2000);
     const vb = /viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(head);
     return vb ? { width: Math.round(+vb[1]), height: Math.round(+vb[2]) } : {};
   }
+  const own = pixelsOf(readFileSync(file));
+  if (own || process.platform !== "darwin") return own ?? {};
   const r = spawnSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file], { encoding: "utf8" });
   const n = (k: string) => Number(new RegExp(`${k}: (\\d+)`).exec(r.stdout ?? "")?.[1]) || undefined;
   return { width: n("pixelWidth"), height: n("pixelHeight") };
@@ -365,20 +402,6 @@ function brand(a: { brand: string }): string {
   return kit.said;
 }
 
-/** An op of the feed host's libraries (apps/app host/library/service.ts): POST $RAEA_FEED_HOST/host/library. The feed
- *  sets RAEA_FEED_HOST for the agents it starts; elsewhere it's given by hand. */
-function library(a: Record<string, unknown>): unknown {
-  const at = process.env.RAEA_FEED_HOST;
-  if (!at) throw new Error("libraries live in the raea app: run this from an agent the app started, or set RAEA_FEED_HOST to the app's address");
-  const r = spawnSync("curl", ["-sS", "--max-time", "120", "-w", "\n%{http_code}", "-H", "content-type: application/json", "--data-binary", "@-", `${at.replace(/\/$/, "")}/host/library`], { input: JSON.stringify(a), encoding: "utf8", maxBuffer: 64 << 20 });
-  const text = r.stdout ?? "";
-  const cut = text.lastIndexOf("\n");
-  const [body, code] = [text.slice(0, cut), Number(text.slice(cut + 1))];
-  if (r.status !== 0) throw new Error(`the raea app at ${at} didn't answer: ${(r.stderr ?? "").trim()}`);
-  if (!(code >= 200 && code < 300)) throw new Error(body.trim() || `the raea app said ${code}`);
-  return JSON.parse(body);
-}
-
 const host: Host = (op, a) => {
   switch (op) {
     case "shape":
@@ -391,6 +414,16 @@ const host: Host = (op, a) => {
       return brand(a as Parameters<typeof brand>[0]);
     case "library":
       return library(a);
+    case "show":
+      return show(a);
+    case "clothes":
+      return clothesHost(raea, cwd, process.env, a);
+    case "bug":
+      return bug(a as { report: Record<string, unknown>; dry?: boolean });
+    case "harness":
+      return harness();
+    case "task":
+      return task(a);
     default:
       throw new Error(`raea: this step (${op}) isn't in the native raea yet`);
   }

@@ -593,7 +593,6 @@ bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMat
 bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMaterial<bevy_pbr::pbr_material::StandardMaterial, raea_sys_look::paint::Paint>>	component
 bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMaterial<bevy_pbr::pbr_material::StandardMaterial, raea_sys_material::toon::ToonExt>>	component
 bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMaterial<bevy_pbr::pbr_material::StandardMaterial, raea_sys_shader::ShaderExt>>	component
-bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::extended_material::ExtendedMaterial<bevy_pbr::pbr_material::StandardMaterial, raea_sys_wear::Wear>>	component
 bevy_pbr::mesh_material::MeshMaterial3d<bevy_pbr::pbr_material::StandardMaterial>	component
 bevy_pbr::mesh_material::MeshMaterial3d<bevy_trenchbroom::special_textures::QuakeSkyMaterial>	component
 bevy_pbr::mesh_material::MeshMaterial3d<raea_sys_fog::fire::FireMaterial>	component

@@ -6,6 +6,14 @@ use super::*;
 /// TypeScript-only editing, phase 5: raea-render's IR is the contract; rrl the language, which this once went through, is
 /// retired). A column that changes frame by frame is keyed (linear) and its row holds the first frame's value.
 pub(crate) fn program(frames: &[(i64, Frame)], w: u32, h: u32, fps: f64) -> raea_core_program::ir::Program {
+    let has3d = frames.iter().any(|(_, f)| !f.scene.is_empty());
+    program_of(frames, w, h, fps, has3d)
+}
+
+/// program, its 3D's rows made only when `has3d`: false for a step that reads only its sound (the sound lint at a
+/// live render's end). That render drew its 3D as the frames came; building the 3D's rows again from every
+/// frame's kept scene asked for 28 GB at the end of a 13,175-frame film and got it killed (stage-guards SG4a).
+pub(crate) fn program_of(frames: &[(i64, Frame)], w: u32, h: u32, fps: f64, has3d: bool) -> raea_core_program::ir::Program {
     use raea_core_program::ir::V;
     let mut p = raea_core_program::ir::Program { fps, width: w, height: h, frames: frames.len() as i64, ..Default::default() };
     let row = |id: &str, cols: Vec<(&str, V)>| -> BTreeMap<String, V> {
@@ -14,20 +22,16 @@ pub(crate) fn program(frames: &[(i64, Frame)], w: u32, h: u32, fps: f64) -> raea
         r
     };
     // --alpha: nothing under the pages, so what the composition leaves empty stays transparent
-    let has3d = frames.iter().any(|(_, f)| !f.scene.is_empty());
     // with no holder background: black under 2D pages, and for 3D no `bg`, so the camera clears to Bevy's ClearColor
     // resource (srgb 43, 44, 47 unless a <BevyResource type="bevy_camera::clear_color::ClearColor"> sets it), as a Bevy
     // scene does (docs/control conventions C17)
     let clear = if ALPHA.load(std::sync::atomic::Ordering::Relaxed) { Some("#00000000".into()) } else { frames.first().and_then(|(_, f)| f.clear.clone()).and_then(|c| hex_of(&c)).or_else(|| (!has3d).then(|| "#000000".into())) };
-    if has3d && ALPHA.load(std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("raea: --alpha keeps 2D pages and <Video> clips transparent; the frames with 3D are drawn over the 3D and come out opaque");
-    }
     let mut cam = row("cam", clear.map(|c| ("bg", V::S(c))).into_iter().collect());
     // a holder's background that changes over the frames: the clear keyed frame by frame (bg_r, bg_g, bg_b, bg_a, sRGB),
     // as the page over it changes. Before, the first frame's clear held for the whole render.
     if has3d && !ALPHA.load(std::sync::atomic::Ordering::Relaxed) {
         let mut last = None;
-        let each: Vec<Option<[f64; 4]>> = frames.iter().map(|(_, f)| f.clear.as_deref().and_then(hex_of).and_then(|c| rgba_of(&c))).collect();
+        let each: Vec<Option<[f64; 4]>> = frames.iter().map(|(_, f)| f.clear.as_deref().and_then(hex_of).and_then(|c| raea_runtime_scene::rgba_of(&c))).collect();
         if each.iter().flatten().any(|c| Some(c) != each[0].as_ref()) {
             let cols: Vec<[f64; 4]> = each.iter().map(|c| *last.insert((*c).or(last).unwrap_or([0.0, 0.0, 0.0, 1.0]))).collect();
             for (k, name) in ["bg_r", "bg_g", "bg_b", "bg_a"].iter().enumerate() {
@@ -167,13 +171,3 @@ pub(crate) fn sound_lint(p: &raea_core_program::ir::Program, fps: f64) {
     }
 }
 
-/// A `#rgb`, `#rrggbb` or `#rrggbbaa` colour as sRGB 0..1, alpha last
-pub(crate) fn rgba_of(c: &str) -> Option<[f64; 4]> {
-    let h = c.strip_prefix('#')?;
-    let h: String = if h.len() == 3 { h.chars().flat_map(|c| [c, c]).collect() } else { h.to_string() };
-    if h.len() != 6 && h.len() != 8 {
-        return None;
-    }
-    let at = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok().map(|v| v as f64 / 255.0);
-    Some([at(0)?, at(2)?, at(4)?, if h.len() == 8 { at(6)? } else { 1.0 }])
-}

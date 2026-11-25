@@ -284,7 +284,7 @@ pub(crate) fn serve(root: PathBuf) -> Result<String, String> {
                 if file.is_dir() {
                     file = file.join("index.html");
                 }
-                let ok = file.canonicalize().is_ok_and(|f| f.starts_with(&root) && f.is_file());
+                let ok = dunce::canonicalize(&file).is_ok_and(|f| f.starts_with(&root) && f.is_file());
                 let (status, body, ty) = if ok { ("200 OK", std::fs::read(&file).unwrap_or_default(), mime(&file)) } else { ("404 Not Found", vec![], "text/plain") };
                 // CORS for any origin: an app's sandboxed frame (origin "null") loads its module scripts from here (src/app.rs)
                 let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Type: {ty}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n", body.len());
@@ -320,7 +320,7 @@ pub fn run(o: Opts) -> Result<i32, String> {
             PathBuf::from(String::from_utf8_lossy(&r.stdout).trim())
         }
     };
-    let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
+    let root = dunce::canonicalize(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     let commit = std::fs::read_to_string(root.join(".git/HEAD")).unwrap_or_default().trim().to_string();
     let (tests, skipped) = discover(&root, &o.areas, &o.only);
     let tests = sample(tests, &o.tier);

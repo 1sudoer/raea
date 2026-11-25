@@ -24,8 +24,42 @@
 # average.
 import argparse, glob, json, math, os, re, shutil, subprocess, sys, time
 
+import av
 import numpy as np
 from PIL import Image
+
+# the colour matrices FFmpeg names for a picture's colorspace tag: BT.601 for bt470bg (5) and smpte170m (6), else BT.709
+# (an untagged phone or render clip is BT.709 limited range; FFmpeg alone would assume BT.601). As matchmove's run.py.
+MATRIX = {5: "ITU601", 6: "ITU601"}
+
+
+def footage(path):
+    """The clip's width, height, frame rate (ffprobe's r_frame_rate), duration and colour matrix, through PyAV (its
+    wheels carry FFmpeg's own libraries: no FFmpeg need be installed)"""
+    with av.open(path) as c:
+        v = c.streams.video[0]
+        rate = float(v.base_rate or v.average_rate or v.guessed_rate or 30)
+        dur = float(v.duration * v.time_base) if v.duration else (c.duration or 0) / av.time_base
+        return v.codec_context.width, v.codec_context.height, rate, dur, MATRIX.get(int(v.codec_context.colorspace or 2), "ITU709")
+
+
+def decoded(path, start, seconds):
+    """Each frame from `start` for `seconds`, as `ffmpeg -ss START -i PATH -t SECONDS` decodes them"""
+    with av.open(path) as c:
+        v = c.streams.video[0]
+        v.thread_type = "AUTO"
+        t0 = v.start_time or 0
+        if start > 0:
+            c.seek(t0 + int(start / v.time_base), stream=v, backward=True)
+        for f in c.decode(v):
+            if f.pts is None:
+                continue
+            t = float((f.pts - t0) * v.time_base)
+            if t < start - 1e-6:
+                continue
+            if t >= start + seconds - 1e-6:
+                break
+            yield f
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--input", required=True)
@@ -80,21 +114,18 @@ if os.path.isdir(src):
     say(f"{len(meta)} pictures from {src}")
 else:
     video = True
-    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate,duration,color_space", "-of", "json", src], capture_output=True, text=True, check=True).stdout)["streams"][0]
-    W, H = int(probe["width"]), int(probe["height"])
-    num, den = probe["r_frame_rate"].split("/")
-    fps = float(num) / float(den)
-    dur = float(probe.get("duration") or 0)
+    W, H, fps, dur, matrix = footage(src)
     seconds = a.seconds if a.seconds > 0 else max(0.0, dur - a.start)
-    matrix = {"bt470bg": "bt601", "smpte170m": "bt601"}.get(probe.get("color_space", ""), "bt709")
     s = min(1.0, a.max_res / max(W, H))
     sw, sh = round(W * s / 2) * 2, round(H * s / 2) * 2
     # three candidates per picture kept (all the source's frames when it has fewer), the sharpest of each window wins
     total = max(1, int(seconds * fps))
     step = max(1, total // (N * 3))
-    rng = ["-ss", f"{a.start:.6f}", "-i", src, "-t", f"{seconds:.6f}"]
-    vf = f"select='not(mod(n\\,{step}))',scale={sw}:{sh}:flags=lanczos:in_color_matrix={matrix}:in_range=tv,format=rgb24"
-    subprocess.run(["ffmpeg", "-v", "error", "-y", *rng, "-vf", vf, "-fps_mode", "passthrough", "-start_number", "0", "-q:v", "2", f"{work}/cand/%05d.jpg"], check=True)
+    # every step-th frame, scaled with Lanczos from limited-range YUV (FFmpeg's select + scale, through PyAV)
+    for n, f in enumerate(decoded(src, a.start, seconds)):
+        if n % step == 0:
+            pic = f.reformat(width=sw, height=sh, format="rgb24", src_colorspace=matrix, src_color_range="MPEG", interpolation="LANCZOS").to_ndarray()
+            Image.fromarray(pic).save(f"{work}/cand/{n // step:05d}.jpg", quality=95, subsampling=0)
     # candidates as JPEG (PNG cost ~1.7 GB for 150 frames' worth); the winners are written back out as PNG
     cands = sorted(glob.glob(f"{work}/cand/*.jpg"))
     if len(cands) < 3:

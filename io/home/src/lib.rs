@@ -2,6 +2,36 @@
 //! models, the fonts), and where its per-user caches and logs go on each platform.
 
 pub mod sdk;
+pub mod shared;
+
+/// What a folder takes on disk, as `du -sh` says it (`links`: through a link to its files). Windows has no du (raea
+/// setup-audio said "(?)" for every model there): its files' sizes are added up instead, in du's units.
+pub fn disk_use(dir: &std::path::Path, links: bool) -> String {
+    let o = std::process::Command::new("du").arg(if links { "-shL" } else { "-sh" }).arg(dir).output();
+    o.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().next().map(str::to_string)).unwrap_or_else(|| du_units(bytes_in(dir, links, 0)))
+}
+
+/// The bytes of the files under `p` (through links when `links`, 64 folders deep at most, so a link's loop ends).
+fn bytes_in(p: &std::path::Path, links: bool, depth: u32) -> u64 {
+    let md = if links { std::fs::metadata(p) } else { std::fs::symlink_metadata(p) };
+    match md {
+        Ok(m) if m.is_dir() && depth < 64 => std::fs::read_dir(p).map(|d| d.flatten().map(|e| bytes_in(&e.path(), links, depth + 1)).sum()).unwrap_or(0),
+        Ok(m) if m.is_file() => m.len(),
+        _ => 0,
+    }
+}
+
+/// `n` bytes as `du -h` writes them: 1024s, one decimal under 10 ("1.9G", "512M", "0B").
+fn du_units(n: u64) -> String {
+    let mut v = n as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < 4 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    let u = ["B", "K", "M", "G", "T"][unit];
+    if unit == 0 { format!("{n}B") } else if v < 10.0 { format!("{v:.1}{u}") } else { format!("{v:.0}{u}") }
+}
 
 /// Where raea's own files are (the SDK's TypeScript, the lite runtime and its packages, the shell's sources, the
 /// sandbox's modules, the tools that install the local models): $RAEA_HOME; else beside an installed binary,
@@ -13,7 +43,7 @@ pub fn home() -> std::path::PathBuf {
         if let Some(h) = std::env::var_os("RAEA_HOME").filter(|v| !v.is_empty()) {
             return std::path::PathBuf::from(h);
         }
-        let installed = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).map(plain).and_then(|e| e.parent()?.parent().map(|p| p.join("share/raea")));
+        let installed = std::env::current_exe().ok().and_then(|e| dunce::canonicalize(&e).ok()).map(plain).and_then(|e| e.parent()?.parent().map(|p| p.join("share/raea")));
         if let Some(d) = installed.filter(|d| d.join("sdk/raea/src").is_dir()) {
             return d;
         }
@@ -22,7 +52,7 @@ pub fn home() -> std::path::PathBuf {
             return std::path::PathBuf::from("/nonexistent/raea");
         }
         let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        tree.canonicalize().map(plain).unwrap_or(tree)
+        dunce::canonicalize(&tree).map(plain).unwrap_or(tree)
     })
     .clone()
 }
@@ -38,9 +68,23 @@ pub fn plain(p: std::path::PathBuf) -> std::path::PathBuf {
     }
 }
 
+/// `p` canonical (links resolved, and on Windows plain C:\..., through dunce), or `p` as given when it can't be read
+/// (it doesn't exist yet).
+pub fn real(p: std::path::PathBuf) -> std::path::PathBuf {
+    dunce::canonicalize(&p).unwrap_or(p)
+}
+
 /// a verbatim drive path's plain form (`\\?\C:\x` is `C:\x`); None for any other path
 fn drive(s: &str) -> Option<&str> {
     s.strip_prefix(r"\\?\").filter(|r| r.as_bytes().get(1) == Some(&b':'))
+}
+
+/// The person's home folder: $HOME, else %USERPROFILE%, the order Git for Windows reads them in. Windows gives an app
+/// opened from the Start menu or Explorer no HOME, so a read of HOME alone found nothing there and put ~/.raea, the
+/// caches and the inbox under whatever folder raea ran in. None when neither is set (an empty one counts as unset).
+/// Every read of the home folder goes through here (tools/windows-paths.sh).
+pub fn user_home() -> Option<std::path::PathBuf> {
+    ["HOME", "USERPROFILE"].into_iter().find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty())).map(std::path::PathBuf::from)
 }
 
 /// Where raea's models are kept (Beat This!, Demucs, TransNet, Silero, the Core ML ones): ~/.local/share/raea-models on
@@ -50,7 +94,7 @@ pub fn models() -> std::path::PathBuf {
     let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     match var("LOCALAPPDATA").filter(|_| cfg!(windows)) {
         Some(d) => d.join("raea").join("models"),
-        None => var("HOME").unwrap_or_default().join(".local/share/raea-models"),
+        None => user_home().unwrap_or_default().join(".local/share/raea-models"),
     }
 }
 
@@ -66,6 +110,21 @@ pub fn logs() -> Option<std::path::PathBuf> {
     user_dir("Library/Logs/raea", "XDG_STATE_HOME", ".local/state", "logs")
 }
 
+/// A new temp file named `raea-NAME-PID-N`, open to read and write, gone when raea is: unlinked once open on unix,
+/// delete-on-close on Windows, so a render that dies leaves nothing behind (an encoder's samples, a render's parts).
+pub fn scratch_file(name: &str) -> Result<std::fs::File, String> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let p = std::env::temp_dir().join(format!("raea-{name}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true).write(true).create_new(true);
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::custom_flags(&mut o, 0x0400_0000); // FILE_FLAG_DELETE_ON_CLOSE
+    let f = o.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&p);
+    Ok(f)
+}
+
 /// macOS's folder under HOME, the XDG base folder (its variable, else its default under HOME) with raea in it, or raea's
 /// folder of that kind under %LOCALAPPDATA%. An XDG variable that isn't an absolute path is ignored, as the spec says.
 fn user_dir(apple: &str, xdg: &str, xdg_default: &str, windows: &str) -> Option<std::path::PathBuf> {
@@ -73,7 +132,7 @@ fn user_dir(apple: &str, xdg: &str, xdg_default: &str, windows: &str) -> Option<
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA").filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("raea").join(windows));
     }
-    let home = PathBuf::from(std::env::var_os("HOME").filter(|h| !h.is_empty())?);
+    let home = user_home()?;
     if cfg!(target_vendor = "apple") {
         return Some(home.join(apple));
     }
@@ -86,7 +145,7 @@ fn user_dir(apple: &str, xdg: &str, xdg_default: &str, windows: &str) -> Option<
 pub fn env_path(var: &str, under_home: &str) -> std::path::PathBuf {
     match std::env::var_os(var).filter(|v| !v.is_empty()) {
         Some(p) => p.into(),
-        None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(under_home),
+        None => user_home().unwrap_or_default().join(under_home),
     }
 }
 
@@ -119,6 +178,16 @@ pub fn src_on(s: &str, windows: bool) -> String {
     if s.as_bytes().get(1) == Some(&b':') { format!("file:///{}", s.replace('\\', "/")) } else { s.to_string() }
 }
 
+/// The import path from a file in folder `from` to the file `to` (both relative to one folder): ./x, ../y/z.
+pub fn import_path(from: &std::path::Path, to: &std::path::Path) -> String {
+    let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut parts = vec![".."; a.len() - common].into_iter().map(String::from).collect::<Vec<_>>();
+    parts.extend(b[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    let p = parts.join("/");
+    if p.starts_with("..") { p } else { format!("./{p}") }
+}
+
 /// A local file as a page names it in a URL's path: its path on Unix; on Windows `/C:/x/y` (the path of the file URL
 /// file:///C:/x/y, `src`'s, which a page's file:/// base joins it to). Written `C:\x`, a URL reads `c` as its scheme
 /// and CSS reads the backslashes as escapes (#40, #41, #42).
@@ -142,6 +211,24 @@ pub fn from_url_path_on(s: &str, windows: bool) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_folder_is_sized_without_du() {
+        assert_eq!(super::du_units(0), "0B");
+        assert_eq!(super::du_units(1023), "1023B");
+        assert_eq!(super::du_units(1536), "1.5K");
+        assert_eq!(super::du_units(512 << 20), "512M");
+        assert_eq!(super::du_units((19 << 30) / 10), "1.9G");
+        let d = std::env::temp_dir().join(format!("raea-du-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("a/b")).unwrap();
+        std::fs::write(d.join("x"), vec![0u8; 1000]).unwrap();
+        std::fs::write(d.join("a/b/y"), vec![0u8; 2500]).unwrap();
+        assert_eq!(super::bytes_in(&d, false, 0), 3500);
+        assert_eq!(super::bytes_in(&d, true, 0), 3500);
+        assert_eq!(super::bytes_in(&d.join("none"), false, 0), 0);
+        assert_ne!(super::disk_use(&d, false), "?");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn a_src_is_a_file_url_on_windows() {
         assert_eq!(super::src_on("/Users/a/assets/m.png", false), "/Users/a/assets/m.png");
@@ -183,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn caches_and_logs_follow_the_platform() {
+    fn caches_logs_and_the_home_folder_follow_the_platform() {
         // one test, so nothing else reads these variables while it sets them
         unsafe {
             std::env::set_var("HOME", "/h");
@@ -197,6 +284,21 @@ mod tests {
             // a relative XDG_CACHE_HOME is ignored, as the spec says
             assert_eq!((c.to_str().unwrap(), l.to_str().unwrap()), ("/h/.cache/raea", "/state/raea"));
         }
+        // the home folder: HOME, else USERPROFILE (an app opened from Windows' Start menu has no HOME); empty is unset
+        let was = std::env::var_os("USERPROFILE");
+        unsafe { std::env::set_var("USERPROFILE", r"C:\Users\Ada") };
+        assert_eq!(super::user_home().unwrap().to_str(), Some("/h"));
+        unsafe { std::env::set_var("HOME", "") };
+        assert_eq!(super::user_home().unwrap().to_str(), Some(r"C:\Users\Ada"));
+        assert_eq!(super::env_path("RAEA_NO_SUCH_VAR", ".raea/env"), std::path::Path::new(r"C:\Users\Ada").join(".raea/env"));
+        unsafe { std::env::remove_var("USERPROFILE") };
+        assert_eq!(super::user_home(), None);
+        unsafe {
+            std::env::set_var("HOME", "/h");
+            if let Some(w) = was {
+                std::env::set_var("USERPROFILE", w);
+            }
+        }
     }
 }
 
@@ -209,7 +311,7 @@ pub fn offline(what: &str) -> Result<(), String> {
     let set = match std::env::var("RAEA_OFFLINE") {
         Ok(v) => on(&v),
         Err(_) => {
-            let file = std::env::var_os("RAEA_ENV_FILE").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".raea/env")));
+            let file = std::env::var_os("RAEA_ENV_FILE").map(std::path::PathBuf::from).or_else(|| user_home().map(|h| h.join(".raea/env")));
             file.and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|s| {
                 s.lines().filter(|l| !l.trim_start().starts_with('#')).filter_map(|l| l.split_once('=')).any(|(k, v)| k.trim() == "RAEA_OFFLINE" && on(v.trim().trim_matches('"')))
             })
@@ -243,4 +345,10 @@ mod offline_tests {
         }
         let _ = std::fs::remove_file(&file);
     }
+}
+
+/// Whether the environment variable `name` is set to exactly "1" (raea's switches: RAEA_SOURCE_STAMPS=1,
+/// RAEA_PLAYER_PROBE=1).
+pub fn env_on(name: &str) -> bool {
+    std::env::var(name).as_deref() == Ok("1")
 }

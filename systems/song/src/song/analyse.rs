@@ -2,6 +2,34 @@
 
 use super::*;
 
+/// The downbeats without the model's strays: one or two downbeats off the bar's phase, between two that are whole
+/// bars apart, are that stretch's bars counted from the beats. Beat This! marks a downbeat mid-bar here and there, and
+/// where it does moves with a 12 ms decoder offset, so the same song had 78 bars on a Mac and 75 elsewhere (#49). A
+/// phase that holds for three downbeats is the music's (a dropped beat, a change of meter) and stays.
+pub(super) fn steady(down: &[usize], bpb: usize) -> Vec<usize> {
+    const HOLD: usize = 3;
+    let mut out: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < down.len() {
+        let Some(&a) = out.last() else {
+            out.push(down[i]);
+            i += 1;
+            continue;
+        };
+        if (down[i] - a) % bpb == 0 {
+            out.push(down[i]);
+            i += 1;
+        } else if let Some(j) = (i..down.len().min(i + HOLD)).find(|j| (down[*j] - a) % bpb == 0) {
+            out.extend((a + bpb..down[j]).step_by(bpb));
+            i = j;
+        } else {
+            out.push(down[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// The map from a song's 22 050 Hz mono samples, its log-mel frames, beats and downbeats (seconds) and any
 /// `[Section]` markers.
 pub fn analyse(x: &[f32], spect: &[[f32; MELS]], beats: &[f64], downs: &[f64], marks: &[(f64, String)]) -> Value {
@@ -61,6 +89,7 @@ pub fn analyse(x: &[f32], spect: &[[f32; MELS]], beats: &[f64], downs: &[f64], m
         }
     }
     let bpb = (2..counts.len()).max_by_key(|c| counts[*c]).filter(|c| counts[*c] > 0).unwrap_or(4);
+    let down_i = steady(&down_i, bpb);
     // bars: one per downbeat, and a pickup before the first
     let mut bar_starts: Vec<usize> = Vec::new();
     if let Some(&first) = down_i.first() {
@@ -302,7 +331,7 @@ pub fn analyse(x: &[f32], spect: &[[f32; MELS]], beats: &[f64], downs: &[f64], m
         }
     }
     builds.sort_by_key(|b| b.0);
-    if std::env::var_os("RAEA_SONG_DEBUG").is_some() {
+    if raea_io_trace::stat("RAEA_SONG_DEBUG") {
         for &(p, base, jump, impact) in &drop_base {
             eprintln!("drop? {:7.2} base {base:.2} jump {jump:.2} impact {impact:.2} nov {:.2}", beats[p], nov[p] / nmax);
         }
@@ -441,7 +470,7 @@ pub fn analyse(x: &[f32], spect: &[[f32; MELS]], beats: &[f64], downs: &[f64], m
         }
         let _ = std::fs::write(p, csv);
     }
-    if std::env::var_os("RAEA_SONG_DEBUG").is_some() {
+    if raea_io_trace::stat("RAEA_SONG_DEBUG") {
         for (j, bar) in bars.iter().enumerate() {
             let (s, e) = (bar.0, bar.1);
             eprintln!("bar {j:3} {:7.2}s  E {:.2} raw {:.2} loud {:.2} low {:.2} on {:.2} br {:.2} hi {:.2} nov {:.2}  rate {}", beats[s],

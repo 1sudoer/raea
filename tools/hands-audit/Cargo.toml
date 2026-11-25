@@ -1,0 +1,12 @@
+[package]
+name = "raea-hands-audit"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "What a character's hands and body really do in a take (docs/hands.feature), measured on the body's own skin: how deep skin goes into the thing, the scene and the body, how many fingers touch, how fast and how unevenly joints turn"
+
+[dependencies]
+raea-sys-body = { path = "../../systems/body" }
+raea-sys-grab = { path = "../../systems/grab" }
+glam = "0.33"

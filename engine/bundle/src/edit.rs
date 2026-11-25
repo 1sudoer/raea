@@ -30,7 +30,7 @@ impl EditResolve {
     /// importer was ever under the work folder, so a live game's own `import "react"` went to the engine's React instead of
     /// the live runtime its tsconfig paths name, and `raea play` threw "not a function" before the first frame
     pub fn new(e: Edit) -> Self {
-        let real = |p: PathBuf| p.canonicalize().map(raea_io_home::plain).unwrap_or(p);
+        let real = |p: PathBuf| dunce::canonicalize(&p).map(raea_io_home::plain).unwrap_or(p);
         EditResolve(Edit { dir: real(e.dir), js: real(e.js), work: real(e.work) })
     }
 
@@ -40,8 +40,36 @@ impl EditResolve {
     /// work folder and every live play threw "not a function" (the engine's React, with no `__h`) before its first frame
     fn from_edit(&self, imp: &str) -> bool {
         let named = Path::new(imp);
-        let imp = named.canonicalize().map(raea_io_home::plain).unwrap_or_else(|_| named.to_path_buf());
+        let imp = dunce::canonicalize(&named).map(raea_io_home::plain).unwrap_or_else(|_| named.to_path_buf());
         imp.starts_with(&self.0.work) && !imp.components().any(|c| c.as_os_str() == "node_modules")
+    }
+
+    /// whether an importer is the edit's own code: its sources (src/) or what it imports from outside its folder (ext/),
+    /// not the SDK's copies beside them
+    fn own_source(&self, imp: &str) -> bool {
+        let named = Path::new(imp);
+        let imp = dunce::canonicalize(&named).map(raea_io_home::plain).unwrap_or_else(|_| named.to_path_buf());
+        self.from_edit(&imp.to_string_lossy()) && ["src", "ext"].iter().any(|d| imp.starts_with(self.0.work.join(d)))
+    }
+
+    /// A package's import of the SDK by its names ("raea", "raea/<module>", "@raea/<package>"): the work folder's copy
+    /// of that module, where the edit's own imports of it were pointed (runtime/bundle's rewrite_into: sdk/raea/src's
+    /// files at motion/, a package's at <package>/ beside it), so a package and the composition share one SDK and its
+    /// hooks read the Clock the engine drives. A package isn't rewritten, so its import resolved nothing from its own
+    /// folder and Rolldown left `raea` an outside global: "Can't find variable: raea" before the first frame (#151)
+    fn sdk_copy(&self, spec: &str) -> Option<PathBuf> {
+        if !(spec == "raea" || spec.starts_with("raea/") || spec.starts_with("@raea/")) {
+            return None;
+        }
+        // sdk/react/js's grandparent
+        let sdk = self.0.js.ancestors().nth(2)?;
+        let f = raea_io_home::sdk::resolve(sdk, spec)?;
+        let mut parts = f.strip_prefix(sdk).ok()?.components();
+        let pkg = parts.next()?.as_os_str().to_string_lossy().into_owned();
+        // its src/
+        parts.next()?;
+        let copy = self.0.work.join(if pkg == "raea" { "motion" } else { pkg.as_str() }).join(parts.as_path());
+        copy.is_file().then_some(copy)
     }
 }
 
@@ -83,6 +111,21 @@ mod tests {
         assert!(!r.from_edit(&alias.join("node_modules").join("pkg").join("index.js").to_string_lossy()));
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// three's stand-in is for the edit's own code (src/, ext/): never the SDK's copies beside it, nor a package
+    #[test]
+    fn the_edits_own_code_is_its_sources_and_what_it_brings_in() {
+        let work = std::env::temp_dir().join(format!("raea-edit-own-{}", std::process::id()));
+        for f in ["src/scene.tsx", "ext/lib.ts", "r3f/input/vanilla.ts", "playable/host/main.tsx", "src/node_modules/pkg/index.js"] {
+            std::fs::create_dir_all(work.join(f).parent().unwrap()).unwrap();
+            std::fs::write(work.join(f), "").unwrap();
+        }
+        let r = EditResolve::new(Edit { dir: work.clone(), js: work.clone(), work: work.clone() });
+        let own = |f: &str| r.own_source(&work.join(f).to_string_lossy());
+        assert!(own("src/scene.tsx") && own("ext/lib.ts"));
+        assert!(!own("r3f/input/vanilla.ts") && !own("playable/host/main.tsx") && !own("src/node_modules/pkg/index.js"));
+        let _ = std::fs::remove_dir_all(&work);
+    }
 }
 
 /// The person's plugins (the raea app's Plugins page installs them here with npm): RAEA_PLUGINS, else ~/.raea/plugins.
@@ -106,6 +149,12 @@ async fn resolve_from(ctx: &PluginContext, spec: &str, dir: &Path) -> anyhow::Re
 /// raea's own text (sdk/r3f/src/input/troika.ts, text.ts; docs/r3f.feature R3F13).
 const STAND_INS: &[(&str, &str)] = &[("troika-three-text", "sdk/r3f/src/input/troika.ts")];
 
+/** three as the edit's own code imports it: three with its renderer a stand-in that draws nothing and records what it
+ *  renders, for <Three program> (sdk/r3f/src/input/vanilla.ts, program.ts; docs/r3f.feature R3F19), at the work
+ *  folder's copy of the r3f package so it imports the edit's three. Three's own modules, its addons and the SDK's
+ *  copies (the playable host's real WebGLRenderer) import three as it is. */
+const THREE_STAND_INS: &[(&str, &str)] = &[("three", "r3f/input/vanilla.ts"), ("three/webgpu", "r3f/input/vanilla-webgpu.ts")];
+
 impl Plugin for EditResolve {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("raea:edit")
@@ -126,6 +175,18 @@ impl Plugin for EditResolve {
                 if f.is_file() {
                     return Ok(Some(HookResolveIdOutput::from_id(f.to_string_lossy().as_ref())));
                 }
+            }
+        }
+        if let Some((_, own)) = THREE_STAND_INS.iter().find(|(p, _)| *p == spec) {
+            let f = e.work.join(own);
+            if self.own_source(imp) && f.is_file() {
+                return Ok(Some(HookResolveIdOutput::from_id(f.to_string_lossy().as_ref())));
+            }
+        }
+        // a package importing the SDK: the copy the edit's own sources use (the edit's own were pointed at it already)
+        if !self.from_edit(imp) {
+            if let Some(f) = self.sdk_copy(spec) {
+                return Ok(Some(HookResolveIdOutput::from_id(f.to_string_lossy().as_ref())));
             }
         }
         let bare = spec.starts_with('@') || spec.starts_with(|c: char| c.is_ascii_lowercase());

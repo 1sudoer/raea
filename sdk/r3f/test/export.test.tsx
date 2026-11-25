@@ -1,6 +1,10 @@
 // raea → R3F source (docs/r3f.feature R3F9): what the source export writes. tools/parity.sh draws what it writes in
 // Chrome against raea's render (src-* cases); this checks what's in the file.
 import { describe, expect, test } from "bun:test";
+import { AbsoluteFill } from "raea";
+import { Cuboid } from "raea/3d";
+import { Environment } from "raea/light";
+import { Mesh, MeshStandardMaterial, PerspectiveCamera } from "@raea/render/three";
 import { toR3FSource } from "../src/export";
 import { OUTPUTS, SIZE } from "./parity/fixtures";
 
@@ -29,6 +33,24 @@ describe("the source export", () => {
     expect(src).toMatch(/<primitive object=\{G\[\d+\]\} attach="geometry" \/>/);
     expect(src).toContain("RectAreaLightUniformsLib.init();");
     expect(src).toContain('<fog attach="fog" args={["#0b0e14", 6, 14]} />');
+  });
+
+  test("an <Environment room> is three's RoomEnvironment through PMREMGenerator.fromScene, with its blur (#165)", async () => {
+    const Lit = () => (
+      <AbsoluteFill>
+        <PerspectiveCamera position={[0, 0, 5]} lookAt={[0, 0, 0]} fov={32} />
+        <Environment room blur={0.04} background />
+        <Mesh name="box">
+          <Cuboid args={[2, 1.3, 1.3]} />
+          <MeshStandardMaterial color="#d97757" roughness={0.5} />
+        </Mesh>
+      </AbsoluteFill>
+    );
+    const { source: src } = await toR3FSource(Lit as never, { ...SIZE });
+    expect(src).toContain('import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";');
+    expect(src).toContain("pmrem.fromScene(room, 0.04).texture");
+    expect(src).toContain("scene.background = t;");
+    expect(src).toContain("<Suspense fallback={null}><Environment /></Suspense>");
   });
 
   test("effects and Tony are drawn by raea-effects.ts, the composer <Raea> uses, written beside the module", async () => {

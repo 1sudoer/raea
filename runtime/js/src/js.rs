@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub use raea_runtime_jsengine::{Arg, Engine, JsEngine, now_ms};
+pub use raea_runtime_jsengine::{Arg, Engine, JsEngine, Upkeep, now_ms};
 use raea_runtime_jsengine::{Native, Ret, arg, clock};
 
 /// What a root's JS handed the host since it was last drained.

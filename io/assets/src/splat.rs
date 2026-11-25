@@ -11,12 +11,16 @@ use super::*;
 
 /// Where the splat trainer is installed: $RAEA_SPLAT, else ~/.cache/raea-splat.
 pub fn splat_dir() -> PathBuf {
-    std::env::var_os("RAEA_SPLAT").filter(|v| !v.is_empty()).map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/raea-splat"))
+    raea_io_home::env_path("RAEA_SPLAT", ".cache/raea-splat")
+}
+
+/// Brush's trainer in the install: brush/brush_app (brush_app.exe on Windows)
+fn brush(dir: &Path) -> PathBuf {
+    dir.join("brush").join(if cfg!(windows) { "brush_app.exe" } else { "brush_app" })
 }
 
 fn splat_installed(dir: &Path) -> bool {
-    dir.join(".venv/bin/python").exists() && dir.join("run.py").exists() && dir.join(".ready").exists() && dir.join("brush/brush_app").exists()
+    venv_python(dir).exists() && dir.join("run.py").exists() && dir.join(".ready").exists() && brush(dir).exists()
 }
 
 /// The trainer's install, set up first if it isn't there (tools/splat/setup.sh, about 360 MB, once), unless
@@ -27,7 +31,7 @@ pub fn ensure_splat() -> Result<PathBuf, String> {
         return Ok(dir);
     }
     let script = setup_script("splat");
-    let how = format!("{} (installs it into {}, about 360 MB, once)", script.display(), dir.display());
+    let how = format!("{} (installs it into {}, about 360 MB, once)", setup_how(&script), dir.display());
     if std::env::var("RAEA_AUDIO_AUTOSETUP").as_deref() == Ok("0") {
         return Err(format!("the splat trainer isn't installed: run {how}"));
     }
@@ -35,12 +39,7 @@ pub fn ensure_splat() -> Result<PathBuf, String> {
         return Err(format!("the splat trainer isn't installed in {}, and its setup script isn't at {}", dir.display(), script.display()));
     }
     eprintln!("raea: the splat trainer isn't installed yet; setting it up now with {how}");
-    let status = std::process::Command::new("sh")
-        .arg(&script)
-        .env("RAEA_SPLAT", &dir)
-        .stdout(std::io::stderr())
-        .status()
-        .map_err(|e| format!("splat setup: {e}"))?;
+    let status = run_setup(&script, "RAEA_SPLAT", &dir).map_err(|e| format!("splat setup: {e}"))?;
     if !status.success() || !splat_installed(&dir) {
         return Err(format!("splat setup didn't finish ({status}): run {how}"));
     }
@@ -128,8 +127,8 @@ impl Store {
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let out = self.dir.join(format!(".splat-{key}.part"));
         let _ = std::fs::remove_dir_all(&out);
-        let mut cmd = std::process::Command::new(dir.join(".venv/bin/python"));
-        cmd.arg("-I").arg(dir.join("run.py")).arg("--input").arg(input).arg("--out").arg(&out).arg("--brush").arg(dir.join("brush/brush_app"));
+        let mut cmd = std::process::Command::new(venv_python(&dir));
+        cmd.arg("-I").arg(dir.join("run.py")).arg("--input").arg(input).arg("--out").arg(&out).arg("--brush").arg(brush(&dir));
         for (k, flag) in [("frames", "--frames"), ("steps", "--steps"), ("max_res", "--max-res"), ("max_splats", "--max-splats")] {
             cmd.args([flag.to_string(), (params[k].as_f64().unwrap_or(0.0) as i64).to_string()]);
         }

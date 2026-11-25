@@ -108,6 +108,9 @@ export type State = {
   alpha: number;
   comp: string;
   font: string;
+  /** ctx.letterSpacing and ctx.wordSpacing, px */
+  letterSpacing: number;
+  wordSpacing: number;
   align: CanvasTextAlign;
   baseline: CanvasTextBaseline;
   shadowColor: RGBA;
@@ -123,7 +126,7 @@ export type State = {
 
 export const fresh = (): State => ({
   ts: ID, fill: [0, 0, 0, 1], stroke: [0, 0, 0, 1], lineWidth: 1, lineCap: "butt", lineJoin: "miter", miterLimit: 10, dash: [], dashOffset: 0,
-  alpha: 1, comp: "source-over", font: "10px sans-serif", align: "start", baseline: "alphabetic", shadowColor: [0, 0, 0, 0], shadowBlur: 0, shadowX: 0,
+  alpha: 1, comp: "source-over", font: "10px sans-serif", letterSpacing: 0, wordSpacing: 0, align: "start", baseline: "alphabetic", shadowColor: [0, 0, 0, 0], shadowBlur: 0, shadowX: 0,
   shadowY: 0, smooth: true, filter: "none", filters: [], clip: [],
 });
 
@@ -136,6 +139,16 @@ export function parseFont(f: string): { size: number; family: string; weight: st
   const n = parseFloat(m[5]);
   const size = m[6] === "pt" ? (n * 4) / 3 : m[6] === "em" || m[6] === "rem" ? n * 16 : n;
   return { size, family: m[7].trim(), weight: m[3] === "bold" ? "700" : m[3] && /\d/.test(m[3]) ? m[3] : "400", style: m[1] === "italic" || m[4] === "italic" ? "italic" : "normal" };
+}
+
+/** ctx.letterSpacing or ctx.wordSpacing as px: a CSS length (px, em of the context's font as it is, rem), or null for
+ *  one a browser ignores */
+export function parseSpacing(v: string, font: string): number | null {
+  const m = String(v).match(/^\s*(-?(?:\d+\.?\d*|\.\d+))(px|em|rem)?\s*$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!m[2]) return n === 0 ? 0 : null;
+  return m[2] === "px" ? n : m[2] === "rem" ? n * 16 : n * (parseFont(font)?.size ?? 10);
 }
 
 /** Fonts' advances as the host measured them: family -> {em, advance per char, default advance} (`fonts` event). */
@@ -151,5 +164,49 @@ wire.on<{ default: string; families: Record<string, { em: number; adv: Record<st
 export interface CanvasHost {
   __wid?: number;
   _wired?: boolean;
+  /** Sends the list itself, for a canvas that isn't on this wire (a composition's, sdk/raea canvas.ts: #55) */
+  _send?(list: { gen: number; w: number; h: number; ops: unknown[] }): void;
   getAttribute(k: string): string | null;
+}
+
+/** roundRect's outline on `P`: each corner's radius (one, two, three or four, as CSS gives them) scaled down together
+ *  where two would overlap, then the pen back at the rectangle's origin, as Chrome leaves it. */
+export function roundRectPath(P: Path, x: number, y: number, w: number, h: number, radii: number | number[]) {
+  const r = Array.isArray(radii) ? radii : [radii];
+  const [tl, tr, br, bl] = r.length === 1 ? [r[0], r[0], r[0], r[0]] : r.length === 2 ? [r[0], r[1], r[0], r[1]] : r.length === 3 ? [r[0], r[1], r[2], r[1]] : [r[0], r[1], r[2], r[3]];
+  const scale = Math.min(1, w / (tl + tr || 1), w / (bl + br || 1), h / (tl + bl || 1), h / (tr + br || 1));
+  const [a, b, c, d] = [tl, tr, br, bl].map((v) => (typeof v === "number" ? v : 0) * scale);
+  P.move(x + a, y);
+  P.line(x + w - b, y);
+  if (b) P.ellipse(x + w - b, y + b, b, b, 0, -Math.PI / 2, 0, false);
+  P.line(x + w, y + h - c);
+  if (c) P.ellipse(x + w - c, y + h - c, c, c, 0, 0, Math.PI / 2, false);
+  P.line(x + d, y + h);
+  if (d) P.ellipse(x + d, y + h - d, d, d, 0, Math.PI / 2, Math.PI, false);
+  P.line(x, y + a);
+  if (a) P.ellipse(x + a, y + a, a, a, 0, Math.PI, Math.PI * 1.5, false);
+  P.close();
+  P.move(x, y);
+}
+
+/** arcTo on `P`: a line to the first tangent point and the arc of radius `r` round the corner at (x1, y1), or a line to
+ *  the corner when there's no arc to make (no radius, or the three points in a line). */
+export function arcToPath(P: Path, x1: number, y1: number, x2: number, y2: number, r: number) {
+  if (!P.last) P.move(x1, y1);
+  const [x0, y0] = P.last!;
+  const v0 = [x0 - x1, y0 - y1], v1 = [x2 - x1, y2 - y1];
+  const l0 = Math.hypot(v0[0], v0[1]), l1 = Math.hypot(v1[0], v1[1]);
+  const cross = v0[0] * v1[1] - v0[1] * v1[0];
+  if (!r || !l0 || !l1 || Math.abs(cross) < 1e-9) return P.line(x1, y1);
+  const ang = Math.acos(Math.max(-1, Math.min(1, (v0[0] * v1[0] + v0[1] * v1[1]) / (l0 * l1))));
+  const t = r / Math.tan(ang / 2);
+  const p0 = [x1 + (v0[0] / l0) * t, y1 + (v0[1] / l0) * t];
+  const p1 = [x1 + (v1[0] / l1) * t, y1 + (v1[1] / l1) * t];
+  // the centre: from p0, perpendicular toward the inside of the corner
+  const n = cross > 0 ? [-v0[1] / l0, v0[0] / l0] : [v0[1] / l0, -v0[0] / l0];
+  const cx = p0[0] + n[0] * r, cy = p0[1] + n[1] * r;
+  const a0 = Math.atan2(p0[1] - cy, p0[0] - cx), a1 = Math.atan2(p1[1] - cy, p1[0] - cx);
+  P.line(p0[0], p0[1]);
+  // the short way round, between the tangent points: clockwise on screen (y down) when the corner turns that way
+  P.ellipse(cx, cy, r, r, 0, a0, a1, cross > 0);
 }

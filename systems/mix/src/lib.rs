@@ -7,6 +7,7 @@
 //! Neural models never sit here: generated sound is rendered once, cached as PCM keyed by its inputs, and comes in as a
 //! plain source like any file (sdk/react/docs/audio-stack.md).
 
+pub use raea_sys_mix_level::{joins, level};
 pub mod live;
 pub mod nodes;
 pub mod offline;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 
 /// The version of the core's mastering (a raw bounce, its gain, the limiter): caches of a master or a mastered track
 /// carry it, so one an earlier core made isn't taken for this one's.
-pub const MASTER_VERSION: u32 = 3;
+pub const MASTER_VERSION: u32 = 4;
 
 /// The core's rate: a render's bounce, and live play when the device takes it.
 pub const RATE: u32 = 48_000;

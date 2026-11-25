@@ -71,6 +71,8 @@ pub struct Root {
     frames_seen: std::collections::HashSet<(NodeId, String)>,
     /// a context call committed the JS's writes before the drain did (PageSync::commit)
     synced: bool,
+    /// its JS engine's free pages given back, and with RAEA_INSPECT its heap logged (raea_runtime_jsengine::Upkeep)
+    upkeep: raea_runtime_js::js::Upkeep,
 }
 
 /// What a root's JS calls lend its context host calls (raea_runtime_js::calls::on_sync_ctx: style.computed's resolve, a

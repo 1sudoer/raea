@@ -11,8 +11,12 @@ writes one file per note: a sample set for a Sampler. Like `raea sao`, it shares
 
 ```sh
 raea tokensynth "warm analog bass" --notes C1,C2,C3 -o media/bass/
-raea tokensynth "glassy bell pad" --seconds 4 --velocity 80
+raea tokensynth "a bowed saw, close, eerie" --notes C3,E3,G#3,C4 --seconds 4 --velocity 80 --seed 7
 ```
+
+Use it for a timbre no recorded library has ([`raea sounds`](sounds.md) first for a piano, strings or drums). A take
+can miss its pitch or come out as hiss, so make a few seeds of each root and keep the ones that pass
+(`raea guide music`, "Instruments from TokenSynth"). A note is held under 5 s.
 
 <!-- generated:begin by tools/manual-ref/cli.ts from `raea help --json`; edit only the flag descriptions -->
 

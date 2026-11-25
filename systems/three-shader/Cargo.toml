@@ -10,9 +10,13 @@ description = "three.js's shaders drawn by Bevy (docs/r3f.feature R3F11): a Shad
 raea-sys-sampler = { path = "../sampler" }
 # a picture made in code (a data: URL), decoded as a material's map is
 raea-sys-material = { path = "../material" }
+# a camera drawing into an image (IntoImage) isn't the scene camera whose tone mapping the shaders follow
+raea-sys-frame = { path = "../frame" }
 image = { version = "0.25", default-features = false }
 bevy = { version = "=0.20.0", default-features = false, features = ["std", "default_app", "3d_bevy_render"] }
 # wgsl-in too: naga 30.0.1's glsl-in calls the interpolator module only spv-in or wgsl-in compiles (natively Bevy turns
 # wgsl-in on; raea-web had nothing that did)
 naga = { version = "=30.0.1", features = ["glsl-in", "wgsl-in", "wgsl-out"] }
 serde_json = "1"
+# the storage buffers a node material reads, the same ones by key the computes write (docs/r3f.feature R3F22)
+raea-sys-shader = { path = "../shader" }

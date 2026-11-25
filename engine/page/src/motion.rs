@@ -17,6 +17,7 @@ use raea_sys_page::ops::{self, Nodes};
 use raea_sys_page::{Docs, Page, PageImage}; use crate::PagePlugin;
 
 mod read;
+mod manifest;
 mod place;
 
 type R<T> = Result<T, String>;
@@ -86,8 +87,11 @@ impl Videos {
     /// frame (a looped or held clip run long) gives its last frame, as raea-runtime-js's page does.
     pub fn frame(&mut self, v: &raea_core_wire::tree::VideoAt) -> R<Option<raea_io_media::Frame>> {
         if !self.decoders.contains_key(&v.file) {
-            let be = raea_io_media::backend(&std::env::var("RAEA_MEDIA").unwrap_or_else(|_| if cfg!(target_vendor = "apple") { "apple".into() } else { "soft".into() }))?;
-            let d = be.open_video(&v.file).map_err(|e| format!("{}: {e}", v.file.display()))?;
+            // RAEA_MEDIA's, the platform's, the portable one, then the ffmpeg CLI, the first that opens it: a WebM is read
+            // by ffmpeg alone (#113: it was refused, "no video track", where the platform's was the only one asked)
+            let mut why = Vec::new();
+            let d = raea_io_media::preferred().into_iter().find_map(|b| b.open_video(&v.file).map_err(|e| why.push(format!("{}: {e}", b.name()))).ok());
+            let d = d.ok_or_else(|| format!("{}: can't be decoded ({})", v.file.display(), why.join("; ")))?;
             self.decoders.insert(v.file.clone(), d);
         }
         let d = self.decoders.get_mut(&v.file).unwrap();
@@ -189,8 +193,8 @@ impl BlitzPage {
         if let Some(render_creation) = render {
             group = group.set(bevy::render::RenderPlugin { render_creation, ..default() });
         }
-        // a registered Bevy plugin may change the group, as it does raea-render's Engine's: one that brings bevy_winit
-        // turns WinitPlugin off (two Apps in a process can't each make an event loop: the plugin build's page panicked)
+        // the registered Bevy plugins' changes, as raea-render's Engine's, and no WinitPlugin (raea_runtime_plugins::group):
+        // two Apps in a process can't each make an event loop (the plugin build's page panicked; #182 on Linux)
         app.add_plugins(raea_runtime_plugins::group(group)).add_plugins(PagePlugin);
         app.finish();
         app.cleanup();
@@ -213,7 +217,7 @@ impl BlitzPage {
         let at = Page { size: UVec2::new(self.w, self.h), scale: 1.0 };
         let mut config = raea_sys_page::config(at);
         config.net_provider = Some(Arc::new(raea_sys_page::net::FileNet { roots: root.map(Path::to_path_buf).into_iter().collect() }));
-        let abs = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let abs = dunce::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
         config.base_url = Some(url::Url::from_file_path(&abs).map_err(|_| format!("{}: not a file URL", abs.display()))?.to_string());
         config.font_ctx = self.fonts.clone();
         // a byte order mark is the decoder's, never the document's (it also hid `<?xml` from Blitz's sniffing); the
@@ -233,7 +237,7 @@ impl BlitzPage {
 
     /// The page made to match `want` (parents before children) with each parent's children in `order`'s order.
     pub fn sync(&mut self, want: &[Want], order: &HashMap<u64, Vec<u64>>) {
-        let start = self.mount_start(want);
+        let starts = self.mount_starts(want);
         let (ops, gone) = self.tree.diff(want, order);
         if ops.is_empty() {
             return;
@@ -250,18 +254,28 @@ impl BlitzPage {
         let mut docs = self.app.world_mut().non_send_mut::<Docs>();
         let doc = docs.0.get_mut(&self.page).expect("the page's document");
         ops::apply(doc, &mut self.nodes, ops);
-        // a render that skips frames (`--at`) meets an element after the frame its <Sequence> started on; its CSS
-        // animations run from that start, as in a render of every frame (and raea-runtime-js's page, anim.rs clip_start): the
-        // document is resolved there first, between the last frame drawn and this one, so time still only goes forward
-        if let Some(at) = start {
+        // a render that skips frames (`--at`, a frame alone) meets elements after they began: at the composition's start,
+        // or their <Sequence>'s. Their CSS animations run from there, as in a render of every frame: the document is
+        // resolved at the earliest (between the last frame drawn and this one, so time still only goes forward), and each
+        // element that began later has its animations begun that much later. Resolving every element at the earliest
+        // <Sequence> start put css/anim.tsx's A, in none, 10 frames behind; with no <Sequence> at all, every animation
+        // began on the frame itself (11-22).
+        if let Some(at) = starts.iter().map(|s| s.1).min_by(f64::total_cmp) {
             doc.resolve(at);
+            for &(id, t) in starts.iter().filter(|s| s.1 > at) {
+                if let Some(n) = ops::node(&self.nodes, id) {
+                    doc.delay_animations(n, t - at);
+                }
+            }
         }
     }
 
-    /// The earliest <Sequence> start (data-raea-start, frames), in seconds, of the elements `want` adds, when it lies
-    /// after the last frame drawn and before this one.
-    fn mount_start(&self, want: &[Want]) -> Option<f64> {
-        let (now, before, fps) = self.clock?;
+    /// Each element `want` adds and when it began, in seconds: its <Sequence>'s start (data-raea-start, frames), else
+    /// the composition's (0), when that lies after the last frame drawn and before this one.
+    fn mount_starts(&self, want: &[Want]) -> Vec<(u64, f64)> {
+        let Some((now, before, fps)) = self.clock else {
+            return vec![];
+        };
         let by: HashMap<u64, &Want> = want.iter().map(|w| (w.id, w)).collect();
         let start_of = |mut id: u64| {
             while let Some(w) = by.get(&id) {
@@ -274,10 +288,9 @@ impl BlitzPage {
         };
         want.iter()
             .filter(|w| ops::node(&self.nodes, w.id).is_none())
-            .filter_map(|w| start_of(w.id))
-            .map(|f| f / fps)
-            .filter(|&t| t > before && t < now)
-            .min_by(f64::total_cmp)
+            .map(|w| (w.id, start_of(w.id).unwrap_or(0.0) / fps))
+            .filter(|&(_, t)| t > before && t < now)
+            .collect()
     }
 
     fn loading(&mut self) -> bool {
@@ -351,103 +364,12 @@ impl BlitzPage {
         }
         let labelled: Vec<_> = images.iter().enumerate().map(|(k, (i, w, h))| (i.clone(), *w, *h, if k == 0 { ENCODER_COPY } else { SCREEN_COPY })).collect();
         let mut got = self.read(&labelled)?.into_iter();
+        self.layers();
         let page = got.next().ok_or("no page frame")?;
         let subs = keys.into_iter().zip(got).map(|(k, px)| (k.clone(), self.subs[&k].w, self.subs[&k].h, px)).collect();
         Ok((page, subs))
     }
 
-    /// The render manifest's videos and text, as laid out (raea check's clipped, safe-area and reading rules read it):
-    /// each shown element with a `data-raea-src` (a video: its source, time and box), and each element's own words
-    /// (its text children's, inline elements' words going to the nearest element up with a box) with that box, its
-    /// opacity, colour, size, weight and alignment as computed. In document order, as raea-runtime-js's page gave them.
-    pub fn manifest(&mut self) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-        use serde_json::json;
-        use style::computed_values::visibility::T as Visibility;
-        use style::values::specified::text::TextAlignKeyword;
-        let docs = self.app.world().non_send::<Docs>();
-        let Some(doc) = docs.0.get(&self.page) else { return (vec![], vec![]) };
-        let r = |v: f64| (v * 10.0).round() / 10.0;
-        let rect = |n: blitz_dom::NodeId| doc.get_client_bounding_rect(n).filter(|b| b.width > 0.0 && b.height > 0.0);
-        // its own opacity times its parents', 0 when it or one of them isn't shown
-        let alpha = |n: blitz_dom::NodeId| -> f64 {
-            let (mut a, mut at) = (1.0f64, Some(n));
-            while let Some(x) = at {
-                let Some(node) = doc.get_node(x) else { break };
-                if node.is_element() {
-                    let Some(s) = node.primary_styles() else { return 0.0 };
-                    if !node.has_boxes() || (x == n && matches!(s.clone_visibility(), Visibility::Hidden | Visibility::Collapse)) {
-                        return 0.0;
-                    }
-                    a *= s.get_effects().opacity as f64;
-                }
-                at = node.parent;
-            }
-            a
-        };
-        let (mut videos, mut text) = (Vec::new(), Vec::new());
-        let mut owned: Vec<(blitz_dom::NodeId, Vec<String>)> = Vec::new();
-        // the whole document: a composition's sequences and screens are pages of their own under the root's
-        let mut stack = vec![doc.root_node().id];
-        while let Some(n) = stack.pop() {
-            let Some(node) = doc.get_node(n) else { continue };
-            if node.is_element() && matches!(node.element_data().map(|e| &*e.name.local), Some("style" | "script")) {
-                continue;
-            }
-            stack.extend(node.children.iter().rev().copied());
-            if let Some(src) = node.attr(LocalName::from("data-raea-src")) {
-                let a = alpha(n);
-                if let (Some(b), true) = (rect(n), a > 0.01) {
-                    let at = node.attr(LocalName::from("data-raea-at")).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                    videos.push(json!({"src": src, "at": at, "box": [r(b.x), r(b.y), r(b.width), r(b.height)], "opacity": (a * 100.0).round() / 100.0}));
-                }
-                continue;
-            }
-            if !node.is_text_node() {
-                continue;
-            }
-            let words = node.text_content();
-            let words = words.trim();
-            if words.is_empty() {
-                continue;
-            }
-            // an inline element (a <span> around a caption word) has no box of its own: its words belong to the
-            // nearest element up that has one
-            let mut up = node.parent;
-            while let Some(p) = up {
-                let inline = doc.get_node(p).and_then(|x| x.primary_styles()).is_some_and(|s| s.clone_display().outside() == style::values::specified::box_::DisplayOutside::Inline);
-                if !inline && rect(p).is_some() {
-                    break;
-                }
-                up = doc.get_node(p).and_then(|x| x.parent);
-            }
-            let Some(owner) = up else { continue };
-            if node.parent.is_none_or(|p| alpha(p) <= 0.01) {
-                continue;
-            }
-            match owned.iter_mut().find(|(o, _)| *o == owner) {
-                Some((_, ws)) => ws.push(words.to_string()),
-                None => owned.push((owner, vec![words.to_string()])),
-            }
-        }
-        for (owner, words) in owned {
-            let (Some(b), Some(node)) = (rect(owner), doc.get_node(owner)) else { continue };
-            let Some(s) = node.primary_styles() else { continue };
-            let c = s.clone_color().to_color_space(style::color::ColorSpace::Srgb);
-            let [cr, cg, cb] = [c.components.0, c.components.1, c.components.2].map(|v| (v.clamp(0.0, 1.0) * 255.0).round());
-            let ca = c.alpha;
-            let color = if ca >= 1.0 { format!("rgb({cr}, {cg}, {cb})") } else { format!("rgba({cr}, {cg}, {cb}, {})", (ca * 1000.0).round() / 1000.0) };
-            let font = s.get_font();
-            let align = match s.clone_text_align() {
-                TextAlignKeyword::Center | TextAlignKeyword::MozCenter => "center",
-                TextAlignKeyword::Right | TextAlignKeyword::End | TextAlignKeyword::MozRight => "right",
-                TextAlignKeyword::Justify => "justify",
-                _ => "left",
-            };
-            text.push(json!({"text": words.join(" "), "box": [r(b.x), r(b.y), r(b.width), r(b.height)], "opacity": (alpha(owner) * 100.0).round() / 100.0,
-                "color": color, "size": font.font_size.computed_size().px() as f64, "weight": font.font_weight.value() as f64, "align": align}));
-        }
-        (videos, text)
-    }
 }
 
 /// Pages' first frames (a scripted page's once reftest-wait is gone) as PNGs on the Blitz page (`raea shots --page

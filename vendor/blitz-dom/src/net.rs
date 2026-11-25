@@ -580,9 +580,50 @@ impl NetHandler for ResourceHandler<ImageHandler> {
     }
 }
 
+/// raea: a picture asked for at the size it's drawn: `raea-w=N` and/or `raea-h=N` in its URL's query decode it scaled
+/// down to fit N pixels wide or high, its shape kept, never scaled up (the server doesn't read the query). The feed's
+/// cards ask theirs at the card's size (raea-feed src/feed/media.ts): a 2560x1440 still held 14.7 MB decoded on a card
+/// drawn 1440 pixels wide at most, 4.7 MB fitted (raea-feed e2e/memory.spec.ts). Area-averaged (`thumbnail`), on
+/// premultiplied pixels when any is see-through, so no edge takes the colour of the transparent pixels beside it.
+pub fn fit(url: &str, w: u32, h: u32, mut rgba: Vec<u8>) -> (u32, u32, Vec<u8>) {
+    let query = url.split('#').next().and_then(|u| u.split_once('?')).map_or("", |(_, q)| q);
+    let want = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('=')?.parse::<u32>().ok()).filter(|n| *n > 0);
+    let scale = [want("raea-w").map(|n| n as f64 / w.max(1) as f64), want("raea-h").map(|n| n as f64 / h.max(1) as f64)]
+        .into_iter()
+        .flatten()
+        .fold(1.0f64, f64::min);
+    if scale >= 1.0 || w == 0 || h == 0 || rgba.len() != w as usize * h as usize * 4 {
+        return (w, h, rgba);
+    }
+    let (nw, nh) = (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1));
+    let see_through = rgba.chunks_exact(4).any(|p| p[3] != 255);
+    if see_through {
+        for p in rgba.chunks_exact_mut(4) {
+            let a = p[3] as u32;
+            for c in &mut p[..3] {
+                *c = ((*c as u32 * a + 127) / 255) as u8;
+            }
+        }
+    }
+    let Some(img) = image::RgbaImage::from_raw(w, h, rgba) else { unreachable!("the length was checked") };
+    let mut out = image::imageops::thumbnail(&img, nw, nh).into_raw();
+    if see_through {
+        for p in out.chunks_exact_mut(4) {
+            let a = p[3] as u32;
+            if a > 0 {
+                for c in &mut p[..3] {
+                    *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+                }
+            }
+        }
+    }
+    (nw, nh, out)
+}
+
 impl ImageHandler {
     fn parse(&self, bytes: Bytes, url: &str) -> Result<Resource, String> {
         if let Some((width, height, rgba)) = IMAGE_DECODER.get().and_then(|d| d(url, &bytes)) {
+            let (width, height, rgba) = fit(url, width, height, rgba);
             return Ok(Resource::Image(self.kind, width, height, Arc::new(rgba)));
         }
         let mut reader = image::ImageReader::new(Cursor::new(&bytes))
@@ -597,9 +638,7 @@ impl ImageHandler {
         }
         let image_err = match reader.decode() {
             Ok(image) => {
-                let width = image.width();
-                let height = image.height();
-                let raw_rgba8_data = image.into_rgba8().into_raw();
+                let (width, height, raw_rgba8_data) = fit(url, image.width(), image.height(), image.into_rgba8().into_raw());
                 return Ok(Resource::Image(
                     self.kind,
                     width,
@@ -631,6 +670,26 @@ impl ImageHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_fits_the_size_its_url_asks() {
+        let px = |w: u32, h: u32| vec![255u8; (w * h * 4) as usize];
+        // the width asked, the shape kept
+        let (w, h, b) = fit("http://127.0.0.1:9/media/a.png?raea-w=100", 400, 200, px(400, 200));
+        assert_eq!((w, h, b.len()), (100, 50, 100 * 50 * 4));
+        // the tighter of a width and a height; a fragment after the query is no part of it
+        assert_eq!(fit("/media/a.png?x=1&raea-w=300&raea-h=50#t", 400, 200, px(400, 200)).0, 100);
+        // never larger, and nothing asked is the picture as it is
+        assert_eq!(fit("/media/a.png?raea-w=800", 400, 200, px(400, 200)).0, 400);
+        assert_eq!(fit("/media/a.png", 400, 200, px(400, 200)).0, 400);
+        assert_eq!(fit("/media/a.png?raea-wide=100", 400, 200, px(400, 200)).0, 400);
+        // a see-through pixel beside an opaque red one keeps no colour of its own in the average
+        let mut two = vec![255, 0, 0, 255, 0, 255, 0, 0];
+        two.extend_from_slice(&[255, 0, 0, 255, 0, 255, 0, 0]);
+        let (_, _, one) = fit("/a.png?raea-w=1", 2, 2, two);
+        assert_eq!(one.len(), 4);
+        assert!(one[1] < 8 && one[0] > 240, "green bled into red: {one:?}");
+    }
     use parley::fontique::FontStyle as Fq;
     use style::values::specified::Angle;
 

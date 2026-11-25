@@ -3,7 +3,7 @@ import { Children, Fragment, isValidElement, useContext, useRef, type CSSPropert
 import { LocalTimeContext, TimeBaseContext, timeBase, useClockState, useLocalTime, type LocalTime, type TimeBase } from "@raea/app/clock";
 // assets stays in raea until it moves to @raea/asset (docs/sdk.feature S1d)
 import { isGeneratedAsset } from "@raea/asset/assets";
-import { Audio } from "./media";
+import { Audio, MediaEndContext } from "./media";
 
 export interface AbsoluteFillProps {
   /** merged over the fill's own style (absolute, inset 0, a flex column) */
@@ -77,9 +77,13 @@ function Shifted(props: {
   style?: CSSProperties;
   className?: string;
   label?: string;
+  /** the composition frame after its last, when it ends (`raea world`'s Shot, docs/direction.feature DR1) */
+  end?: number;
+  /** the composition frame its media stops at, when not `end` (a Loop pass's end): a fadeOut ends there */
+  stops?: number;
   children?: ReactNode;
 }) {
-  const { owner, time, base, layout, style, className, label, children } = props;
+  const { owner, time, base, layout, style, className, label, end, stops = end, children } = props;
   if (layout !== "absolute-fill" && layout !== "none") {
     throw new RangeError(`${owner}: layout must be "absolute-fill" or "none", got "${layout}"`);
   }
@@ -91,7 +95,7 @@ function Shifted(props: {
   // out the same rendered alone or after the ones before it)
   const inner =
     layout === "absolute-fill" ? (
-      <AbsoluteFill style={style} className={className} data-sequence={label} data-raea-start={time.origin}>
+      <AbsoluteFill style={style} className={className} data-sequence={label} data-raea-start={time.origin} data-raea-end={end}>
         {children}
       </AbsoluteFill>
     ) : (
@@ -99,22 +103,45 @@ function Shifted(props: {
     );
   return (
     <TimeBaseContext.Provider value={base}>
-      <LocalTimeContext.Provider value={time}>{inner}</LocalTimeContext.Provider>
+      <LocalTimeContext.Provider value={time}>{stops === undefined ? inner : <StopsAt end={stops}>{inner}</StopsAt>}</LocalTimeContext.Provider>
     </TimeBaseContext.Provider>
   );
 }
 
+/** Media under it stops at composition frame `end`, or sooner where an outer one does (media.tsx fadedOut) */
+function StopsAt(props: { end: number; children?: ReactNode }) {
+  const outer = useContext(MediaEndContext);
+  return <MediaEndContext.Provider value={Math.min(outer, props.end)}>{props.children}</MediaEndContext.Provider>;
+}
+
 /** The same LocalTime object as last render when nothing in it changed (a Freeze's subtree, a held frame). */
-function useStableTime(frame: number, origin: number, width: number, height: number): LocalTime {
+function useStableTime(frame: number, origin: number, width: number, height: number, duration: number): LocalTime {
   const r = useRef<LocalTime | null>(null);
   const p = r.current;
-  if (p && p.frame === frame && p.origin === origin && p.width === width && p.height === height) return p;
-  return (r.current = { frame, origin, width, height });
+  if (p && p.frame === frame && p.origin === origin && p.width === width && p.height === height && p.duration === duration) return p;
+  return (r.current = { frame, origin, width, height, duration });
+}
+
+/** Sequences retimed as the piece plays, by their `name`: a timeline's edit on the stage before the file it wrote is
+ *  opened again (docs/timeline.feature TL13a). Their `from` and `durationInFrames` here stand over the written ones. */
+const retimed = new Map<string, { from: number; durationInFrames: number }>();
+
+/** The sequences retimed now, by name (none: all as written). What the stage's props carry as `__raeaSequences`. */
+export function retime(by: unknown): void {
+  retimed.clear();
+  if (!by || typeof by !== "object") return;
+  for (const [name, t] of Object.entries(by as Record<string, { from?: unknown; durationInFrames?: unknown }>)) {
+    const from = Number(t?.from), durationInFrames = Number(t?.durationInFrames);
+    if (Number.isFinite(from) && Number.isInteger(durationInFrames) && durationInFrames >= 0) retimed.set(name, { from, durationInFrames });
+  }
 }
 
 /** Shifts time by `from` and shows its children only for `durationInFrames` frames. */
 export function Sequence(props: SequenceProps) {
-  const { from = 0, durationInFrames = Infinity, name, layout = "absolute-fill", width, height, style, className } = props;
+  // (looked up only while something is retimed: a game renders hundreds of sound cues a frame)
+  const over = retimed.size && props.name !== undefined ? retimed.get(props.name) : undefined;
+  const { from = 0, durationInFrames = Infinity } = over ?? props;
+  const { name, layout = "absolute-fill", width, height, style, className } = props;
   checkFinite("Sequence", "from", from);
   checkDuration("Sequence", durationInFrames);
   const parent = useLocalTime("Sequence");
@@ -139,18 +166,23 @@ export function Sequence(props: SequenceProps) {
   const p = r.current;
   const w = width ?? parent.width;
   const h = height ?? parent.height;
-  const time: LocalTime = p && p.frame === f - from && p.origin === parent.origin + from && p.width === w && p.height === h ? p : (r.current = { frame: f - from, origin: parent.origin + from, width: w, height: h });
+  // its length: its own, cut where its parent's ends (unbounded, what's left of the parent's)
+  const d = Math.min(durationInFrames, parent.duration - from);
+  const time: LocalTime =
+    p && p.frame === f - from && p.origin === parent.origin + from && p.width === w && p.height === h && p.duration === d
+      ? p
+      : (r.current = { frame: f - from, origin: parent.origin + from, width: w, height: h, duration: d });
   const base = timeBase(pbase.origin + from, pbase.freeze === null ? null : pbase.freeze - from);
   // no box: the new time around the children here, as Shifted would put it (a game's sound cues, a component less each)
   if (layout === "none" && style === undefined && className === undefined) {
     return (
       <TimeBaseContext.Provider value={base}>
-        <LocalTimeContext.Provider value={time}>{props.children}</LocalTimeContext.Provider>
+        <LocalTimeContext.Provider value={time}>{durationInFrames === Infinity ? props.children : <StopsAt end={time.origin + durationInFrames}>{props.children}</StopsAt>}</LocalTimeContext.Provider>
       </TimeBaseContext.Provider>
     );
   }
   return (
-    <Shifted owner="Sequence" time={time} base={base} layout={layout} style={style} className={className} label={name}>
+    <Shifted owner="Sequence" time={time} base={base} layout={layout} style={style} className={className} label={name} end={durationInFrames === Infinity ? undefined : time.origin + durationInFrames}>
       {props.children}
     </Shifted>
   );
@@ -249,10 +281,14 @@ export function Loop(props: LoopProps) {
   const lf = f - pass * durationInFrames;
   const lo = parent.origin + pass * durationInFrames;
   const p = r.current;
-  const time: LocalTime = p && p.frame === lf && p.origin === lo && p.width === parent.width && p.height === parent.height ? p : (r.current = { frame: lf, origin: lo, width: parent.width, height: parent.height });
+  // its children's length is one pass
+  const time: LocalTime =
+    p && p.frame === lf && p.origin === lo && p.width === parent.width && p.height === parent.height && p.duration === durationInFrames
+      ? p
+      : (r.current = { frame: lf, origin: lo, width: parent.width, height: parent.height, duration: durationInFrames });
   const base = timeBase(pbase.origin + pass * durationInFrames, pbase.freeze === null ? null : pbase.freeze - pass * durationInFrames);
   return (
-    <Shifted owner="Loop" time={time} base={base} layout={layout} style={style} className={className} label={name}>
+    <Shifted owner="Loop" time={time} base={base} layout={layout} style={style} className={className} label={name} stops={lo + durationInFrames}>
       {props.children}
     </Shifted>
   );
@@ -270,7 +306,7 @@ export function Freeze(props: FreezeProps) {
   checkFinite("Freeze", "frame", props.frame);
   const parent = useLocalTime("Freeze");
   const pbase = useContext(TimeBaseContext);
-  const time = useStableTime(props.frame, parent.origin, parent.width, parent.height);
+  const time = useStableTime(props.frame, parent.origin, parent.width, parent.height, parent.duration);
   return (
     <TimeBaseContext.Provider value={timeBase(pbase.origin, props.frame)}>
       <LocalTimeContext.Provider value={time}>{props.children}</LocalTimeContext.Provider>

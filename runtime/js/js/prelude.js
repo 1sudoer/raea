@@ -79,8 +79,10 @@
   g.__ui_frame = 0;
   g.__ui_setFrame = (n) => void (g.__ui_frame = n);
   // Number's toLocaleString through one Intl.NumberFormat per locale and options, kept (JavaScriptCore made a
-  // formatter at every call: a counter formatted each frame was most of its frame). Only where there's an Intl
-  if (typeof Intl !== "undefined" && Intl.NumberFormat) {
+  // formatter at every call: a counter formatted each frame was most of its frame). Only where there's an Intl, asked
+  // with `in`: QuickJS's (raea-runtime-jsengine js/intl) is unpacked the first time it's read, and a page that never
+  // formats shouldn't pay for it
+  if ("Intl" in globalThis) {
     const formats = new Map();
     const toLocale = Number.prototype.toLocaleString;
     Object.defineProperty(Number.prototype, "toLocaleString", {

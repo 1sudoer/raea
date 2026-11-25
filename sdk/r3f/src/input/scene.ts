@@ -1,26 +1,34 @@
 // A three.js scene as raea's parts. The scene graph keeps its shape: an object with children is a <Group> at its own
 // transform (raea composes them as three does, shear included), a mesh a <Mesh> with its <BufferMesh> and material.
-// An InstancedMesh is <Instances> while its copies hold still and one mesh a copy when they move or each has its own
-// colour; Points are one mesh of quads facing the camera; lines are a <Gizmo>; a Sprite is a quad facing the camera.
+// An InstancedMesh is one <Instances> whose copies are the frame's instance matrices and colours; Points are one mesh of quads facing the camera; lines are a <Gizmo>; a Sprite is a quad facing the camera.
 // Lights, the camera, fog and the environment come out in world space (lights.ts). Each part is named by its place in
 // the tree (and its own name), so raea matches it across frames.
 import * as THREE from "three";
+// what the app draws into render targets itself, drawn on the GPU (R3F23): passes.ts makes each pass's parts as it's drawn
+import "./passes";
+import { passesOf } from "./targets";
+import { flipsY } from "./texture";
 import { arraysOf, posed, posedArrays, rewound, type Arrays } from "./geometry";
+import { decompose } from "./decompose";
 import { isTroikaText, textParts } from "./text";
 import { clipArrays, clipOf, type Clip } from "./clip";
 import { cameraOf, fogOf, lightsOf, skyOf, toneOf } from "./lights";
 import { materialOf, type Part, type Props } from "./material";
-import { isShader, ownAttributes, shaderPart } from "./shader";
+import { composing, isShader, ownAttributes, shaderPart } from "./shader";
+import { drawsPatched } from "./patched";
 import { composerEffects, postParts } from "./post";
 import { classicOf } from "./tsl";
+import { dispatchesOf } from "./tsl-compute";
+import { nodeInstancedParts } from "./tsl-instances";
 
 type V3 = [number, number, number];
 type Q = [number, number, number, number];
 
-/** an object's own transform, from its matrix (so matrixAutoUpdate={false} objects come out as three draws them) */
+/** an object's own transform, from its matrix (so matrixAutoUpdate={false} objects come out as three draws them); a
+ *  scale of 0 stays 0 (decompose.ts, #164) */
 function place(o: THREE.Object3D): Props {
   const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-  o.matrix.decompose(p, q, s);
+  decompose(o.matrix, p, q, s);
   const out: Props = { position: p.toArray() as V3, quaternion: q.toArray() as Q };
   out.scale = s.x === s.y && s.y === s.z && s.x > 0 ? s.x : (s.toArray() as V3);
   return out;
@@ -57,10 +65,11 @@ function flipped(m: THREE.Material | THREE.Material[]): boolean {
   // a node material's graph reads its uvs as three gives them, and flips where it samples a flipped picture (tsl.ts)
   const one = Array.isArray(m) ? m[0] : m;
   if ((one as { isNodeMaterial?: boolean } | undefined)?.isNodeMaterial && !classicOf(one)) return false;
-  // a ShaderMaterial reads its uvs as three gives them; the engine flips where it samples a flipped picture
-  if (one && isShader(one)) return false;
+  // a ShaderMaterial (or a patched program) reads its uvs as three gives them; the engine flips where it samples a
+  // flipped picture
+  if (one && (isShader(one) || drawsPatched(one))) return false;
   const map = ((Array.isArray(m) ? m[0] : m) as THREE.MeshBasicMaterial | undefined)?.map;
-  return map ? map.flipY : true;
+  return map ? flipsY(map) : true;
 }
 
 function colouredByVertex(m: THREE.Material) {
@@ -122,32 +131,50 @@ function meshParts(mesh: THREE.Mesh, name: string, w: Walk, at: Props): Part[] {
   return out;
 }
 
-/** whose copies have moved since the first frame: those are drawn one mesh a copy */
-const firstPlacement = new WeakMap<THREE.InstancedMesh, number>();
+/** the surfaces raea's <Instances> draws its copies with (scene3d's instance_mesh takes a standard material) */
+const INSTANCED = new Set(["MeshStandardMaterial", "MeshPhysicalMaterial", "MeshBasicMaterial"]);
 
+/** An InstancedMesh as one <Instances>, still or moving, its copies this frame's instance matrices and colours (R3F20):
+ * one row the engine draws by Bevy's instancing, its list the frame's buffer. All instanceMatrix.count copies are sent
+ * so the count holds when `count` changes, those past it shrunk to nothing; a mirrored copy is drawn unmirrored. A
+ * ShaderMaterial, several materials, MeshNormalMaterial, a shadow catcher or clipping planes: one mesh a copy. */
 function instancedParts(m: THREE.InstancedMesh, name: string, w: Walk, at: Props): Part[] {
-  const v = m.instanceMatrix.version;
-  if (!firstPlacement.has(m)) firstPlacement.set(m, v);
-  const moving = firstPlacement.get(m) !== v || m.instanceColor !== null || Array.isArray(m.material);
-  const one = new THREE.Matrix4();
-  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), e = new THREE.Euler();
-  const copies: { position: V3; quaternion: Q; rotation: V3; scale: V3 }[] = [];
-  for (let i = 0; i < m.count; i++) {
+  const material = m.material as THREE.Material;
+  const surface = Array.isArray(m.material) || !material.visible ? undefined : materialOf(material, colouredByVertex(material), { object: m, scene: w.scene, camera: w.camera, time: w.time, delta: w.delta });
+  // a node material compiled for copies: one mesh of them, its copies made by the engine (tsl-instances.ts, R3F22)
+  const node = surface?.type === "ThreeShaderMaterial" ? nodeInstancedParts(m, name, surface, w, at) : undefined;
+  if (node) return node;
+  if (!surface || !INSTANCED.has(surface.type) || surface.normals || surface.catchShadow || clipOf(material, w.gl, w.clips)) return copyParts(m, name, w, at);
+  const arrays = arraysOf(m.geometry, { flipV: flipped(material), colors: colouredByVertex(material) });
+  if (!arrays) return [];
+  const one = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), e = new THREE.Euler(), c = new THREE.Color();
+  const n = m.instanceMatrix.count, shown = Math.min(m.count, n);
+  const colours = m.instanceColor;
+  const copies = new Array(n);
+  for (let i = 0; i < n; i++) {
     m.getMatrixAt(i, one);
-    one.decompose(p, q, s);
-    copies.push({ position: p.toArray() as V3, quaternion: q.toArray() as Q, rotation: e.setFromQuaternion(q, "XYZ").toArray().slice(0, 3) as V3, scale: s.toArray() as V3 });
+    decompose(one, p, q, s);
+    const hide = i >= shown || !Number.isFinite(p.x + p.y + p.z + q.x + q.y + q.z + q.w + s.x + s.y + s.z);
+    const size = (v: number) => (hide ? 1e-5 : Math.max(Math.abs(v), 1e-5));
+    e.setFromQuaternion(hide ? q.identity() : q, "XYZ");
+    const copy: { position: number[]; rotation: number[]; scale: number[]; color?: number[] } = { position: hide ? [0, 0, 0] : [p.x, p.y, p.z], rotation: [e.x, e.y, e.z], scale: [size(s.x), size(s.y), size(s.z)] };
+    if (colours) {
+      m.getColorAt(i, c);
+      copy.color = [c.r, c.g, c.b];
+    }
+    copies[i] = copy;
   }
-  if (!moving) {
-    const material = m.material as THREE.Material;
-    const arrays = arraysOf(m.geometry, { flipV: flipped(material), colors: colouredByVertex(material) });
-    const surface = materialOf(material, false, { object: m, scene: w.scene, camera: w.camera, time: w.time, delta: w.delta });
-    if (!arrays || !surface.type) return [];
-    return [{ type: "Instances", props: { name, ...at, at: copies.map(({ position, rotation, scale }) => ({ position, rotation, scale })), shadow: w.shadows && m.castShadow, receiveShadow: m.receiveShadow }, children: [{ type: "BufferMesh", props: { ...arrays } }, surface] }];
-  }
+  return [{ type: "Instances", props: { name, ...at, at: copies, shadow: w.shadows && m.castShadow, receiveShadow: m.receiveShadow }, children: [{ type: "BufferMesh", props: { ...arrays } }, surface] }];
+}
+
+/** an InstancedMesh whose surface <Instances> can't share: one mesh a copy, each in its colour */
+function copyParts(m: THREE.InstancedMesh, name: string, w: Walk, at: Props): Part[] {
+  const one = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), c = new THREE.Color();
   const kids: Part[] = [];
-  const c = new THREE.Color();
-  copies.forEach((k, i) => {
-    for (const part of meshParts(m, `${name}.${i}`, w, { position: k.position, quaternion: k.quaternion, scale: k.scale })) {
+  for (let i = 0; i < Math.min(m.count, m.instanceMatrix.count); i++) {
+    m.getMatrixAt(i, one);
+    decompose(one, p, q, s);
+    for (const part of meshParts(m, `${name}.${i}`, w, { position: p.toArray() as V3, quaternion: q.toArray() as Q, scale: s.toArray() as V3 })) {
       if (m.instanceColor) {
         m.getColorAt(i, c);
         const surface = part.children![1];
@@ -156,7 +183,7 @@ function instancedParts(m: THREE.InstancedMesh, name: string, w: Walk, at: Props
       }
       kids.push(part);
     }
-  });
+  }
   return [{ type: "Group", props: { name, ...at }, children: kids }];
 }
 
@@ -177,7 +204,7 @@ function batchedParts(b: THREE.BatchedMesh, name: string, w: Walk): Part[] {
     const arrays = arraysOf(b.geometry, { start: range.start, count: range.count, flipV: flipped(material), colors: false });
     if (!arrays) return;
     b.getMatrixAt(i, one);
-    one.decompose(p, q, s);
+    decompose(one, p, q, s);
     let own = surface;
     if (colours) {
       b.getColorAt(i, c);
@@ -330,7 +357,9 @@ function spriteParts(s: THREE.Sprite, name: string, w: Walk): Part[] {
   const mat = s.material;
   if (!mat.visible) return [];
   const pos = s.getWorldPosition(new THREE.Vector3());
-  const scale = s.getWorldScale(new THREE.Vector3());
+  // three's sprite shader sizes it by its world matrix's axes: none, in a group scaled to 0 (#164)
+  const scale = new THREE.Vector3();
+  decompose(s.matrixWorld, new THREE.Vector3(), new THREE.Quaternion(), scale);
   const q = w.camera.getWorldQuaternion(new THREE.Quaternion()).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), mat.rotation));
   const [cx, cy] = [s.center.x, s.center.y];
   const positions = [-cx, -cy, 0, 1 - cx, -cy, 0, 1 - cx, 1 - cy, 0, -cx, 1 - cy, 0];
@@ -387,15 +416,27 @@ export interface Converted {
   background?: string;
 }
 
-/** R3F's scene, camera and renderer settings as raea's parts, this frame */
-export function convert(scene: THREE.Scene, camera: THREE.Camera, gl: THREE.WebGLRenderer, height: number, time = 0, delta = 0): Converted {
+/** a scene (or one object three was asked to render alone: a full-screen quad) seen by `camera` as raea's parts, its
+ *  objects' named under `root`: its lights (`world`) and what it draws. The screen's (convert) and a pass's into a
+ *  render target (passes.ts) */
+export function sceneParts(scene: THREE.Object3D, camera: THREE.Camera, gl: THREE.WebGLRenderer, height: number, root = "r3f", time = 0, delta = 0): { w: Walk; world: Part[]; drawn: Part[] } {
   scene.updateMatrixWorld();
   camera.updateMatrixWorld();
   if (camera.parent === null) camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-  const w: Walk = { camera, shadows: gl.shadowMap.enabled, world: [], height, scene, time, delta, gl, clips: [] };
-  let drawn = scene.children.flatMap((c, i) => walk(c, `r3f/${i}`, w));
+  const isScene = (scene as THREE.Scene).isScene === true;
+  const w: Walk = { camera, shadows: gl.shadowMap.enabled, world: [], height, scene: scene as THREE.Scene, time, delta, gl, clips: [] };
+  let drawn = isScene ? scene.children.flatMap((c, i) => walk(c, `${root}/${i}`, w)) : walk(scene, `${root}/0`, w);
   // a scene moved, turned or scaled as a whole (rare, but three allows it)
-  if (!scene.matrix.equals(new THREE.Matrix4()) && drawn.length) drawn = [{ type: "Group", props: { name: "r3f", ...place(scene) }, children: drawn }];
+  if (isScene && !scene.matrix.equals(new THREE.Matrix4()) && drawn.length) drawn = [{ type: "Group", props: { name: root, ...place(scene) }, children: drawn }];
+  return { w, world: w.world, drawn };
+}
+
+/** R3F's scene, camera and renderer settings as raea's parts, this frame */
+export function convert(scene: THREE.Scene, camera: THREE.Camera, gl: THREE.WebGLRenderer, height: number, time = 0, delta = 0): Converted {
+  // an <EffectComposer>'s effects (post.ts): its frame is tone-mapped only by a ToneMapping effect in it, and three
+  // draws the scene into its buffer, a ShaderMaterial's colour scene light there (shader.ts composing)
+  const composer = composerEffects(scene);
+  const { w, drawn } = composing(composer.found, () => sceneParts(scene, camera, gl, height, "r3f", time, delta));
   // a node material runs only under three's WebGPURenderer, so a scene with one is drawn by it (whatever gl stands in)
   let webgpu = (gl as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
   if (!webgpu) scene.traverse((o) => {
@@ -405,9 +446,19 @@ export function convert(scene: THREE.Scene, camera: THREE.Camera, gl: THREE.WebG
   const sky = skyOf(scene, gl, webgpu);
   const cam = cameraOf(camera);
   const fog = fogOf(scene.fog as THREE.Fog | THREE.FogExp2 | null);
-  // an <EffectComposer>'s effects (post.ts): its frame is tone-mapped only by a ToneMapping effect in it
-  const composer = composerEffects(scene);
   const post = composer.found ? postParts(composer.effects) : { parts: [] as Part[], tone: undefined };
   const tone = composer.found ? post.tone ?? { type: "ToneMapping", props: { mode: "none" } } : toneOf(gl);
-  return { parts: [...(cam ? [cam] : []), tone, ...(fog ? [fog] : []), ...sky.parts, ...post.parts, ...w.world, ...drawn], background: sky.background };
+  // what the app dispatched with gl.compute since the last frame, run before the cameras draw (tsl-compute.ts, R3F22)
+  const computes = dispatchesOf(gl)?.part(time);
+  // what the app drew into render targets itself this frame, drawn on the GPU before the screen (passes.ts, R3F23).
+  // Under a composer raea draws as its own effects, only the passes whose pictures the frame reads (an effect's or a
+  // compute's among them): the composer's own (the scene into its buffer, a bloom's mip chain) are raea's effects now,
+  // and would draw the scene again
+  const passes = passesOf(gl, composer.found ? [...sky.parts, ...post.parts, ...(computes ? [computes] : []), ...w.world, ...drawn] : undefined);
+  // a scene with no ambient light has none in three; a raea camera that sees no AmbientLight keeps Bevy's default (80),
+  // which lights every metal evenly where three leaves it black outside its highlights (docs/img2raea.feature IR2: the
+  // earbuds' case 0.83 to 0.996). One of 0 sends the camera's ambient column; raea sums a camera's ambient lights and
+  // takes no colour from a white one, so a composition's own AmbientLight beside the <R3F> is kept as it was
+  const ambient: Part[] = w.world.some((p) => p.type === "AmbientLight") ? [] : [{ type: "AmbientLight", props: { name: "r3f/no-ambient", color: "#ffffff", intensity: 0 } }];
+  return { parts: [...(cam ? [cam] : []), tone, ...(fog ? [fog] : []), ...sky.parts, ...post.parts, ...(computes ? [computes] : []), ...w.world, ...ambient, ...passes, ...drawn], background: sky.background };
 }

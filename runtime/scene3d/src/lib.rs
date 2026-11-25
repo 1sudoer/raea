@@ -5,7 +5,7 @@
 //!
 //! Columns (all optional; the defaults are what the engine drew before these existed):
 //!   camera: x y z look_x look_y look_z fov near far, ambient ambient_color, bloom (intensity, 0 = none)
-//!           bloom_threshold, fog_color fog_start fog_end | fog_density, tonemap ('aces' 'agx' 'tony' 'reinhard'
+//!           bloom_threshold bloom_additive, fog_color fog_start fog_end | fog_density, tonemap ('aces' 'agx' 'tony' 'reinhard'
 //!           'none'), exposure (EV100), grade_temperature grade_tint grade_saturation, grade_{s,m,h}_{saturation,
 //!           contrast,gamma,gain,lift} (shadows, midtones, highlights), vignette vignette_radius vignette_smooth
 //!           vignette_color, aberration, vfog (1: volumetric fog) vfog_steps vfog_dither vfog_resolution vfog_ambient vfog_ambient_color, ssao
@@ -38,9 +38,7 @@ use raea_sys_frame::*;
 use raea_sys_frame::bevy_api;
 use raea_sys_material::{decal, surface, toon};
 use raea_sys_fog::{froxel, froxel_glass};
-use raea_sys_fog_half as fog_half;
-use raea_sys_post::{lens, outline};
-use raea_sys_compose::{compose, passes};
+use raea_sys_post::lens;
 use raea_sys_look::paint;
 use raea_runtime_plugins as plugins;
 use bevy::animation::{AnimationPlayer, graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex}};
@@ -63,8 +61,7 @@ mod shaded;
 pub use shaded::*;
 mod instance;
 pub use instance::*;
-mod share;
-pub use share::*;
+pub use raea_sys_share::*;
 pub use raea_sys_material::clay;
 
 /// A model row's glTF: loaded by the asset server, then its scene spawned under the row's entity and its clip set up.

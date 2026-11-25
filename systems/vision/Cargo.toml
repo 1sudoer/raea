@@ -7,6 +7,7 @@ publish = false
 description = "Apple Vision and Core ML models on frames: faces, hands, hair, depth, objects, flow, text, the camera's move, sound classes"
 
 [dependencies]
+raea-io-home = { path = "../../io/home" }
 # frames come from the media plane (VideoToolbox on Apple, ffmpeg or the software decoders elsewhere)
 raea-io-media = { path = "../../io/media", default-features = false, features = ["apple"] }
 raea-sys-layout = { path = "../layout" }

@@ -40,11 +40,17 @@ assumed?: Array<string>,
 /**
  * prose sections beyond the fields above (Goal, Background), in order
  */
-sections?: Array<Section>, deliver?: Array<Deliverable>, references?: Array<Reference>, 
+sections?: Array<Section>, deliver?: Array<Deliverable>, references?: Array<Reference>, agents?: Array<Agent>, 
 /**
- * the tasks, in stages ("Act one", "The cut")
+ * the project's stories, imported explicitly (raea/story, docs/story.md): one, or several by name. Kept as written:
+ * raea reads nothing in it, the story SDK and the checks that import it do
  */
-stages?: Array<Stage>, agents?: Array<Agent>, };
+story?: unknown, 
+/**
+ * a scene, kit or shot made to a frozen plan and held to the review loop (docs/make.feature): `scene()`, `kit()`
+ * or `shot()` from "raea/brief"; `raea make status` decides when it's done
+ */
+make?: Make, };
 
 export type Section = { heading: string, text: string, };
 
@@ -68,20 +74,6 @@ script?: string, };
 
 export type Reference = { target: string, note?: string, };
 
-export type Stage = { name: string, tasks: Array<Task>, };
-
-export type Mark = "todo" | "done" | "dropped";
-
-export type Task = { text: string, 
-/**
- * a task linked to an item takes the item's state (the work is the truth); this is for unlinked ones
- */
-mark?: Mark, agents?: Array<string>, item?: string, tags?: Array<string>, due?: string, 
-/**
- * the craft verb it was written as ("quieter"): agents read it, the page shows the text
- */
-verb?: string, };
-
 export type Agent = { name: string, role?: string, };
 
 export type Script = { title: string, logline?: string, scenes: Array<Scene>, };
@@ -94,7 +86,11 @@ heading?: string, beats: Array<Beat>,
 /**
  * what the scene must land
  */
-payoff?: string, };
+payoff?: string, 
+/**
+ * the story beat it plays, by its id (raea/story's compileScript writes it; docs/story.feature ST0c)
+ */
+beat?: string, };
 
 export type Beat = { 
 /**
@@ -144,11 +140,24 @@ export type TasteSection = {
  */
 heading: string, rules: Array<Rule>, };
 
-export type Rule = { text: string, check?: Check, };
+export type Rule = { text: string, check?: RuleCheck, 
+/**
+ * what a named or a .ts check is held to (`{ band: 0.8 }`); a form carries its own value
+ */
+values?: Record<string, number | string | boolean>, 
+/**
+ * how bad what its check finds is: error, warn or note (unset: a form's findings are errors, another check's keep
+ * its own level)
+ */
+level?: RuleLevel, };
+
+export type RuleCheck = Check | string;
+
+export type RuleLevel = "error" | "warn" | "note";
 
 export type Check = { "form": "text-hold", "value": number } | { "form": "text-above", "value": number } | { "form": "text-below", "value": number } | { "form": "text-margin", "value": number } | { "form": "loudness", "value": number } | { "form": "still-max", "value": number };
 
-export type Plan = { concept: Concept, 
+export type Parts = { concept: Concept, 
 /**
  * by name; the build's parts are typed from these keys, so a planned part the build skips is a tsc error
  */
@@ -190,12 +199,118 @@ material?: string, style?: string,
  */
 near?: string, };
 
-export type Controller = { id: string, title: string, help?: string, groups: Array<Group>, };
+export type Make = { kind: MakeKind, 
+/**
+ * the pictures the job answers to (paths beside the brief): what is in it and where for a scene, the style for a kit
+ */
+references?: Array<string>, 
+/**
+ * one paragraph every reference prompt carries: era, palette, materials, wear, and one fictional maker
+ */
+style?: string, 
+/**
+ * by name, from the kind's set (DIALS); one left out is read from the references
+ */
+dials?: { [key in string]: MakeDial }, objects?: Array<MakeObject>, shots?: Array<MakeShot>, 
+/**
+ * the compositions the job's checks hold (relative to the brief): each needs a clean render or check newer than it
+ */
+compositions?: Array<string>, 
+/**
+ * what must exist when it's done, relative to the brief; replaces the kind's own list (`deliverables`)
+ */
+deliverables?: Array<string>, 
+/**
+ * the most critic rounds the job gets; at the cap it is delivered with what's still missing (8 by default)
+ */
+rounds?: number, };
 
-export type Group = { id: string, title: string, help?: string, fields: Array<Field>, };
+export type MakeKind = "scene" | "kit" | "shot";
 
-export type Field = { id: string, label: string, help?: string, } & ({ "type": "toggle", value: boolean, } | { "type": "choice", options: Array<string>, value: string, } | { "type": "number", value: number, unit?: string, min?: number, max?: number, step?: number, } | { "type": "text", value: string, placeholder?: string, multiline?: boolean, } | { "type": "list", value: Array<string>, placeholder?: string, } | { "type": "agents", value: Array<string>, } | { "type": "channels", value: Array<string>, } | { "type": "workflow", value: Array<Step>, channels?: Array<string>, } | { "type": "servers", value: Array<string>, } | { "type": "skills", value: Array<string>, });
+export type MakeSource = "customer" | "reference";
 
-export type Kind = { "type": "toggle", value: boolean, } | { "type": "choice", options: Array<string>, value: string, } | { "type": "number", value: number, unit?: string, min?: number, max?: number, step?: number, } | { "type": "text", value: string, placeholder?: string, multiline?: boolean, } | { "type": "list", value: Array<string>, placeholder?: string, } | { "type": "agents", value: Array<string>, } | { "type": "channels", value: Array<string>, } | { "type": "workflow", value: Array<Step>, channels?: Array<string>, } | { "type": "servers", value: Array<string>, } | { "type": "skills", value: Array<string>, };
+export type MakeDialValue = number | string;
 
-export type Step = { name: string, by?: string, back?: string, };
+export type MakeDial = MakeDialValue | { value: MakeDialValue, source?: MakeSource, 
+/**
+ * what the value meant for this job, in one line
+ */
+means?: string, };
+
+export type MakeRoute = "solid" | "rule" | "gen" | "library" | "picture";
+
+export type MakeOrigin = "reference" | "invented";
+
+export type MakePick = { 
+/**
+ * "tripo-h31", "meshy", ...
+ */
+generator: string, 
+/**
+ * one line: why this one ("sharper dial numerals; Tripo fused the handset to the cradle")
+ */
+why: string, };
+
+export type MakeObject = { 
+/**
+ * snake_case, unique in the job
+ */
+id: string, label: string, 
+/**
+ * real height in metres
+ */
+h?: number, 
+/**
+ * [width, depth, height] in metres, for boxy things (generators invent depth)
+ */
+dims?: [number, number, number], 
+/**
+ * largest extent in metres, for things that lie flat (tools, papers)
+ */
+max?: number, route?: MakeRoute, 
+/**
+ * one object, its condition and its materials; never a real brand
+ */
+prompt?: string, source?: MakeOrigin, 
+/**
+ * where it is in reference 0: [x0, y0, x1, y1] in 0..1
+ */
+crop?: [number, number, number, number], 
+/**
+ * where it stands in a scene: metres, the floor's front-left corner at the origin, rot 0 = facing the entrance
+ */
+at?: [number, number, number], rot?: number, hero?: boolean, pick?: MakePick, 
+/**
+ * what was fixed by script ("glass made transmissive, label kept opaque")
+ */
+fixes?: Array<string>, };
+
+export type MakeShot = { 
+/**
+ * [a-z0-9_]: the file it lands as (out/shots/<name>.png or .mp4)
+ */
+name: string, 
+/**
+ * in a crew's words: "slow push along the counter, rack focus to the register"
+ */
+description?: string, 
+/**
+ * static, dolly, truck, pedestal, crane, pan, tilt, orbit, dollyZoom, path
+ */
+move?: string, seconds?: number, lens?: number, 
+/**
+ * none, subtle, walk
+ */
+handheld?: string, 
+/**
+ * a still rather than a move
+ */
+still?: boolean, 
+/**
+ * the composition that renders it (relative to the brief): `raea make framing` and `lenschart` draw it
+ */
+composition?: string, 
+/**
+ * its frame rate, for the frames `seconds` spans (30 when left out)
+ */
+fps?: number, };

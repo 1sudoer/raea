@@ -47,6 +47,7 @@ raea_plugin! {
     FroxelGlassPlugin: super::froxel_glass::install, "Glass seen through froxel fog (froxel_glass.rs).";
     LookPlugin: super::look::install, "Models drawn as pixel art or the site's grain (look.rs).";
     OutlinePlugin: super::outline::install, "Ink outlines (outline.rs).";
+    SteadyPlugin: raea_sys_post::steady::install, "raea's temporal filter: each frame jittered and blended with those before it (raea-sys-post steady.rs, docs/realism.feature LT12).";
     ComposePlugin: super::compose::install, "Composition passes: each object's pass mask, read by Look, Outline, Bloom and Grade (compose.rs).";
     Text3dPlugin: super::text3d::install, "Text in the 3D world: bevy_rich_text3d and its faces (raea-sys-text3d).";
     FirePlugin: super::fire::install, "Flames drawn as volumes (fire.rs).";
@@ -55,15 +56,17 @@ raea_plugin! {
     Draws2dPlugin: raea_sys_sprite::install, "Plugins' 2D drawing brings up the scene's 2D camera (raea-sys-sprite's Draws2d).";
     ScreenPlugin: super::screen::install, "Live pictures on surfaces, drawn as CRTs (screen.rs).";
     GridPlugin: super::grid::install, "Greybox surfaces: graph paper and outlines (grid.rs).";
-    WearPlugin: raea_sys_wear::install, "Worn surfaces: chipped paint, grime and rust (systems/wear).";
     ProcMatPlugin: raea_sys_procmat::install, "Procedural surfaces: wood, stone, brick, tiles and the rest, with dust and dirt (systems/procmat).";
     PaintPlugin: super::paint::install, "The paint and cartoon looks' surfaces (paint.rs).";
     PassesPlugin: super::passes::install, "Render passes per view (passes.rs).";
-    TracedAoPlugin: super::traced_ao::install, "Traced ambient occlusion (raea-sys-rt's traced_ao.rs).";
+    TracedAoPlugin: raea_sys_rt::passes, "Traced passes: ambient occlusion, raea GI's world probes and the sun's far shadow map (raea-sys-rt).";
+    GiScreenPlugin: raea_sys_gi::install, "raea GI's light on screen: each pixel's indirect diffuse from the world cache, read by the main pass (raea-sys-gi, RAEA_GI=1).";
     VolumePlugin: super::volume::install, "Simulated smoke, clouds and contrails, raymarched (volume.rs).";
     GrassPlugin: raea_sys_grass::install, "Fields of grass, made in tiles as detailed as the camera's distance asks (systems/grass).";
+    DetailPlugin: raea_sys_lod::install, "Where each part is drawn: levels by distance or size on screen, cross-faded, draw distance and shadows left to a coarser level (raea-sys-lod, docs/realism.feature LT21).";
     ShadowOnlyPlugin: super::shadow_only::install, "Meshes in the shadow maps only (shadow_only.rs).";
     ShadowCatchPlugin: super::shadow_catch::install, "Surfaces that show only the shadows falling on them (shadow_catch.rs).";
+    TintPlugin: raea_sys_material::tint::install, "A colour a copy over an <Instances>' surface, three's instanceColor (tint.rs).";
     ToonPlugin: super::toon::install, "The toon surface and its ink outline's materials (toon.rs).";
     ShaderExtPlugin: super::shader_ext::install, "Shaders written in TypeScript over the lit standard surface (raea-sys-shader).";
     ThreeShaderPlugin: raea_sys_three_shader::install, "three.js's shaders: a ShaderMaterial's GLSL (naga) and a node material's WGSL, with three's built-ins (raea-sys-three-shader).";
@@ -72,6 +75,7 @@ raea_plugin! {
     PhaseItemPlugin: raea_sys_phase::install, "Your own draws in a camera's opaque phase, as Bevy's custom_phase_item queues one (raea-sys-phase).";
     LensPlugin: super::lens::install, "The camera's lens (Fisheye, LensDistortion), after tone mapping (lens.rs).";
     ParityPlugin: raea_sys_parity::install, "The parity probe: a frame's cost and World, written when RAEA_PARITY is set (raea-sys-parity, docs/control.feature FC0a).";
+    CameraCutPlugin: super::cut::install, "A camera that jumps is a cut: its history starts again and its motion blur waits (cut.rs, RT31).";
     MotionBlurPlugin: super::motion_blur::install, "Motion blur's frame counter pinned to the frame (motion_blur.rs).";
 }
 
@@ -112,7 +116,7 @@ pub fn scene3d_systems() -> ScheduleConfigs<ScheduleSystem> {
         super::scene3d::instance_models,
         super::scene3d::model_shadow_markers,
         super::scene3d::toon_models,
-        ((super::scene3d::sync_meshes, super::scene3d::sync_pictures, super::shader_ext::sync_shaded, raea_sys_sampler::arrays::sync_arrays, raea_sys_sampler::sync_samplers).chain(), super::toon::sync_toon, super::scene3d::sync_camera, super::motion_blur::sync_motion_blur, (super::environment::sync_environment, super::environment::sync_prefiltered, super::environment::sync_suns).chain(), super::scene3d::sync_lights, super::scene3d::sync_fog_volumes, super::scene3d::sync_fog_dither, super::scene3d::sync_models, super::scene3d::sync_morphs, super::scene3d::sync_attach, super::grid::grid_models, super::scene3d::sync_bones, super::look::sync_frame_look, super::look::sync_looks, super::compose::sync_passes, super::look::sync_flat, super::paint::sync_paint, super::decal::sync_decals, super::text3d::sync_texts).chain(),
+        ((super::scene3d::sync_meshes, super::scene3d::sync_instances, super::scene3d::sync_pictures, raea_sys_rendermap::sync_render_maps, super::shader_ext::sync_shaded, raea_sys_sampler::arrays::sync_arrays, raea_sys_sampler::sync_samplers).chain(), super::toon::sync_toon, (super::scene3d::sync_camera, super::scene3d::sync_post).chain(), super::motion_blur::sync_motion_blur, (super::environment::sync_environment, super::environment::sync_prefiltered, super::environment::sync_suns).chain(), (super::scene3d::sync_light_sets, super::scene3d::sync_lights).chain(), super::scene3d::sync_fog_volumes, super::scene3d::sync_fog_dither, super::scene3d::sync_models, super::scene3d::sync_morphs, super::scene3d::sync_attach, super::grid::grid_models, super::scene3d::sync_bones, super::look::sync_frame_look, super::look::sync_looks, super::compose::sync_passes, super::look::sync_flat, super::paint::sync_paint, super::decal::sync_decals, super::text3d::sync_texts).chain(),
         // --clay and --review's clay half: every standard surface grey, after the rows set their colours
         super::scene3d::clay::clay_materials,
     )

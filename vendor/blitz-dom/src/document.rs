@@ -1435,7 +1435,11 @@ impl BaseDocument {
             Resource::Font(bytes, overrides) => {
                 // raea: SVG text has the page's faces too
                 #[cfg(feature = "svg")]
-                crate::util::add_svg_font(bytes.to_vec(), overrides.family_name.as_deref());
+                crate::util::add_svg_font(
+                    bytes.to_vec(),
+                    overrides.family_name.as_deref(),
+                    overrides.weight.map(|w| (w as u16, matches!(overrides.style, Some(parley::fontique::FontStyle::Italic)))),
+                );
                 let font = Blob::new(Arc::new(bytes));
 
                 // Build a `FontInfoOverride` from the `@font-face` descriptors
@@ -1658,6 +1662,23 @@ impl BaseDocument {
                     other_attributes_changed: needs_attrs,
                 },
             );
+        }
+    }
+
+    /// raea: `name`, about to be set or cleared on `node_id`, among its snapshot's changed attributes. The snapshot
+    /// lists the attributes the element had when it was taken, so an attribute being added (`data-state` appearing)
+    /// or a second one changed before the flush was missing, and an invalidation that reads only what the snapshot
+    /// says changed (RAEA_FINE_RESTYLE) never restyled `[data-state=open]`'s elements (ui-parity's radix, basecoat and
+    /// select-keys cases).
+    pub(crate) fn snapshot_changed_attr(&mut self, node_id: NodeId, name: &crate::QualName) {
+        let Some(node) = self.nodes.get(node_id) else { return };
+        let id = TNode::opaque(&node);
+        if let Some(s) = self.snapshots.get_mut(&id) {
+            let name = GenericAtomIdent(name.local.clone());
+            if !s.changed_attrs.contains(&name) {
+                s.changed_attrs.push(name);
+            }
+            s.other_attributes_changed = true;
         }
     }
 
@@ -2532,7 +2553,10 @@ impl BaseDocument {
         let mut pos = crate::util::Point { x: 0.0, y: 0.0 };
         let mut current = Some(node_id);
         while let Some(id) = current {
-            let node = &self.nodes[id];
+            // raea: a containing-block link is what the last construction and layout left, and freeing a node doesn't
+            // clear links to it (a `display: none` element's descendants still point at its old anonymous blocks):
+            // the walk stops at a missing node rather than panicking on its key (#108), as paint_tree's does
+            let Some(node) = self.nodes.get(id) else { break };
             pos.x += node.unrounded_layout().location.x - node.scroll_offset().x as f32;
             pos.y += node.unrounded_layout().location.y - node.scroll_offset().y as f32;
             current = node.containing_block();
@@ -2543,42 +2567,148 @@ impl BaseDocument {
     /// raea: the bounds of a node's border box in the viewport through every transform on its containing block chain,
     /// or None when there's none on it. Each node's transform is kept in device pixels (its translation scaled), so it
     /// is taken back to CSS pixels here.
+    ///
+    /// A perspective's projection is taken as the painter draws it (the node's Projection `h`), so the bounds are its
+    /// four corners' box on the page, as Chrome's are: snapcn's card-rail (cards turned under a perspective) read
+    /// every card at its flat size and place (layout-reads LR10).
     fn transformed_bounds(&self, node_id: NodeId) -> Option<BoundingRect> {
-        use kurbo::{Affine, Rect};
+        let size = self.nodes.get(node_id)?.unrounded_layout().size;
+        self.transformed_rect(node_id, [0.0, 0.0, size.width as f64, size.height as f64])
+    }
+
+    /// raea: a rect in a node's own box (x, y, w, h from its border box's corner, CSS px) on the page through every transform
+    /// on its containing block chain, projections included, as transformed_bounds takes its border box; None when
+    /// there's no transform on it (the render manifest's ink: the span of a line's letters on a turned card)
+    pub fn transformed_rect(&self, node_id: NodeId, rect: [f64; 4]) -> Option<BoundingRect> {
+        // raea: most chains carry no transform and no projection, and then the walk below multiplies a matrix at every
+        // step only to answer None. Asked first without the math (a page's every element's rect is taken each frame:
+        // the twins' boxes and the JS's layout snapshot; with 400 timeline clips this was the frame's busiest leaf)
+        if !walk_up(node_id, |id| self.turned_up(id)) {
+            return None;
+        }
+        // a 3x3 on column vectors (x, y, w), row-major, in CSS px
+        type H = [f64; 9];
+        fn mul(a: &H, b: &H) -> H {
+            let mut m = [0.0; 9];
+            for r in 0..3 {
+                for c in 0..3 {
+                    m[r * 3 + c] = (0..3).map(|k| a[r * 3 + k] * b[k * 3 + c]).sum();
+                }
+            }
+            m
+        }
+        let translate = |x: f64, y: f64| -> H { [1.0, 0.0, x, 0.0, 1.0, y, 0.0, 0.0, 1.0] };
         let scale = self.viewport.scale_f64();
-        let mut m = Affine::IDENTITY;
+        // an affine kept in device pixels (its translation scaled), in CSS px
+        let affine = |t: &kurbo::Affine| -> H {
+            let [a, b, c, d, e, f] = t.as_coeffs();
+            [a, c, e / scale, b, d, f / scale, 0.0, 0.0, 1.0]
+        };
+        // a Projection's h is S * H * S^-1 with S = diag(scale, scale, 1): back to CSS px
+        let css = |h: &H| -> H { [h[0], h[1], h[2] / scale, h[3], h[4], h[5] / scale, h[6] * scale, h[7] * scale, h[8]] };
+        let preserves = |id: NodeId| self.nodes.get(id).and_then(|n| n.primary_styles()).is_some_and(|s| crate::stylo_to_kurbo::preserves_3d(&s));
+        let mut m: H = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let mut any = false;
         let mut current = Some(node_id);
         while let Some(id) = current {
-            let node = &self.nodes[id];
+            // raea: stops at a missing node, as physical_unrounded_geometry does (#108)
+            let Some(node) = self.nodes.get(id) else { break };
             if id != node_id {
                 let s = node.scroll_offset();
-                m = Affine::translate((-s.x, -s.y)) * m;
+                m = mul(&translate(-s.x, -s.y), &m);
             }
-            if let Some(t) = node.transform().as_deref() {
+            let projection = self.projections.get(&id);
+            if let Some(p) = projection.filter(|p| p.in_context) {
+                // in a 3D rendering context: h is from the context root's parent's space, the box's position included
+                let h = match (p.h, p.context) {
+                    (Some(h), _) => Some(css(&h)),
+                    (None, Some(a)) => Some(affine(&a)),
+                    (None, None) => None,
+                };
+                if let Some(h) = h {
+                    any = true;
+                    m = mul(&h, &m);
+                    // up to the context's root (the first ancestor whose parent doesn't preserve 3D), then on from its parent
+                    let mut root = node.containing_block();
+                    while let Some(r) = root {
+                        match self.nodes.get(r).and_then(|n| n.containing_block()) {
+                            Some(up) if preserves(up) => root = Some(up),
+                            _ => break,
+                        }
+                    }
+                    current = root.and_then(|r| self.nodes.get(r)).and_then(|n| n.containing_block());
+                    continue;
+                }
+            }
+            if let Some(h) = projection.and_then(|p| p.h) {
                 any = true;
-                let [a, b, c, d, e, f] = t.as_coeffs();
-                m = Affine::new([a, b, c, d, e / scale, f / scale]) * m;
+                m = mul(&css(&h), &m);
+            } else if let Some(t) = node.transform().as_deref() {
+                any = true;
+                m = mul(&affine(t), &m);
             }
             let loc = node.unrounded_layout().location;
-            m = Affine::translate((loc.x as f64, loc.y as f64)) * m;
+            m = mul(&translate(loc.x as f64, loc.y as f64), &m);
             current = node.containing_block();
         }
         if !any {
             return None;
         }
-        let size = self.nodes[node_id].unrounded_layout().size;
-        let r = m.transform_rect_bbox(Rect::new(0.0, 0.0, size.width as f64, size.height as f64));
+        let [rx, ry, w, h] = rect;
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (x, y) in [(rx, ry), (rx + w, ry), (rx + w, ry + h), (rx, ry + h)] {
+            let q = m[6] * x + m[7] * y + m[8];
+            // a corner at or behind the viewer has no place on the page
+            if q <= 1e-9 {
+                continue;
+            }
+            let (px, py) = ((m[0] * x + m[1] * y + m[2]) / q, (m[3] * x + m[4] * y + m[5]) / q);
+            (x0, y0, x1, y1) = (x0.min(px), y0.min(py), x1.max(px), y1.max(py));
+        }
+        if x0 > x1 {
+            return Some(BoundingRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+        }
         Some(BoundingRect {
-            x: snap_to_layout_unit(r.x0 - self.viewport_scroll().x),
-            y: snap_to_layout_unit(r.y0 - self.viewport_scroll().y),
-            width: snap_to_layout_unit(r.width()),
-            height: snap_to_layout_unit(r.height()),
+            x: snap_to_layout_unit(x0 - self.viewport_scroll().x),
+            y: snap_to_layout_unit(y0 - self.viewport_scroll().y),
+            width: snap_to_layout_unit(x1 - x0),
+            height: snap_to_layout_unit(y1 - y0),
         })
+    }
+
+    /// raea: one step of the walk up the DOM for `display: none` (an element with no box, #108): this node is, or the
+    /// next to ask. A node gone from the tree ends the walk, as a missing one did.
+    fn none_up(&self, id: NodeId) -> Up {
+        match self.nodes.get(id) {
+            None => Up::No,
+            Some(n) if n.primary_styles().is_some_and(|s| stylo_taffy::convert::display(s.get_box().display) == taffy::Display::None) => Up::Yes,
+            Some(n) => n.parent.map_or(Up::No, Up::Next),
+        }
+    }
+
+    /// raea: one step of the walk up the containing blocks for a transform or a projection (transformed_rect's
+    /// first question).
+    fn turned_up(&self, id: NodeId) -> Up {
+        match self.nodes.get(id) {
+            None => Up::No,
+            Some(n) if self.projections.contains_key(&id) || n.transform().is_some() => Up::Yes,
+            Some(n) => n.containing_block().map_or(Up::No, Up::Next),
+        }
     }
 
     /// Computes the size and position of the `Node` relative to the viewport
     pub fn get_client_bounding_rect(&self, node_id: NodeId) -> Option<BoundingRect> {
+        self.client_rect(node_id, None)
+    }
+
+    /// raea: [`get_client_bounding_rect`](Self::get_client_bounding_rect) for one of many elements taken in one pass
+    /// over a page laid out once (the layout snapshot's every element, each frame): what an element asks of its
+    /// ancestors is kept in `memo` for the next. The same rect, without two walks to the root for each element.
+    pub fn get_client_bounding_rect_in(&self, node_id: NodeId, memo: &mut RectMemo) -> Option<BoundingRect> {
+        self.client_rect(node_id, Some(memo))
+    }
+
+    fn client_rect(&self, node_id: NodeId, mut memo: Option<&mut RectMemo>) -> Option<BoundingRect> {
         // Non-atomic inline elements have no layout box of their own: return
         // the union of their per-line-box fragment rects.
         if let Some(rects) = self.inline_fragment_rects(node_id) {
@@ -2586,6 +2716,15 @@ impl BaseDocument {
         }
 
         let node = self.get_node(node_id)?;
+        // raea: an element with no box (it or an ancestor is `display: none`) answers Chrome's zero rect, not whatever
+        // its last layout left (#108)
+        let none = match memo.as_deref_mut() {
+            Some(m) => remembered(&mut m.none, &mut m.path, node_id, |id| self.none_up(id)),
+            None => walk_up(node_id, |id| self.none_up(id)),
+        };
+        if none {
+            return Some(BoundingRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+        }
         // raea: a table row or row group has no box of its own (its cells are the table grid's items): its rect is
         // its cells' union, as Chrome's row box spans them
         if let Some(d) = node.display_style()
@@ -2601,12 +2740,14 @@ impl BaseDocument {
                 .children
                 .iter()
                 .filter(|c| self.get_node(**c).is_some_and(|n| n.is_element()))
-                .filter_map(|c| self.get_client_bounding_rect(*c))
+                .filter_map(|c| self.client_rect(*c, memo.as_deref_mut()))
                 .reduce(BoundingRect::union);
         }
         // raea: under a transform (its own or a containing block's) the rect is the transformed box's bounds, as
-        // Chrome's getBoundingClientRect is (a skewed or rotated box was its untransformed layout box)
-        if let Some(r) = self.transformed_bounds(node_id) {
+        // Chrome's getBoundingClientRect is (a skewed or rotated box was its untransformed layout box). Without a memo
+        // transformed_bounds asks for itself whether there's one on the way up.
+        let turned = memo.is_none_or(|m| remembered(&mut m.turned, &mut m.path, node_id, |id| self.turned_up(id)));
+        if turned && let Some(r) = self.transformed_bounds(node_id) {
             return Some(r);
         }
         let (mut pos, layout) = self.physical_unrounded_geometry(node_id);
@@ -3089,6 +3230,72 @@ pub struct BoundingRect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// raea: what one pass over a page's elements' rects remembers from one element to the next
+/// ([`BaseDocument::get_client_bounding_rect_in`]): whether a node or an ancestor is `display: none`, and whether a
+/// node's containing-block chain carries a transform or a projection. Each was a walk to the root for every element,
+/// and the layout snapshot takes every element's rect each frame: on a big page, with the rect's position walk, a third
+/// of the app's main thread (11-16). Kept, each node is asked once a pass. Good for one layout: a new one after a resolve.
+#[derive(Default)]
+pub struct RectMemo {
+    /// by a node's slot in the tree: the node asked about and its answer. The whole id is kept, as a stale id (a freed
+    /// node's, still a containing-block link) shares its slot with whatever lives there now, and answers otherwise.
+    none: Vec<Option<(NodeId, bool)>>,
+    turned: Vec<Option<(NodeId, bool)>>,
+    /// the nodes one walk passed, given its answer when it ends
+    path: Vec<NodeId>,
+}
+
+/// A node's slot in the tree: its id's low 32 bits (blitz-traits' NodeId packs the slot there, its version above).
+fn slot(id: NodeId) -> usize {
+    id.as_u64() as u32 as usize
+}
+
+/// One step of a walk up a chain of nodes: the answer is here, or ask the next.
+enum Up {
+    Yes,
+    No,
+    Next(NodeId),
+}
+
+/// The answer a walk from `start` comes to, `up` taking each step.
+fn walk_up(start: NodeId, mut up: impl FnMut(NodeId) -> Up) -> bool {
+    let mut id = start;
+    loop {
+        match up(id) {
+            Up::Yes => return true,
+            Up::No => return false,
+            Up::Next(next) => id = next,
+        }
+    }
+}
+
+/// [`walk_up`], stopping at a node `seen` already has an answer for and giving every node it passed the answer: a
+/// node's is its chain's, so the nodes below one on the same chain share it.
+fn remembered(seen: &mut Vec<Option<(NodeId, bool)>>, path: &mut Vec<NodeId>, start: NodeId, mut up: impl FnMut(NodeId) -> Up) -> bool {
+    path.clear();
+    let yes = walk_up(start, |id| match seen.get(slot(id)).copied().flatten() {
+        Some((asked, yes)) if asked == id => {
+            if yes {
+                Up::Yes
+            } else {
+                Up::No
+            }
+        }
+        _ => {
+            path.push(id);
+            up(id)
+        }
+    });
+    for &id in path.iter() {
+        let s = slot(id);
+        if s >= seen.len() {
+            seen.resize(s + 1, None);
+        }
+        seen[s] = Some((id, yes));
+    }
+    yes
 }
 
 impl BoundingRect {

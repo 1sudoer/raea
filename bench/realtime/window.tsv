@@ -1,0 +1,5 @@
+# The window render's rows (window.sh): a film, its composition, the window drawn ([from, to) of its own frames) and
+# the scale it's drawn at, as the app's host/draft.ts makes a draft of the seconds around the playhead (a long side of
+# 960 px). `sign`: one more run with signing on, its Content Credentials read. Tab-separated.
+bench/realtime/cases/films.tsx	film-60	900	1050	0.5	sign
+bench/realtime/cases/films.tsx	film-180	900	1050	0.5

@@ -13,11 +13,23 @@ impl Live {
     /// motion, decks, scenes; open_baked too) keep the composition's own layout at its own size, never re-flowed to the
     /// window's box; the legacy app's stage only scales that page uniformly (paint_texture_fit). Don't flip this per kind.
     pub fn open_with(tsx: &Path, stage: (u32, u32), may_respond: bool) -> R<Live> {
+        Self::open_as(tsx, stage, may_respond, false)
+    }
+
+    /// The composition in `tsx` opened to be drawn as `raea render` draws it (docs/realtime.feature RT4d): at its own
+    /// size, its frames told as a render tells them, so Math.random and Date are the render's (the composition's seed,
+    /// the render's clock), useVideoConfig's length is its own and it reads no live input. Its frame N is the render's
+    /// frame N; a game, which wants a session of its own and the person's input, opens with `open`.
+    pub fn open_render(tsx: &Path) -> R<Live> {
+        Self::open_as(tsx, (1, 1), false, true)
+    }
+
+    fn open_as(tsx: &Path, stage: (u32, u32), may_respond: bool, render: bool) -> R<Live> {
         warm_audio();
         // the thread that steps and presents live frames, at the frame threads' QoS (as the JS thread)
         raea_runtime_react::interactive_thread();
         raea_io_trace::event("open", serde_json::json!({"composition": tsx, "stage": [stage.0, stage.1]}));
-        let tsx = tsx.canonicalize().map_err(|e| format!("{}: {e}", tsx.display()))?;
+        let tsx = dunce::canonicalize(&tsx).map_err(|e| format!("{}: {e}", tsx.display()))?;
         let dir = tsx.parent().unwrap().to_path_buf();
         let js = std::env::temp_dir().join(format!("raea-live-{}-{:x}.js", std::process::id(), rand_id()));
         // the project's words and perception, as a render passes them (captions, regions)
@@ -30,14 +42,14 @@ impl Live {
             }
         }
         // played live (a game: timelines play their bake), on raea's live view runtime instead of React: each frame
-        // rendered and only what changed sent (RAEA_LIVE_REACT=1 keeps React)
-        if std::env::var("RAEA_LIVE_REACT").as_deref() != Ok("1") {
+        // rendered and only what changed sent (RAEA_LIVE_REACT=1 keeps React, as an edit drawing R3F does)
+        if std::env::var("RAEA_LIVE_REACT").as_deref() != Ok("1") && !crate::needs_react(&dir) {
             opts.push("--lite".into());
         }
         raea_runtime_react::scene::bundle_composition(&tsx, &js, &raea_runtime_react::scene::comp_opts(&opts)?, None)?;
         let src = std::fs::read_to_string(&tsx).unwrap_or_default();
         let responsive = may_respond && (src.contains("useVideoConfig(") || components_use_config(&dir));
-        Self::from_bundle(js, dir, stage, responsive)
+        Self::from_bundle(js, dir, stage, responsive, render)
     }
 
     /// A composition already bundled for live play (an exported game, game.rs): `js` is copied to the temp folder (the
@@ -46,7 +58,7 @@ impl Live {
         raea_runtime_react::interactive_thread();
         let tmp = std::env::temp_dir().join(format!("raea-live-{}-{:x}.js", std::process::id(), rand_id()));
         std::fs::copy(js, &tmp).map_err(|e| format!("{}: {e}", js.display()))?;
-        Self::from_bundle(tmp, dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?, stage, responsive)
+        Self::from_bundle(tmp, dunce::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?, stage, responsive, false)
     }
 
     /// The game's master as worked out ahead of time (an exported game carries it): no second React at run time.
@@ -54,7 +66,7 @@ impl Live {
         self.game_gain = g;
     }
 
-    pub(crate) fn from_bundle(js: PathBuf, dir: PathBuf, stage: (u32, u32), responsive: bool) -> R<Live> {
+    pub(crate) fn from_bundle(js: PathBuf, dir: PathBuf, stage: (u32, u32), responsive: bool, render: bool) -> R<Live> {
         raea_runtime_react::native::open_in(&dir, &js);
         let mut app = App::new();
         app.add_plugins(MinimalPlugins).add_plugins(ReactPlugin::new(js.clone()));
@@ -65,7 +77,8 @@ impl Live {
         let (w, h) = if responsive { (stage.0.max(1), stage.1.max(1)) } else { (cw, ch) };
         let page = raea_runtime_page::BevyPage::new(w, h, &dir)?;
         let brand = raea_runtime_react::scene::page_css(&dir, w, &js);
-        let mut live = Live { app, dir: dir.clone(), page, brand, dirty: true, mixer: None, mixer_failed: false, lag: (0.0, std::time::Instant::now()), w, h, fps, frames, responsive, js, master: None, master_wav: None, game_master: None, game_gain: None, scene_rx: None, scene: None, live3d: None, frame: 0, pads: Vec::new(), pointer: Default::default(), made: Default::default(), sound_buf: Vec::new(), holders: Vec::new(), baked: None, applied: -1, session: new_session() };
+        let props = crate::props::Props::of(&conf);
+        let mut live = Live { app, dir: dir.clone(), page, brand, dirty: true, mixer: None, mixer_failed: false, lag: (0.0, std::time::Instant::now()), w, h, fps, frames, responsive, js, master: None, master_wav: None, game_master: None, game_gain: None, scene_rx: None, scene: None, live3d: None, frame: 0, pads: Vec::new(), taken: Vec::new(), pointer: Default::default(), made: Default::default(), sound_buf: Vec::new(), holders: Vec::new(), baked: None, applied: -1, session: new_session(), render, props };
         if responsive {
             live.send("raea-size", json!({"w": w, "h": h}));
         }
@@ -88,7 +101,7 @@ impl Live {
     /// it, then the frames after). The page is the composition's own size.
     pub fn open_baked(tsx: &Path) -> R<Live> {
         warm_audio();
-        let tsx = tsx.canonicalize().map_err(|e| format!("{}: {e}", tsx.display()))?;
+        let tsx = dunce::canonicalize(&tsx).map_err(|e| format!("{}: {e}", tsx.display()))?;
         let dir = tsx.parent().unwrap().to_path_buf();
         *raea_runtime_react::native::ASSET_DIR.lock().unwrap() = Some(dir.clone());
         let js = std::env::temp_dir().join(format!("raea-live-{}-{:x}.js", std::process::id(), rand_id()));
@@ -117,7 +130,7 @@ impl Live {
         raea_runtime_react::scene::one_thread(&mut app);
         let page = raea_runtime_page::BevyPage::new(w, h, &dir)?;
         let brand = raea_runtime_react::scene::page_css(&dir, w, &js);
-        let mut live = Live { app, dir: dir.clone(), page, brand, dirty: true, mixer: None, mixer_failed: false, lag: (0.0, std::time::Instant::now()), w, h, fps, frames, responsive: false, js, master: None, master_wav: None, game_master: None, game_gain: None, scene_rx: None, scene: None, live3d: None, frame: 0, pads: Vec::new(), pointer: Default::default(), made: Default::default(), sound_buf: Vec::new(), holders: Vec::new(), baked: None, applied: -1, session: new_session() };
+        let mut live = Live { app, dir: dir.clone(), page, brand, dirty: true, mixer: None, mixer_failed: false, lag: (0.0, std::time::Instant::now()), w, h, fps, frames, responsive: false, js, master: None, master_wav: None, game_master: None, game_gain: None, scene_rx: None, scene: None, live3d: None, frame: 0, pads: Vec::new(), taken: Vec::new(), pointer: Default::default(), made: Default::default(), sound_buf: Vec::new(), holders: Vec::new(), baked: None, applied: -1, session: new_session(), render: false, props: Default::default() };
         for b in &baked.init {
             live.app.world().resource::<raea_runtime_react::ReplayFeed>().feed(b.clone());
         }

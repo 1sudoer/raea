@@ -4,6 +4,14 @@
 use super::*;
 use raea_runtime_view::{cpuview, gpuview};
 
+/// A render's timings as one JSON line on stderr, with RAEA_RENDER_STATS=1 (the benches read it; a person's terminal
+/// shows only what the render made)
+fn print_stats(line: serde_json::Value) {
+    if std::env::var("RAEA_RENDER_STATS").as_deref() == Ok("1") {
+        eprintln!("{line}");
+    }
+}
+
 /// Render a loaded edit (see `render_file`; `dir` is where its relative media paths start).
 pub fn render(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &RenderOpts) -> Result<(), String> {
     render_with(prog, rows, dir, out, ro, None)
@@ -81,9 +89,9 @@ pub fn render_fed(
         let opts = ro.encode_opts(w, h, prog.fps, true, false, ten);
         let (t, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
         tx = Some(t);
-        let out = out.to_path_buf();
+        let (out, cuts) = (out.to_path_buf(), ro.cuts_of(prog));
         enc_thread = Some(std::thread::spawn(move || -> Result<(raea_io_media::EncodeStats, f64), String> {
-            let mut enc = direct_encoder(&codec, &out, &opts, ten)?;
+            let mut enc = direct_encoder(&codec, &out, &opts, ten, cuts.as_ref())?;
             for px in rx {
                 push_direct(&mut enc, &px, w, h, ten)?;
             }
@@ -95,8 +103,11 @@ pub fn render_fed(
     }
     let t_frames = std::time::Instant::now();
     let mut n = 0;
+    // how far it's got, for whatever shows it (progress.rs)
+    let mut meter = crate::progress::Progress::start(out, list.len());
     let dt = v.render_nv12_fed(&list, feed, |f, px| {
         n += 1;
+        meter.frame();
         direct_sink(tx.as_ref(), &mut lines, f, px)
     });
     drop(tx);
@@ -132,7 +143,7 @@ pub fn render_fed(
     if hashes {
         std::fs::write(out, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
     }
-    eprintln!("{}", serde_json::json!({"direct": true, "fed": true, "frames": list.len(), "fps_incl_encode": list.len() as f64 / frames_s, "setup_s": setup_s, "finish_s": finish_s, "sound_s": sent,
+    print_stats(serde_json::json!({"direct": true, "fed": true, "frames": list.len(), "fps_incl_encode": list.len() as f64 / frames_s, "setup_s": setup_s, "finish_s": finish_s, "sound_s": sent,
         "bytes": stats.as_ref().map(|s| s.bytes), "video": stats.as_ref().map(|s| s.video_codec.clone()), "times": dt.json()}));
     Ok(())
 }
@@ -179,9 +190,9 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
             let opts = ro.encode_opts(w, h, prog.fps, true, false, ten);
             let (t, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
             tx = Some(t);
-            let out = out.to_path_buf();
+            let (out, cuts) = (out.to_path_buf(), ro.cuts_of(&prog));
             enc_thread = Some(std::thread::spawn(move || -> Result<raea_io_media::EncodeStats, String> {
-                let mut enc = direct_encoder(&codec, &out, &opts, ten)?;
+                let mut enc = direct_encoder(&codec, &out, &opts, ten, cuts.as_ref())?;
                 for px in rx {
                     push_direct(&mut enc, &px, w, h, ten)?;
                 }
@@ -189,7 +200,9 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
             }));
         }
         let t_frames = std::time::Instant::now();
+        let mut meter = crate::progress::Progress::start(out, list.len());
         let tm = v.render_nv12(&list, |f, px| {
+            meter.frame();
             if let Some(tx) = tx.as_ref() {
                 return tx.send(px).map_err(|_| "the encoder stopped".to_string());
             }
@@ -210,7 +223,7 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
         if hashes {
             std::fs::write(out, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
         }
-        eprintln!("{}", serde_json::json!({"direct": true, "cpu": true, "frames": list.len(), "fps_incl_encode": list.len() as f64 / frames_s, "setup_s": setup_s,
+        print_stats(serde_json::json!({"direct": true, "cpu": true, "frames": list.len(), "fps_incl_encode": list.len() as f64 / frames_s, "setup_s": setup_s,
             "bytes": stats.as_ref().map(|s| s.bytes), "video": stats.as_ref().map(|s| s.video_codec.clone()), "times": tm.json()}));
         return Ok(());
     }
@@ -248,9 +261,9 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
             let opts = ro.encode_opts(w, h, prog.fps, true, engine::has_3d(&rows), ten);
             let (t, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
             tx = Some(t);
-            let out = out.to_path_buf();
+            let (out, cuts) = (out.to_path_buf(), ro.cuts_of(&prog));
             enc_thread = Some(std::thread::spawn(move || -> Result<(raea_io_media::EncodeStats, f64), String> {
-                let mut enc = direct_encoder(&codec, &out, &opts, ten)?;
+                let mut enc = direct_encoder(&codec, &out, &opts, ten, cuts.as_ref())?;
                 for px in rx {
                     push_direct(&mut enc, &px, w, h, ten)?;
                 }
@@ -261,8 +274,10 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
         }
         let t_frames = std::time::Instant::now();
         let mut n = 0;
+        let mut meter = crate::progress::Progress::start(out, list.len());
         let dt = v
             .render_nv12(&list, |f, px| {
+                meter.frame();
                 match pngs {
                     true => save_png(&if still { out.to_path_buf() } else { out.join(format!("frame-{f:05}.png")) }, &straight(px), w, h)?,
                     false => direct_sink(tx.as_ref(), &mut lines, f, px)?,
@@ -294,7 +309,7 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
         if hashes {
             std::fs::write(&out, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
         }
-        eprintln!("{}", serde_json::json!({"direct": true, "frames": list.len(), "fps_incl_encode": list.len() as f64 / frames_s, "setup_s": setup_s, "finish_s": finish_s, "encoder_drain_s": drain_s,
+        print_stats(serde_json::json!({"direct": true, "frames": list.len(), "fps_incl_encode": list.len() as f64 / frames_s, "setup_s": setup_s, "finish_s": finish_s, "encoder_drain_s": drain_s,
             "bytes": stats.as_ref().map(|s| s.bytes), "video": stats.as_ref().map(|s| s.video_codec.clone()), "times": dt.json(), "pool_mb": v.pool_bytes as f64 / 1e6, "upload_cpu_ms_per_upload": v.upload_cpu_ms / dt.uploads.max(1) as f64}));
         return Ok(());
     }
@@ -317,7 +332,7 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
         if ro.wants_10bit() {
             eprintln!("warning: 10-bit export: this render goes through the engine (3D, --ssim or RAEA_READBACK/RAEA_COMPOSITE), which makes 8-bit NV12; encoding 8-bit H.264");
         }
-        let mut enc = raea_io_media::backend(&codec).and_then(|b| b.encoder(&out, &opts))?;
+        let mut enc = direct_encoder(&codec, &out, &opts, false, ro.cuts_of(&prog).as_ref())?;
         engine::mem_mark("render: encoder made");
         let mut encode_s = 0.0;
         let t_all = std::time::Instant::now();
@@ -372,8 +387,7 @@ pub fn render_with(prog: &Program, rows: &[Tup], dir: &Path, out: &Path, ro: &Re
         } else {
             None
         };
-        eprintln!(
-            "{}",
+        print_stats(
             serde_json::json!({"frames": list.len(), "video": stats.video_codec, "audio": stats.audio_codec, "bytes": stats.bytes,
                 "render_fps": n / render_s, "overlay_drawn_reused": e.overlay_stats(), "stages_ms_per_frame": stages, "pool_uploads_reuses_bytes": e.pool_stats(), "gpu_stage_ms": e.gpu_stage_times().map(|(m, n)| serde_json::json!({"clip_uploads": m[0], "overlay_upload": m[1], "composite": m[2], "nv12": m[3], "frames": n})), "encode_fps": n / encode_s, "ssim": ssim, "seconds": t0.elapsed().as_secs_f64(), "audio_s": audio_s,
                 "lufs": mix.as_ref().map(raea_io_media::audio::lufs), "peak_db": mix.as_ref().map(raea_io_media::audio::peak_db)})

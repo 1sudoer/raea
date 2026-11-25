@@ -3,15 +3,20 @@
 // `out-*` are raea compositions, drawn in React Three Fiber by <Raea> (outputs.tsx).
 import { useFrame } from "@react-three/fiber";
 import * as PP from "@react-three/postprocessing";
-import { ContactShadows, Environment, Float, Text, useGLTF } from "@react-three/drei";
+import { ContactShadows, Environment, Float, Sky, Text, useGLTF } from "@react-three/drei";
 import { useMemo, useRef, type ReactNode } from "react";
 import * as THREE from "three";
+import { TARGET_INPUTS } from "./targets";
+import { PATCHED_INPUTS } from "./patched";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import * as TSLTyped from "three/tsl";
 import { composeEffects, configureFontTexture, createText, parseFont, scramble, wipe } from "lettra/three";
 import inter from "./fonts/Inter-400.json";
 
 export { OUTPUTS } from "./outputs";
+import { TSL_INPUTS } from "./tsl";
+import { POST2_INPUTS } from "./post2";
+import { TSLPOST_INPUTS } from "./tslpost";
 
 export const SIZE = { width: 640, height: 360, fps: 24 };
 
@@ -48,6 +53,34 @@ const instanced = (() => {
   m.castShadow = true;
   return m;
 })();
+
+// R3F20: 2,000 copies moved and recoloured every frame (a wave over a grid), lit by a sun
+function Wave({ n }: { n: number }) {
+  const ref = useRef<THREE.InstancedMesh>(null!);
+  const o = useMemo(() => new THREE.Object3D(), []);
+  const c = useMemo(() => new THREE.Color(), []);
+  const side = Math.ceil(Math.sqrt(n));
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime;
+    for (let i = 0; i < n; i++) {
+      const x = (i % side) - side / 2, z = Math.floor(i / side) - side / 2;
+      const y = Math.sin(x * 0.3 + t * 2) * Math.cos(z * 0.3) * 0.4;
+      o.position.set(x * 0.12, y, z * 0.12);
+      o.rotation.set(0, x * 0.1 + t, 0);
+      o.updateMatrix();
+      ref.current.setMatrixAt(i, o.matrix);
+      ref.current.setColorAt(i, c.setHSL((x / side + z / side * 0.5 + t * 0.1) % 1, 0.7, 0.45 + y * 0.4));
+    }
+    ref.current.instanceMatrix.needsUpdate = true;
+    ref.current.instanceColor!.needsUpdate = true;
+  });
+  return (
+    <instancedMesh ref={ref} args={[undefined as never, undefined as never, n]}>
+      <boxGeometry args={[0.08, 0.08, 0.08]} />
+      <meshStandardMaterial color="#ffffff" roughness={0.5} />
+    </instancedMesh>
+  );
+}
 
 export interface InputCase {
   canvas: Record<string, unknown>;
@@ -86,6 +119,22 @@ const probe = (() => {
 const clipPlane = new THREE.Plane(new THREE.Vector3(-0.3, -1, 0.2).normalize(), 0.95);
 
 export const INPUTS: Record<string, InputCase> = {
+  // render targets an app draws into itself, drawn on raea's GPU (R3F23): test/parity/targets.tsx
+  ...TARGET_INPUTS,
+  // materials patched by onBeforeCompile, three's own program with the patch (R3F24): test/parity/patched.tsx
+  ...PATCHED_INPUTS,
+  instanced: {
+    canvas: { camera: { position: [0, 3.2, 4.2], fov: 45 } },
+    frame: 12,
+    scene: () => (
+      <>
+        <color attach="background" args={["#0a0a12"]} />
+        <ambientLight intensity={0.4} />
+        <directionalLight position={[3, 6, 2]} intensity={2} />
+        <Wave n={2000} />
+      </>
+    ),
+  },
   basic: {
     canvas: { camera: { position: [3, 2.5, 4], fov: 45 }, shadows: true },
     frame: 24,
@@ -283,6 +332,23 @@ export const INPUTS: Record<string, InputCase> = {
       </>
     ),
   },
+  // three's <Sky> (a ShaderMaterial that puts its box on the far plane, `gl_Position.z = gl_Position.w`) behind a box: raea writes
+  // it on reverse-Z's far plane, so the box shows in front (R3F17; 0.1.4 drew the sky over everything)
+  sky: {
+    canvas: { camera: { position: [0, 1.2, 4], fov: 45 } },
+    frame: 0,
+    scene: () => (
+      <>
+        <Sky sunPosition={[100, 10, 100]} />
+        <ambientLight intensity={0.4} />
+        <directionalLight position={[3, 5, 2]} intensity={2.5} />
+        <mesh position={[0, 0.2, 0]}>
+          <boxGeometry />
+          <meshStandardMaterial color="#4ea1ff" roughness={0.5} />
+        </mesh>
+      </>
+    ),
+  },
   // three.js ShaderMaterials (src/input/shader.ts): GLSL translated by naga and run by raea's engine with three's
   // built-ins. A sphere rippled by R3F's clock (a uniform set in useFrame) and points sized by an attribute of their own
   shader: {
@@ -315,6 +381,12 @@ export const INPUTS: Record<string, InputCase> = {
       </>
     ),
   },
+  // TSL node materials lit by the scene and moved by compute (R3F21, R3F22): test/parity/tsl.tsx
+  ...TSL_INPUTS,
+  // postprocessing's effects raea draws as frame passes (R3F25): test/parity/post2.tsx
+  ...POST2_INPUTS,
+  // three/webgpu's PostProcessing, its TSL chain as raea's effects (R3F25): test/parity/tslpost.tsx
+  ...TSLPOST_INPUTS,
 };
 
 const WAVE_VERTEX = /* glsl */ `

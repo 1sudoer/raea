@@ -6,8 +6,8 @@
 //! seed, what tests use), the two local audio models, `tokensynth` (an instrument's notes, for music) and `sao` (Stable
 //! Audio Open on Core ML, foley). Every model runs on this computer. `lyria` (music) and `fish` (narration, through
 //! raea's API) are retired: a take made before plays from the index, and a new one is refused. Narration is Pocket TTS
-//! (raea/speech), and Fish Audio is a `raea gen` backend like fal or Replicate (`fish:<model>`, the user's own key). The local models install themselves on first use (tools/sao/setup.sh,
-//! tools/tokensynth/setup.sh). Each made asset gets a line in `assets/made.jsonl` under its cache key, a hash of
+//! (raea/speech), and Fish Audio is a `raea gen` backend like fal or Replicate (`fish:<model>`, the user's own key). The local models install themselves on first use (tools/sao/setup.py,
+//! tools/tokensynth/setup.py, run through uv on any OS: setup.rs). Each made asset gets a line in `assets/made.jsonl` under its cache key, a hash of
 //! (model, prompt, seed, params); `made` reads only that index, so a render or a check that resolves a make() never
 //! generates.
 
@@ -24,6 +24,8 @@ pub use splat::{ensure_splat, splat_dir, splat_params};
 
 mod local;
 use local::*;
+mod setup;
+pub use setup::{ffmpeg_tool, git, run_setup, setup_how, uv, venv_python};
 #[cfg(test)]
 mod tests;
 
@@ -173,7 +175,7 @@ fn canonical(j: &J, whole: bool) -> J {
 pub fn install_dir(model: &str) -> PathBuf {
     let (var, name) = install_var(model);
     std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache").join(name))
+        .unwrap_or_else(|| raea_io_home::user_home().unwrap_or_default().join(".cache").join(name))
 }
 
 /// A local model's install variable and default folder name.
@@ -189,14 +191,14 @@ fn install_var(model: &str) -> (&'static str, &'static str) {
 pub fn setup_script(model: &str) -> PathBuf {
     let tools = std::env::var_os("RAEA_TOOLS").map(PathBuf::from).unwrap_or_else(|| raea_io_home::home().join("tools"));
     let p = tools.join(model).join("setup.sh");
-    p.canonicalize().unwrap_or(p)
+    dunce::canonicalize(&p).unwrap_or(p)
 }
 
-/// Whether a local model can run from `dir`. SAO: the venv and either run.py with setup.sh's `.ready`, or the
+/// Whether a local model can run from `dir`. SAO: the venv and either run.py with its setup's `.ready`, or the
 /// hand-built spike's coreml_run.py (~/.cache/raea-sao before tools/sao existed, still served as it is). TokenSynth:
-/// the venv, run.py, and setup.sh's `.ready` or the fp16 runtime that every finished install has.
+/// the venv, run.py, and its setup's `.ready` or the fp16 runtime that every finished install has.
 pub fn installed(model: &str, dir: &Path) -> bool {
-    let py = dir.join(".venv/bin/python").exists();
+    let py = venv_python(dir).exists();
     match model {
         "sao" => py && ((dir.join("run.py").exists() && dir.join(".ready").exists()) || dir.join("coreml_run.py").exists()),
         "tokensynth" => py && dir.join("run.py").exists() && (dir.join(".ready").exists() || dir.join("weights-fp16/token_synth_aug.pt").exists()),
@@ -205,7 +207,7 @@ pub fn installed(model: &str, dir: &Path) -> bool {
     }
 }
 
-/// A local model's install, set up first if it isn't there: setup.sh runs once, its progress on stderr (a render's
+/// A local model's install, set up first if it isn't there: its setup runs once, its progress on stderr (a render's
 /// log, the CLI's terminal), unless $RAEA_AUDIO_AUTOSETUP=0, when the error names the one command that installs it.
 pub fn ensure_installed(model: &str) -> Result<PathBuf, String> {
     let dir = install_dir(model);
@@ -218,7 +220,7 @@ pub fn ensure_installed(model: &str) -> Result<PathBuf, String> {
         "matchmove" => "about 250 MB",
         _ => "about 6 GB",
     };
-    let how = format!("{} (installs it into {}, {size}, once)", script.display(), dir.display());
+    let how = format!("{} (installs it into {}, {size}, once)", setup_how(&script), dir.display());
     if std::env::var("RAEA_AUDIO_AUTOSETUP").as_deref() == Ok("0") {
         return Err(format!("{model} isn't installed: run {how}"));
     }
@@ -227,14 +229,7 @@ pub fn ensure_installed(model: &str) -> Result<PathBuf, String> {
         return Err(format!("{model} isn't installed in {}, and its setup script isn't at {}", dir.display(), script.display()));
     }
     eprintln!("raea: {model} isn't installed yet; setting it up now with {how}");
-    let env = install_var(model).0;
-    let status = std::process::Command::new("sh")
-        .arg(&script)
-        .env(env, &dir)
-        // its progress on stderr: stdout is the caller's answer (a render's APPLIED line, the CLI's)
-        .stdout(std::io::stderr())
-        .status()
-        .map_err(|e| format!("{model} setup: {e}"))?;
+    let status = run_setup(&script, install_var(model).0, &dir).map_err(|e| format!("{model} setup: {e}"))?;
     if !status.success() || !installed(model, &dir) {
         return Err(format!("{model} setup didn't finish ({status}): run {how}"));
     }
@@ -270,7 +265,7 @@ pub fn matchmove_params(p: &J) -> Result<J, String> {
 pub fn perceive_bin() -> PathBuf {
     // raea-perceive.exe on Windows (#43)
     const NAME: &str = if cfg!(windows) { "raea-perceive.exe" } else { "raea-perceive" };
-    let beside = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| Some(e.parent()?.join(NAME)));
+    let beside = std::env::current_exe().ok().and_then(|e| dunce::canonicalize(&e).ok()).and_then(|e| Some(e.parent()?.join(NAME)));
     let found = beside.into_iter().chain([PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/release")).join(NAME)]).chain(std::env::var_os("PATH").iter().flat_map(std::env::split_paths).map(|d| d.join(NAME))).find(|p| p.is_file());
     std::env::var_os("RAEA_PERCEIVE").filter(|v| !v.is_empty()).map(PathBuf::from).or(found).unwrap_or_else(|| NAME.into())
 }
@@ -307,7 +302,7 @@ impl Store {
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let out = self.dir.join(format!(".matchmove-{key}.part"));
         let _ = std::fs::remove_dir_all(&out);
-        let mut cmd = std::process::Command::new(dir.join(".venv/bin/python"));
+        let mut cmd = std::process::Command::new(venv_python(&dir));
         // the repo's run.py when raea's files are here (so an edit to it is used without reinstalling), else the installed copy
         let repo = setup_script("matchmove").with_file_name("run.py");
         cmd.arg("-I").arg(if repo.exists() { repo } else { dir.join("run.py") }).arg("--video").arg(clip).arg("--out").arg(&out);
@@ -315,7 +310,7 @@ impl Store {
             cmd.args([format!("--{k}"), params[k].as_f64().unwrap_or(0.0).to_string()]);
         }
         if let J::Array(b) = &params["subject"] {
-            let bin = Some(perceive_bin()).filter(|b| b.exists()).ok_or("matchmove: a subject is tracked by raea-perceive (EdgeTAM), not found: build it with `cargo build --release -p raea-perceive` or set RAEA_PERCEIVE")?;
+            let bin = Some(perceive_bin()).filter(|b| b.exists()).ok_or("matchmove: a subject is tracked by raea-perceive (EdgeTAM), not found beside raea: update raea (`curl -fsSL https://raea.io/install | sh`: releases ship it in ~/.raea/bin), or set RAEA_PERCEIVE")?;
             cmd.args(["--subject", &b.iter().map(|v| v.as_f64().unwrap_or(0.0).to_string()).collect::<Vec<_>>().join(",")]).arg("--perceive").arg(bin);
         }
         // its progress on stderr: stdout is the caller's answer

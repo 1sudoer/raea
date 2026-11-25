@@ -1,9 +1,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// A source the edit reaches outside its own folder by a relative import (content/anything/paint/shots.tsx's
-/// ../../../examples/objects/wake): `file` where it is, `copy` where bundle_fresh puts it, relative to the work folder
-/// (ext/raea/<its path from raea's home>, or ext/project/<its path from the project's git root>).
+/// A source the edit reaches outside its folder by a relative import (../../../examples/objects/wake) or as shared code
+/// (@shared/components/badge, docs/layout.feature LY2): `file` where it is, `copy` where bundle_fresh puts it under the
+/// work folder (ext/raea/<from raea's home>, ext/project/<from the project's git root>, ext/shared/<from shared/>).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outside {
     pub file: PathBuf,
@@ -11,24 +11,21 @@ pub struct Outside {
 }
 
 fn specs() -> regex::Regex {
-    regex::Regex::new(r#"(\bfrom\s+)(["'])(\.[^"']*)(["'])"#).unwrap()
+    regex::Regex::new(r#"(\bfrom\s+)(["'])(\.[^"']*|@shared/[^"']*)(["'])"#).unwrap()
 }
 
 fn absolute(p: &Path) -> PathBuf {
     normalize(&std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
-/// The file a relative `spec` names from `base`, as the bundler would find it: itself, with a script or JSON extension,
-/// or a folder's index
+/// The file a relative or @shared/ `spec` names from `base`, as the bundler would find it: itself, with a script or JSON
+/// extension, or a folder's index
 fn resolve(base: &Path, spec: &str) -> Option<PathBuf> {
-    let p = normalize(&base.join(spec));
-    let with = |ext: &str| PathBuf::from(format!("{}{ext}", p.display()));
-    let tries = [p.clone(), with(".tsx"), with(".ts"), with(".jsx"), with(".js"), with(".json"), p.join("index.tsx"), p.join("index.ts"), p.join("index.js")];
-    tries.into_iter().find(|t| t.is_file())
+    raea_io_home::shared::import(base, spec).ok().flatten().map(|p| normalize(&p))
 }
 
-/// Where an edit may import from outside its folder, each with its name under ext/: raea's home, and the project's
-/// root (the nearest folder above the edit holding .git) when that is somewhere else
+/// Where an edit may import from outside its folder, each with its name under ext/: raea's home, the project's root
+/// (the nearest folder above the edit holding .git) when elsewhere, and its workspace's shared/ (LY2)
 fn roots(dir: &Path) -> Vec<(&'static str, PathBuf)> {
     let home = absolute(&raea_io_home::home());
     let mut out = vec![("raea", home.clone())];
@@ -36,6 +33,9 @@ fn roots(dir: &Path) -> Vec<(&'static str, PathBuf)> {
         if git != home {
             out.push(("project", git.to_path_buf()));
         }
+    }
+    if let Some(shared) = raea_io_home::shared::of(dir) {
+        out.push(("shared", absolute(&shared)));
     }
     out
 }
@@ -64,8 +64,8 @@ pub fn outside_in(dir: &Path, roots: &[(&'static str, PathBuf)]) -> R<Vec<Outsid
             if MEDIA_EXTS.contains(&ext.as_str()) {
                 continue;
             }
-            // one the bundler can't find either: left for it to name
-            let Some(t) = resolve(&base, spec) else { continue };
+            // one the bundler can't find either: left for it to name (but an @shared/ one, which it takes for a package)
+            let Some(t) = raea_io_home::shared::import(&base, spec).map_err(|e| format!("{}: {e}", f.display()))?.map(|p| normalize(&p)) else { continue };
             if t.starts_with(dir) || sdk.iter().any(|s| t.starts_with(s)) || t.components().any(|c| c.as_os_str() == "node_modules") || !seen.insert(t.clone()) {
                 continue;
             }
@@ -95,19 +95,9 @@ pub fn point_outside(src: &str, from_dir: &Path, at: &Path, dir: &Path, outs: &[
                 None => None,
             });
             match target {
-                Some(t) => format!("{}{}{}{}", &c[1], &c[2], relative(at, &t), &c[4]),
+                Some(t) => format!("{}{}{}{}", &c[1], &c[2], raea_io_home::import_path(at, &t), &c[4]),
                 None => c[0].to_string(),
             }
         })
         .into_owned()
-}
-
-/// The import path from a file in `from` to `to`, both under the work folder
-fn relative(from: &Path, to: &Path) -> String {
-    let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let mut parts = vec![".."; a.len() - common].into_iter().map(String::from).collect::<Vec<_>>();
-    parts.extend(b[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
-    let p = parts.join("/");
-    if p.starts_with("..") { p } else { format!("./{p}") }
 }

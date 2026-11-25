@@ -10,8 +10,9 @@ fn flush(a: &[String]) -> Result<Ret, String> {
     let json = arg(a, 0).to_string();
     let len = json.len() as u64;
     FLUSH.with(|f| {
-        if let Some(tx) = f.borrow().as_ref() {
+        if let Some((tx, state)) = f.borrow().as_ref() {
             let _ = tx.send(Batch(json));
+            state.flushed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     });
     FLUSH_BYTES.fetch_add(len, std::sync::atomic::Ordering::Relaxed);
@@ -25,6 +26,22 @@ fn flush(a: &[String]) -> Result<Ret, String> {
 /// `__raea_log(level, text)`: to Bevy's log
 fn log(a: &[String]) -> Result<Ret, String> {
     let text = arg(a, 1);
+    // a headless program's console to the terminal, as node's: log and info to stdout, warn and error to stderr (#168)
+    let (on, echo) = (native::CONSOLE.load(std::sync::atomic::Ordering::Relaxed), native::ECHO.load(std::sync::atomic::Ordering::Relaxed));
+    if on && echo {
+        use std::io::Write;
+        match arg(a, 0) {
+            "1" | "2" => {
+                let _ = writeln!(std::io::stderr().lock(), "{text}");
+            }
+            _ => {
+                let mut o = std::io::stdout().lock();
+                let _ = writeln!(o, "{text}");
+                let _ = o.flush();
+            }
+        }
+        return Ok(Ret::Undefined);
+    }
     match arg(a, 0) {
         "2" => error!("[js] {text}"),
         "1" => warn!("[js] {text}"),
@@ -33,10 +50,17 @@ fn log(a: &[String]) -> Result<Ret, String> {
     Ok(Ret::Undefined)
 }
 
+/// Every native call a composition's thread answers; `raea types` types this same list (sdk/raea/src/native-calls.ts).
+pub fn register_natives() {
+    raea_native::register("page.viewBox", "{}", "[number, number, number, number] | null", "the box (x, y, w, h in frame px) a camera in a page element draws its view in, as last laid out; null when it draws under the whole frame (3D picking in the box, docs/sdk.feature S3a)", |_| Ok(serde_json::json!(*VIEW_BOX.lock().unwrap())));
+    // the calls crate's, matchmove.solve (scene/track.rs), physics.* (systems/bake), scene.* (scene/contact.rs), *.shot (runtime/shots)
+    [native::register, layout::register, scene::track::register, scene::physics::register, raea_runtime_shots::register, raea_runtime_canvas::register, scene::register_scene].iter().for_each(|r| r());
+}
+
 /// The JS thread: the prelude, the shims, the bundle, then timers and Bevy's events. Both engines run promise jobs as
 /// each call returns, so there are no microtask checkpoints to make.
-pub(crate) fn js_thread(bundle: PathBuf, tx: Sender<Batch>, events: Receiver<String>) {
-    FLUSH.with(|f| *f.borrow_mut() = Some(tx));
+pub(crate) fn js_thread(bundle: PathBuf, tx: Sender<Batch>, events: Receiver<String>, state: std::sync::Arc<JsState>) {
+    FLUSH.with(|f| *f.borrow_mut() = Some((tx, state.clone())));
     let code = match std::fs::read_to_string(&bundle) {
         Ok(c) => c,
         Err(e) => {
@@ -45,7 +69,7 @@ pub(crate) fn js_thread(bundle: PathBuf, tx: Sender<Batch>, events: Receiver<Str
         }
     };
     interactive_thread();
-    JS_RUNTIME.set(JS_RUNTIMES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1);
+    js_runtime_starts();
     let mut ctx = match Engine::default().start() {
         Ok(c) => c,
         Err(e) => {
@@ -60,12 +84,7 @@ pub(crate) fn js_thread(bundle: PathBuf, tx: Sender<Batch>, events: Receiver<Str
             return;
         }
     }
-    native::register();
-    raea_native::register("page.viewBox", "{}", "[number, number, number, number] | null", "the box (x, y, w, h in frame px) a camera in a page element draws its view in, as last laid out; null when it draws under the whole frame (3D picking in the box, docs/sdk.feature S3a)", |_| Ok(serde_json::json!(*VIEW_BOX.lock().unwrap())));
-    // matchmove.solve (scene/track.rs), physics.* for <Physics> and <Goo> (systems/bake), scene.bounds and facing (scene/contact.rs)
-    for register in [scene::track::register, scene::physics::register, scene::register_scene] {
-        register();
-    }
+    register_natives();
     for (src, name) in [(PRELUDE, "prelude.js")] {
         if let Err(e) = ctx.eval(src, name) {
             error!("raea-runtime-react: {name}: {e}");
@@ -89,11 +108,15 @@ pub(crate) fn js_thread(bundle: PathBuf, tx: Sender<Batch>, events: Receiver<Str
     let mut delivered: u64 = 0;
     let release_every: f64 = std::env::var("RAEA_JSC_RELEASE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(5.0);
     let mut released = Instant::now();
+    let mut fault = raea_runtime_shared::DropFault::from_env();
+    // the next timers call has a timer to run (an empty tick isn't work, #158): the bundle's, an event handler's, or one
+    // that came due while the thread waited
+    let mut due = true;
     loop {
         let busy = Instant::now();
-        js_call_begins(false);
+        js_call_begins(false, &state);
         let timers = ctx.call("__raea_timers", &[Arg::Num(now_ms())]);
-        js_call_ends();
+        js_call_ends(&state);
         let next = match timers {
             None => break,
             Some(Ok(n)) if n.is_finite() => n,
@@ -104,25 +127,33 @@ pub(crate) fn js_thread(bundle: PathBuf, tx: Sender<Batch>, events: Receiver<Str
             }
         };
         JS_NS.fetch_add(busy.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        state.timers(due, next);
         let wait = if next < 0.0 { Duration::from_millis(500) } else { Duration::from_millis(next.clamp(0.0, 500.0) as u64) };
+        due = (0.0..=500.0).contains(&next);
         let msg = match events.recv_timeout(wait) {
             Ok(json) => Some(json),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
         };
+        if msg.as_deref().is_some_and(|j| fault.drops(j)) {
+            continue;
+        }
         let busy = Instant::now();
         let event = match &msg {
             Some(json) => Arg::Str(json),
             None => Arg::Null,
         };
-        js_call_begins(true);
+        js_call_begins(true, &state);
         let outcome = ctx.call("__raea_deliver", &[event]);
-        js_call_ends();
-        match outcome {
+        js_call_ends(&state);
+        match &outcome {
             None => break,
             Some(Err(e)) => error!("raea-runtime-react: an event threw: {e}"),
             Some(Ok(_)) => {}
         }
+        // the prelude answers 0 for an event queued with no one waiting: the bridge's event loop has stopped
+        state.delivered(!matches!(outcome, Some(Ok(n)) if n == 0.0));
+        due = true;
         JS_NS.fetch_add(busy.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         // a young collection after the frame when RAEA_JSC_EDEN is set (off: each cost ~0.5 ms and held memory no
         // flatter in pong; every 16th frame left 1 collection of 360 started by allocation inside a frame, where 71

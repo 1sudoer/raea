@@ -15,6 +15,7 @@
 //!   ecs.despawn {world, id}; ecs.query {world, kind, where: [[col, op, value]]} -> {ids}; ecs.column {world, kind, col};
 //!   ecs.rows {world}; ecs.count {world, kind}; ecs.clone {world} -> {world}; ecs.free {world}
 //!   print {text}                                              (a headless run's output, to stdout)
+//!   blender.post {sid, ops} -> {r, n, err?}                   (raea/blender's batches, to the Blender `raea blender run` started)
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,6 +30,8 @@ type R<T> = Result<T, String>;
 pub mod ml;
 // ECS worlds on Bevy's own ECS (/ecs)
 pub mod ecs;
+/// raea/blender's batches, to the Blender `raea blender run SCRIPT.ts` started (sdk/blender)
+pub mod blender;
 mod media;
 mod solid;
 
@@ -119,6 +122,11 @@ pub static DONE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::ne
 /// Whether print also writes to stdout (the CLI; not an app).
 pub static ECHO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// Whether a script's console goes to the terminal, while ECHO is on: a headless program's (`raea run`, `raea test`,
+/// `raea blender run`), whose App has no log to take it, so every console line was dropped (#168). raea-runtime-react's
+/// `__raea_log` reads it.
+pub static CONSOLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// What a headless run printed (an app shows it; the CLI also writes it to stdout as it comes).
 pub static PRINTED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
@@ -159,20 +167,36 @@ pub fn call(name: &str, v: &Value) -> R<Value> {
                     p.push_str(text);
                     p.push('\n');
                 }
+                // `err`: a line for stderr (a script's throw, #168), where its console goes to the terminal
                 if ECHO.load(std::sync::atomic::Ordering::Relaxed) {
-                    let mut o = std::io::stdout().lock();
-                    let _ = writeln!(o, "{text}");
-                    let _ = o.flush();
+                    if v.get("err").and_then(Value::as_bool) == Some(true) && CONSOLE.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = writeln!(std::io::stderr().lock(), "{text}");
+                    } else {
+                        let mut o = std::io::stdout().lock();
+                        let _ = writeln!(o, "{text}");
+                        let _ = o.flush();
+                    }
                 }
                 Ok(Value::Null)
             }
+            "blender.post" => blender::post(v),
             n if n.starts_with("ecs.") => ecs::call(n, v),
             // placement by relations (raea-core-place)
             "place.solve" => raea_core_place::solve_json(v),
+            // a frame of a character taking a thing (raea-sys-grab, docs/hands.feature HG5)
+            "character.take" => raea_sys_grab::take_json(v),
+            "character.fit" => raea_sys_grab::fit_json(v),
+            "character.hand" => raea_sys_grab::hand_json(v),
+            "character.soma" => raea_sys_grab::soma_json(v),
+            "character.turns" => raea_sys_grab::turns_json(v),
+            "character.twists" => raea_sys_grab::twists_json(v),
             "fonts.families" => Ok(families().into()),
             "fonts.google" => {
                 let family = s(v, "family")?;
                 raea_sys_fonts::google::want(&family);
+                // fetched now, not at the first layout that names it: a component measures its text in an effect
+                // (canvas measureText, svg text), which runs before that layout and would get the fallback
+                raea_sys_fonts::google::load_now(&family);
                 Ok(json!({ "family": family }))
             }
             "fonts.atlases" => font_atlases(v),
@@ -187,12 +211,14 @@ pub fn call(name: &str, v: &Value) -> R<Value> {
 pub fn register() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        raea_runtime_wear::register(raea_runtime_wear::Place { dir: composition_dir, media: raea_core_scene::media_path });
         const BOUNDS: &str = "{ min: [number, number, number]; max: [number, number, number] }";
         const SOLID: &str = "{ id: number; expr: string }";
         const SECTION: &str = "{ polygons: [number, number][][]; area: number; contours: number; bounds: { min: [number, number]; max: [number, number] } }";
         let calls: &[(&str, &str, &str, &str)] = &[
             ("done", "{ code: number }", "null", "a headless run ends with this exit code"),
-            ("print", "{ text: string }", "null", "one line of a headless run's output"),
+            ("print", "{ text: string; err?: boolean }", "null", "one line of a headless run's output (err: for stderr, on a terminal)"),
+            ("blender.post", "{ sid: string; ops: unknown[] }", "{ r: Record<string, unknown>; n: number; err?: { i: number; type: string; msg: string; trace: string } }", "a batch of raea/blender's operations run by the Blender `raea blender run SCRIPT.ts` started (sdk/blender)"),
             ("solid.make", "{ fn: \"box\" | \"rounded_box\" | \"sphere\" | \"cylinder\" | \"cone\" | \"torus\" | \"text3d\"; args: (number | string)[] }", SOLID, "a Manifold solid from a primitive"),
             ("solid.expr", "{ expr: string }", SOLID, "a Manifold solid from an expression (raea-render's mesh shape language)"),
             ("solid.combine", "{ fn: \"union\" | \"minus\" | \"intersect\" | \"hull\"; ids: number[] }", SOLID, "a boolean or hull of solids"),
@@ -213,6 +239,12 @@ pub fn register() {
             ("section.op", "{ fn: \"make\" | \"circle\" | \"square\" | \"hull_points\" | \"union\" | \"minus\" | \"intersect\" | \"hull\" | \"minkowski\" | \"offset\" | \"simplify\" | \"translate\" | \"rotate\" | \"scale\" | \"mirror\" | \"decompose\"; polygons?: [number, number][][]; others?: [number, number][][][]; args?: number[] }", &format!("{SECTION} | {SECTION}[]"), "a 2D cross-section made, combined, offset or moved (Manifold's CrossSection), held by value"),
             ("solid.free", "{ id: number }", "null", "drop a solid"),
             ("place.solve", "{ objects: { id: string; size: [number, number, number]; at?: [number, number, number]; yaw?: number; fixed?: boolean }[]; rules: Record<string, string | number>[]; room?: { min: [number, number]; max: [number, number] } }", "{ objects: { id: string; at: [number, number, number]; yaw: number; size: [number, number, number] }[]; found: { part: string; check: string; level: string; says: string }[]; errors: number }", "boxes placed by relations (on, against, beside, near, apart, facing, align, clear), what can't hold found"),
+            ("character.take", raea_sys_grab::TAKE_ARGS, raea_sys_grab::TAKE_ANSWER, "a frame of a character taking a thing with its hands (reach, grab, lift, carry, put down or throw): the pose to draw and where the thing is, with how far a wrist missed (metres) and how far the body was turned from its own motion (degrees)"),
+            ("character.fit", raea_sys_grab::FIT_ARGS, raea_sys_grab::FIT_ANSWER, "a pose fitted to points of the body seen somewhere (joints or marks on them, from a capture, a tracker or another rig), and their root-mean-square miss, metres"),
+            ("character.hand", raea_sys_grab::HAND_ARGS, raea_sys_grab::HAND_ANSWER, "a hand shaped by a few numbers of a model of real hand poses (none: the average relaxed hand; the first opens it, positive, and closes it), on a pose; and that hand read back: its numbers and how odd it is (0: the average hand)"),
+            ("character.soma", raea_sys_grab::SOMA_ARGS, raea_sys_grab::SOMA_ANSWER, "the pose that has a body's bones pointing as a SOMA body's do (SOMA: the 78-joint skeleton of NVIDIA's motion models and datasets), from SOMA's joint names and where each joint is"),
+            ("character.turns", raea_sys_grab::TURNS_ARGS, raea_sys_grab::TURNS_ANSWER, "a SOMA body's pose from a motion given as turns (each named joint's world turn from SOMA's T-pose, as Kimodo writes them, and where the hips are), with the body's twist joints set"),
+            ("character.twists", raea_sys_grab::TWISTS_ARGS, raea_sys_grab::TURNS_ANSWER, "a SOMA body's pose with its twist joints set from its limbs' turns: for a pose from a clip or a solver, which turn the named joints only"),
             ("fonts.families", "{}", "string[]", "the system's font families by name, sorted, as fontique (bevy_text's FontCx) lists them"),
             ("fonts.google", "{ family: string }", "{ family: string }", "a Google Fonts family the page loads (its Latin faces, every weight and style, fetched once through raea's URL cache), as a stylesheet link loads it in Chrome (raea/text loadFont)"),
             ("fonts.atlases", "{ font: string; size: number; text: string }", "{ width: number; height: number; src: string }[]", "bevy_text's glyph atlases for a text in a font file at a size px, each page a PNG data: URL, as Bevy's FontAtlasSet holds them"),
@@ -267,6 +299,12 @@ pub fn register() {
                 },
             );
         }
+        // the run's stat channels, and its timings and counters so far, from TypeScript (docs/nobuild.feature NB2a)
+        raea_native::register("stats.on", "{ channels: string[] }", "{ chosen: string[] }", "stat channels on for the rest of the run: a RAEA_ variable's name without RAEA_, in lower case (bevy_passes, bake_trace), or all; at a composition's top level, before the Engine opens (docs/nobuild.feature NB2a)", |v| {
+            raea_io_trace::choose_stats(&v["channels"].as_array().into_iter().flatten().filter_map(|n| n.as_str().map(str::to_string)).collect::<Vec<_>>());
+            Ok(json!({"chosen": raea_io_trace::chosen_stats()}))
+        });
+        raea_native::register("stats.read", "{}", "{ chosen: string[]; passes: Record<string, { n: number; mean_ms: number; max_ms: number }>; counters: Record<string, number> }", "the run so far: its stat channels, each timed pass's runs and mean and worst ms, each counter (docs/nobuild.feature NB2a)", |_| Ok(raea_io_trace::stats()));
         // an asset loaded now, before the frame that names it uses it, as the Engine loads a handle's (S2b useAsset)
         raea_native::register("asset.load", "{ path: string }", "{ path: string; bytes: number; width?: number; height?: number }", "an asset by its path (absolute, or from the edit's folder), loaded now: the file found and read, a picture's size; an error when it isn't there (S2b useAsset)", |v| {
             let p = s(v, "path")?;

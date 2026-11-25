@@ -17,8 +17,8 @@ import { Audio, Mix } from "raea/audio";
 function Soundtrack() {
   return (
     <Mix lufs={-14} ceiling={-1}>
-      <Audio src={staticFile("media/voice.wav")} bus="voice" />
-      <Audio src={staticFile("media/bed.m4a")} bus="music" gainDb={-12} fadeOut={1.5} />
+      <Audio src={staticFile("voice.wav")} bus="voice" />
+      <Audio src={staticFile("rain.m4a")} bus="ambience" gainDb={-18} fadeOut={1.5} />
     </Mix>
   );
 }
@@ -40,7 +40,7 @@ Sound in step with the frame; no picture. A muted or ended Audio is silent.
 
 | Prop | Type | What it does |
 | --- | --- | --- |
-| `src` (required) | `string \| GeneratedAsset` | a file URL, or a generated asset from lyria() or sao() |
+| `src` (required) | `string \| GeneratedAsset` | a file URL (staticFile), or a generated sound from sao() |
 
 Also takes the props of [`MediaProps`](video.md#mediaprops).
 

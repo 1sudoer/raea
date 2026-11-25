@@ -380,7 +380,7 @@ fn sweep(r: &mut Registry) {
 /// The model at `file` with `options`: the session already loaded for them, or a new one. Each load is held until
 /// its `release`; a model nobody holds is freed after the idle limit.
 pub fn load(file: &Path, options: &Options) -> anyhow::Result<Arc<Model>> {
-    let file = file.canonicalize().with_context(|| format!("{}: no such model", file.display()))?;
+    let file = dunce::canonicalize(&file).with_context(|| format!("{}: no such model", file.display()))?;
     let key = (file.clone(), options.clone());
     {
         let mut r = registry().lock().unwrap();

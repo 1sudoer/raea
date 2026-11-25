@@ -50,14 +50,29 @@ pub fn enabled() -> bool {
     every() || !WANTED.lock().unwrap().is_empty()
 }
 
-/// Gives `doc` the faces of each family its elements name that it has none of and Google Fonts has; true when one
-/// was given (its text is laid out again).
+/// Gives `doc` the faces of each family its elements name that it has none of and Google Fonts has, and once each
+/// family raea/text's loadFont asked for even where raea bundles faces of that name (as a linked stylesheet's
+/// @font-face shadows a local font in Chrome: raea's static Inter 400 and 700 drew loadFont's Inter 500 as 400 and 600
+/// as 700); true when one was given (its text is laid out again).
 pub fn load_missing(doc: &mut BaseDocument) -> bool {
-    let mut loaded = false;
-    for family in doc.missing_font_families() {
-        if !wanted(&family) {
-            continue;
+    // (document, family) each asked-for family went to
+    static GIVEN: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    let mut families = doc.missing_font_families();
+    families.retain(|f| wanted(f));
+    {
+        let mut given = GIVEN.lock().unwrap();
+        for family in WANTED.lock().unwrap().iter() {
+            let key = (doc.id(), family.to_lowercase());
+            if !given.contains(&key) {
+                given.push(key);
+                if !families.iter().any(|f| f.eq_ignore_ascii_case(family)) {
+                    families.push(family.clone());
+                }
+            }
         }
+    }
+    let mut loaded = false;
+    for family in families {
         let faces = FAMILIES.lock().unwrap().get_or_insert_default().get(&family).cloned();
         let faces = faces.unwrap_or_else(|| {
             let found = Arc::new(fetch(&family));
@@ -69,8 +84,42 @@ pub fn load_missing(doc: &mut BaseDocument) -> bool {
             doc.load_resource(ResourceLoadResponse { request_id: usize::MAX, node_id: None, resolved_url: None, result: Ok(Resource::Font(ttf.clone(), overrides)) });
             loaded = true;
         }
+        // a canvas's measureText and svg text find a family the page has, as Chrome's do (snapcn's word-gather, whose
+        // Figtree the page loaded first, measured its words in the fallback)
+        to_svg(&family, &faces);
     }
     loaded
+}
+
+/// Gives usvg's font database (a canvas's and svg text's) each of `family`'s faces once, each at the weight and style
+/// its @font-face gives it (one variable file is every weight of a family).
+fn to_svg(family: &str, faces: &Faces) {
+    static GIVEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut given = GIVEN.lock().unwrap();
+    if faces.is_empty() || given.iter().any(|f| f == family) {
+        return;
+    }
+    for (ttf, weight, italic) in faces.iter() {
+        blitz_dom::util::add_svg_font(ttf.to_vec(), Some(family), Some((*weight as u16, *italic)));
+    }
+    given.push(family.to_string());
+}
+
+/// The family's faces for a canvas and SVG text now (document.fonts.load, layout-reads LR7): a family the composition
+/// asked for, fetched as load_missing would and given to usvg's font database at once, where the page would only
+/// fetch it once an element names it. How many faces it has; 0 for one not asked for or not on Google Fonts.
+pub fn load_now(family: &str) -> usize {
+    if !wanted(family) {
+        return 0;
+    }
+    let faces = {
+        let mut known = FAMILIES.lock().unwrap();
+        let known = known.get_or_insert_default();
+        // one the page fetched first (load_missing) is in the cache but may not be in usvg's database yet
+        known.entry(family.to_string()).or_insert_with(|| Arc::new(fetch(family))).clone()
+    };
+    to_svg(family, &faces);
+    faces.len()
 }
 
 /// A family's Latin faces from Google Fonts, or none
@@ -98,4 +147,21 @@ fn fetch(family: &str) -> Vec<(Bytes, f32, bool)> {
         .collect();
     bevy::log::info!("raea-page: Google Fonts {family:?}, {} faces", faces.len());
     faces
+}
+
+/// A face a composition loads by URL (`new FontFace(family, "url(…)")`, docs/layout-reads.feature LR7), fetched now
+/// through raea's cache and given to a canvas's and an svg's text as `family`; woff2 is unpacked, TrueType and OpenType
+/// are taken as they are. How many faces that gave (0 when it doesn't load). A URL already loaded is not fetched again.
+pub fn face_now(family: &str, url: &str) -> usize {
+    static LOADED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    let key = (family.to_string(), url.to_string());
+    if LOADED.lock().unwrap().contains(&key) {
+        return 1;
+    }
+    let Ok(bytes) = raea_io_net::cache::read(url) else { return 0 };
+    let ttf = if bytes.starts_with(b"wOF2") { wuff::decompress_woff2(&bytes).ok() } else { Some(bytes) };
+    let Some(ttf) = ttf else { return 0 };
+    blitz_dom::util::add_svg_font(ttf, Some(family), None);
+    LOADED.lock().unwrap().push(key);
+    1
 }

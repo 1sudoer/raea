@@ -24,7 +24,9 @@ impl Quick {
         // React's commit recurses through the tree; give it room (the host runs on the main thread's 8 MB stack)
         rt.set_max_stack_size(4 << 20);
         let ctx = Context::full(&rt).map_err(|e| e.to_string())?;
-        Ok(Quick { rt, ctx })
+        let mut q = Quick { rt, ctx };
+        intl(&mut q)?;
+        Ok(q)
     }
 
     /// The promise jobs queued, run until none is left (one that throws is logged, as an unhandled rejection is).
@@ -40,6 +42,35 @@ impl Quick {
             }
         }
     }
+}
+
+/// FormatJS's Intl polyfills and their CLDR data (js/intl/build.ts): "core", "index" and one entry per locale, each
+/// raw deflate. QuickJS has no Intl; JavaScriptCore has, so this is QuickJS's alone.
+const INTL_PACK: &[u8] = include_bytes!("../js/intl.pack");
+
+/// An entry of the Intl pack, inflated: its source (or the index's JSON), None when there's no such entry.
+pub(crate) fn intl_chunk(name: &str) -> Option<String> {
+    let mut at = 0;
+    while at + 2 <= INTL_PACK.len() {
+        let n = u16::from_le_bytes([INTL_PACK[at], INTL_PACK[at + 1]]) as usize;
+        let key = INTL_PACK.get(at + 2..at + 2 + n)?;
+        let len = u32::from_le_bytes(INTL_PACK.get(at + 2 + n..at + 6 + n)?.try_into().ok()?) as usize;
+        let body = INTL_PACK.get(at + 6 + n..at + 6 + n + len)?;
+        if key == name.as_bytes() {
+            return String::from_utf8(miniz_oxide::inflate::decompress_to_vec(body).ok()?).ok();
+        }
+        at += 6 + n + len;
+    }
+    None
+}
+
+/// Intl in the context, the first time it's used (js/intl/loader.js): the pack's chunks through a native, and the
+/// system's time zone as the date polyfill's default (JavaScriptCore formats dates in local time; TZ first, as there).
+fn intl(q: &mut Quick) -> Result<(), String> {
+    q.native("__raea_intl_chunk", Box::new(|a| intl_chunk(crate::arg(a, 0)).map(Ret::Str).ok_or_else(|| format!("no Intl data {:?}", crate::arg(a, 0)))))?;
+    let zone = std::env::var("TZ").ok().filter(|z| z.contains('/')).or_else(|| iana_time_zone::get_timezone().ok()).unwrap_or_default();
+    q.ctx.with(|ctx| ctx.globals().set("__raea_intl_zone", zone)).map_err(|e| e.to_string())?;
+    q.eval(include_str!("../js/intl/loader.js"), "intl-loader.js")
 }
 
 /// Imports name their modules by URL already (the host rewrote them); one relative to its importer is joined to its folder.
@@ -157,5 +188,13 @@ impl JsEngine for Quick {
 
     fn collect(&mut self) {
         self.rt.run_gc();
+    }
+
+    fn heap(&mut self) -> Option<String> {
+        let m = self.rt.memory_usage();
+        Some(format!(
+            r#"{{"mallocSize":{},"memoryUsed":{},"objectCount":{},"objectSize":{},"propertyCount":{},"stringCount":{},"stringSize":{},"arrayCount":{},"functionCount":{},"shapeCount":{},"binaryObjectCount":{},"binaryObjectSize":{}}}"#,
+            m.malloc_size, m.memory_used_size, m.obj_count, m.obj_size, m.prop_count, m.str_count, m.str_size, m.array_count, m.js_func_count, m.shape_count, m.binary_object_count, m.binary_object_size
+        ))
     }
 }

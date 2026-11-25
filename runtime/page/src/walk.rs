@@ -268,3 +268,18 @@ pub fn share_texture(id: u64, t: wgpu::Texture, w: u32, h: u32) {
 pub(crate) fn undrawn(kind: &str) -> bool {
     matches!(kind, "mesh" | "light" | "camera" | "text3d" | "surface" | "#root" | "audio" | "script")
 }
+
+/// Where the page's outermost Sequences start this frame (each box's data-raea-start; none inside another, none in a
+/// 3D part): the shots its timeline knows, for a render that splits its video at them (raea-runtime-segments).
+pub fn shot_starts(react: &mut World) -> Vec<i64> {
+    let (mut out, mut stack) = (Vec::new(), raea_runtime_react::scene::surface(react).into_iter().collect::<Vec<_>>());
+    while let Some(e) = stack.pop() {
+        let props = react.get::<ReactProps>(e).map(|p| &p.0);
+        match props.and_then(|p| p.get("data-raea-start")).and_then(Value::as_f64) {
+            Some(s) => out.push(s as i64),
+            None if props.is_some_and(|p| p.contains_key("data-3d")) => {}
+            None => stack.extend(react.get::<Children>(e).into_iter().flat_map(|k| k.iter())),
+        }
+    }
+    out
+}

@@ -7,6 +7,7 @@ publish = false
 description = "Made assets: a composition's make(model, prompt, seed, params) kept once under its content hash, from the local models (SAO, TokenSynth, splats, matchmove)"
 
 [dependencies]
+dunce = "1"
 raea-io-home = { path = "../home" }
 serde_json = "1"
 sha2 = "0.10"

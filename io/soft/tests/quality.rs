@@ -75,3 +75,44 @@ fn a_quantiser_below_openh264s_floor_is_its_floor() {
     // openh264 refuses a pinned QP under 14 with rate control on (Native:3); asked for less, it gets 14
     assert!(gop(4) == gop(14));
 }
+
+/// A dim glow drifting over near-black, frame `k` of a slow move: the flat darks of a night scene, which openh264's
+/// background detection took for still ground and copied forward from earlier frames (#169, "the encoder starved the
+/// near-blacks" at --quality master on Windows)
+fn glow(w: u32, h: u32, k: u32) -> Vec<u8> {
+    let (cx, cy, r) = (w as f32 * (0.3 + k as f32 * 0.004), h as f32 * 0.45, w as f32 * 0.8);
+    (0..w * h).flat_map(|i| {
+        let (dx, dy) = ((i % w) as f32 - cx, (i / w) as f32 - cy);
+        let v = (2.0 + 36.0 * (1.0 - (dx * dx + dy * dy).sqrt() / r).max(0.0).powi(2)).round() as u8;
+        [v, v, v, 255]
+    }).collect()
+}
+
+/// The share of 8x8 blocks whose mean red is more than a level off between two RGBA pictures
+fn blocks_off(a: &[u8], b: &[u8], w: u32, h: u32) -> f64 {
+    let (bw, bh) = (w as usize / 8, h as usize / 8);
+    let mean = |p: &[u8], bx: usize, by: usize| (0..64).map(|k| p[((by * 8 + k / 8) * w as usize + bx * 8 + k % 8) * 4] as f32).sum::<f32>() / 64.0;
+    let off = (0..bw * bh).filter(|i| (mean(a, i % bw, i / bw) - mean(b, i % bw, i / bw)).abs() > 1.0).count();
+    off as f64 / (bw * bh) as f64
+}
+
+#[test]
+fn a_dark_glow_drifting_keeps_every_block_at_master() {
+    use raea_io_codec::Backend;
+    let (w, h, n) = (640, 360, 45);
+    let o = EncodeOpts { width: w, height: h, fps: 30.0, kbps: 10_000, quality: Some(0.95), nv12: false, realtime: false };
+    let out = std::env::temp_dir().join(format!("raea-soft-darks-{}.mp4", std::process::id()));
+    let mut enc = h264_encoder(&out, &o, None).unwrap();
+    for k in 0..n {
+        enc.push(&glow(w, h, k)).unwrap();
+    }
+    enc.finish(None).unwrap();
+    let mut dec = raea_io_soft::Soft.open_video(&out).unwrap();
+    let last = dec.frame_at((n - 1) as f64 / 30.0).unwrap();
+    let _ = std::fs::remove_file(&out);
+    let off = blocks_off(&last.rgba, &glow(w, h, n - 1), w, h);
+    eprintln!("blocks off by more than a level: {:.2}%", off * 100.0);
+    // with background detection on, the ground lagged the glow: blocks stood where earlier frames had left them, 5.3% of
+    // them more than a level off by frame 44; without it 1.6% (the rest is the quantiser's)
+    assert!(off < 0.03, "{:.1}% of 8x8 blocks more than a level off the picture at frame {}", off * 100.0, n - 1);
+}

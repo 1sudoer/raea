@@ -8,6 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod values;
+pub use values::values_only;
+
 use oxc::allocator::Allocator;
 use oxc::ast::ast::*;
 use oxc::ast_visit::{Visit, walk};

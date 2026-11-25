@@ -1,8 +1,10 @@
 // Materials: surfaces drawn on, standard and physical materials, toon bands and outlines.
 import { toHex } from "../colour";
 import { checkOverlays, type GridOverlay, type PaintOverlay, type ProceduralSurface, type WearOverlay } from "../overlays";
+import { wornShader } from "../worn";
 import { useAnimation3d } from "@raea/math/animate";
 import { Animate3d, apply3d, node3d } from "./all";
+import { firstKey, useSequenceFrames } from "./clock";
 
 /** How a surface's alpha and faces draw (Bevy's StandardMaterial alpha_mode, alpha cutoff, double_sided and cull_mode),
  * from the first frame. */
@@ -60,7 +62,8 @@ export interface MeshStandardMaterialProps extends SurfaceDrawProps {
   grid?: GridOverlay;
   /** under a paint look, the surface broken up by noise: PaintOverlay, overlays.ts */
   paint?: PaintOverlay;
-  /** a worn surface, fixed on the part as it moves (systems/wear): WearOverlay, overlays.ts */
+  /** a worn surface, fixed on the part as it moves (worn.ts, a surface shader; not with `shader` or `grid`):
+   *  WearOverlay, overlays.ts */
   wear?: WearOverlay;
   /** a pattern made on the GPU with dust, dirt and worn edges (systems/procmat): ProceduralSurface, overlays.ts */
   procedural?: ProceduralSurface;
@@ -301,6 +304,14 @@ export function checkMaterial(owner: string, props: Record<string, unknown>): vo
     const v = props[k];
     if (v !== undefined && !(k === "map" && v === null) && !(typeof v === "string" && v !== "")) throw new TypeError(`${owner}: ${k} must be a picture's path (staticFile("floor_diff.jpg")) or a data: URL, got ${JSON.stringify(v)}`);
   }
+  // `wear` is a surface shader of raea's own (worn.ts, docs/examples.feature EX9); none at amount 0
+  if (props.wear !== undefined) {
+    if (props.shader !== undefined) throw new TypeError(`${owner}: wear is a surface shader of its own; give wear or shader, not both`);
+    if (props.grid !== undefined) throw new TypeError(`${owner}: grid draws alone; give grid or wear, not both`);
+    const w = props.wear as WearOverlay;
+    delete props.wear;
+    if (w.amount > 0) props.shader = wornShader(w);
+  }
   if (props.shader !== undefined) props.shader = surfaceShader(owner, props.shader as SurfaceShaderSpec);
   if (props.sampler !== undefined) samplerSpec(owner, props.sampler as SamplerSpec);
   if (props.samplers !== undefined) {
@@ -318,10 +329,11 @@ export function checkMaterial(owner: string, props: Record<string, unknown>): vo
 
 /** A physically based surface for the Mesh it's inside.
  * `grid` draws graph paper over it (engine/render grid.rs):
- * `wear` chips, grimes and rusts it in the part's own space (systems/wear):
+ * `wear` chips, grimes and rusts it in the part's own space (worn.ts):
  * @deprecated <StandardMaterial>, raea/pbr (Bevy's fields: base_color, perceptual_roughness, metallic)
  */
 export function MeshStandardMaterial(props: MeshStandardMaterialProps) {
+  useSequenceFrames("MeshStandardMaterial", undefined, [["animate's first key", firstKey(props.animate)]]);
   const anim = useAnimation3d(props.animate);
   const p = apply3d({ ...props, animate: undefined } as Record<string, unknown>, anim.values);
   checkMaterial("MeshStandardMaterial", p);
@@ -346,6 +358,7 @@ export interface MeshPhysicalMaterialProps extends MeshStandardMaterialProps {
 /** The standard surface plus a clearcoat layer and reflectance.
  * @deprecated <StandardMaterial>, raea/pbr (clearcoat and specular_transmission are its fields) */
 export function MeshPhysicalMaterial(props: MeshPhysicalMaterialProps) {
+  useSequenceFrames("MeshPhysicalMaterial", undefined, [["animate's first key", firstKey(props.animate)]]);
   const anim = useAnimation3d(props.animate);
   const p = apply3d({ ...props, animate: undefined } as Record<string, unknown>, anim.values);
   checkMaterial("MeshPhysicalMaterial", p);
@@ -439,6 +452,7 @@ export interface MeshToonMaterialProps {
  * @deprecated <ToonMaterial>, raea/pbr */
 export function MeshToonMaterial(props: MeshToonMaterialProps) {
   const owner = "MeshToonMaterial";
+  useSequenceFrames("MeshToonMaterial", undefined, [["animate's first key", firstKey(props.animate)]]);
   const anim = useAnimation3d(props.animate);
   const p = apply3d({ ...props, animate: undefined } as Record<string, unknown>, anim.values);
   checkMaterial(owner, p);

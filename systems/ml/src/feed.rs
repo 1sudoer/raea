@@ -34,7 +34,7 @@ pub fn cache() -> PathBuf {
 }
 
 fn user() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    raea_io_home::user_home().unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn made(dir: PathBuf) -> PathBuf {

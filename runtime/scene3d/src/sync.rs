@@ -1,41 +1,47 @@
 use super::*;
 
-/// A panel whose picture changes over the run (an ImagePlane playing frames): every picture it shows, and the one its
-/// texture holds now. Its row keys `src_k`, which of them a frame shows.
+/// A panel whose picture changes over the run (an ImagePlane playing frames, or swapping its src): a render's lists
+/// every picture it shows (`paths`; its row keys `src_k`, which one a frame shows); a live scene's has the `src` it shows
+/// and its folder (`live`), and a live frame's row sends another src when it changes (raea-runtime-scene live.rs).
 #[derive(Component)]
 pub struct Pictures {
     pub paths: Vec<PathBuf>,
     pub shown: usize,
+    pub live: Option<(String, PathBuf)>,
 }
 
-/// Each changing panel's picture for this frame: read and uploaded when `src_k` moves to another (the one it held is
-/// dropped with its handle, so a played sequence holds one picture at a time).
-pub fn sync_pictures(
-    frame: Res<FrameRows>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    mut q: Query<(Entity, &mut Pictures, &MeshMaterial3d<StandardMaterial>)>,
-) {
-    for (e, mut pics, mat) in &mut q {
+/// Each changing panel's picture for this frame: read and uploaded when `src_k` moves to another or a live row's `src`
+/// names another (the one it held is dropped with its handle, so a played sequence holds one picture at a time). A card
+/// whose height follows its picture (no `h`) takes the new one's shape: one cell of its sheet.
+pub fn sync_pictures(frame: Res<FrameRows>, edit: Option<Res<Edit>>, mut mats: ResMut<Assets<StandardMaterial>>, mut images: ResMut<Assets<Image>>, mut meshes: ResMut<Assets<Mesh>>, mut q: Query<(Entity, &mut Pictures, &MeshMaterial3d<StandardMaterial>, &mut Mesh3d)>) {
+    let media = edit.as_ref().map_or(&[][..], |e| &e.media[..]);
+    for (e, mut pics, mat, mut mesh) in &mut q {
         let Some(v) = frame.vals(e) else { continue };
         let k = num(&v, "src_k", pics.shown as f32).round().max(0.0) as usize;
-        if k == pics.shown {
-            continue;
-        }
-        let Some(path) = pics.paths.get(k) else { continue };
-        let src = path.to_string_lossy();
-        match super::panel_picture(&src, &[], Path::new("")) {
+        let (src, dir) = match (&pics.live, v.get("src")) {
+            (Some((shown, dir)), Some(V::S(s))) if s != shown => (s.clone(), dir.clone()),
+            (None, _) if k != pics.shown => match pics.paths.get(k) {
+                Some(p) => (p.to_string_lossy().to_string(), PathBuf::new()),
+                None => continue,
+            },
+            _ => continue,
+        };
+        match super::panel_picture(&src, media, &dir) {
             Ok(pic) => {
-                let tex = images.add(super::panel_image(pic));
+                let ((pw, ph), tex) = (pic.dimensions(), images.add(super::panel_image(pic)));
                 if let Some(mut m) = mats.get_mut(&mat.0) {
                     m.base_color_texture = Some(tex);
                 }
-                pics.shown = k;
+                if !v.contains_key("h") {
+                    let (c, r, w) = (num(&v, "sheet_cols", 1.0).max(1.0), num(&v, "sheet_rows", 1.0).max(1.0), num(&v, "w", 1.0));
+                    mesh.0 = meshes.add(Rectangle::new(w, w * (ph as f32 / r) / (pw.max(1) as f32 / c)));
+                }
             }
-            Err(err) => {
-                eprintln!("panel picture {src}: {err}");
-                pics.shown = k;
-            }
+            Err(err) => eprintln!("panel picture {src}: {err}"),
+        }
+        pics.shown = k;
+        if let Some((shown, _)) = &mut pics.live {
+            *shown = src;
         }
     }
 }
@@ -199,8 +205,8 @@ pub fn sync_meshes(
 /// once, and a row that moves (or moves back) writes every frame it changes. An entity with no entry always writes,
 /// so a render seeking straight to frame N places its camera.
 #[allow(clippy::type_complexity)]
-pub fn sync_camera(frame: Res<FrameRows>, edit: Option<Res<Edit>>, mut placed: Local<bevy::platform::collections::HashMap<Entity, (Vec3, Vec3, Option<Quat>)>>, mut q: Query<(Entity, &mut Transform, Option<&mut Projection>, Option<&mut AmbientLight>, Option<&mut bevy::post_process::dof::DepthOfField>, Option<&mut super::lens::Lens>, Option<&mut bevy::post_process::effect_stack::ChromaticAberration>, Option<&mut Camera>), (With<Camera3d>, Without<super::BareEntity>)>) {
-    for (e, mut t, proj, amb, dof, lens, ab, cam) in &mut q {
+pub fn sync_camera(frame: Res<FrameRows>, edit: Option<Res<Edit>>, mut placed: Local<bevy::platform::collections::HashMap<Entity, (Vec3, Vec3, Option<Quat>)>>, mut shown: Local<bevy::platform::collections::HashMap<Entity, bool>>, mut q: Query<(Entity, &mut Transform, Option<&mut Projection>, Option<&mut AmbientLight>, Option<&mut bevy::post_process::dof::DepthOfField>, Option<&mut super::lens::Lens>, Option<&mut bevy::post_process::effect_stack::ChromaticAberration>, Option<&mut Camera>), (With<Camera3d>, Without<super::BareEntity>)>) {
+    for (e, mut t, proj, amb, dof, lens, ab, mut cam) in &mut q {
         let Some(v) = frame.vals(e) else { continue };
         let v = &v;
         let pos = Vec3::new(num(v, "x", 0.0), num(v, "y", 2.0), num(v, "z", 9.0));
@@ -280,6 +286,14 @@ pub fn sync_camera(frame: Res<FrameRows>, edit: Option<Res<Edit>>, mut placed: L
                 a.brightness = b.num() as f32;
             }
         }
+        // a camera into an image drawn only on its frames (`on`, keyed: raea-runtime-look's rendercam.rs), written when
+        // the row changes it, so a load's views::off (#48) keeps it off until views::on as it does the rest
+        if let (Some(on), Some(c)) = (v.get("on").map(|o| o.num() > 0.5), cam.as_mut()) {
+            let was = shown.insert(e, on);
+            if was.map_or(!on, |w| w != on) && c.is_active != on {
+                c.is_active = on;
+            }
+        }
         // a clear keyed frame by frame (bg_r..bg_a, sRGB: a holder's background that changes, runtime/export program.rs)
         if let (Some(r), Some(mut c)) = (v.get("bg_r"), cam) {
             let want = Color::srgba(r.num() as f32, num(v, "bg_g", 0.0), num(v, "bg_b", 0.0), num(v, "bg_a", 1.0));
@@ -292,13 +306,13 @@ pub fn sync_camera(frame: Res<FrameRows>, edit: Option<Res<Edit>>, mut placed: L
 
 /// Lights where the frame's rows put them, as bright as they say.
 #[allow(clippy::type_complexity)]
-pub fn sync_lights(frame: Res<FrameRows>, mut commands: Commands, mut q: Query<(Entity, &mut Transform, Option<&mut DirectionalLight>, Option<&mut PointLight>, Option<&mut SpotLight>, Option<&CastsShadows>, Option<&mut bevy::light::RectLight>, Has<StillSynced>)>) {
+pub fn sync_lights(frame: Res<FrameRows>, mut commands: Commands, mut q: Query<(Entity, &mut Transform, Option<&mut DirectionalLight>, Option<&mut PointLight>, Option<&mut SpotLight>, Option<&CastsShadows>, Option<&mut bevy::light::RectLight>, Has<StillSynced>, Option<&mut bevy::light::CascadeShadowConfig>)>) {
     // a dark light (a frame it isn't in: its power is 0) has its shadow maps off, so no shadow pass is drawn for it. Lit or dark,
     // every light stays shown: hiding the dark ones (so Bevy doesn't extract them) put the lit volumetric spots' shafts
     // out, as Bevy 0.19's prepare_lights indexes its spot lights past a count of point lights that the hidden ones
     // threw off. Dark with its maps on, a film's every shadow-casting light drew them on every frame of every scene
     // (the rome film: 20 lights, 4096-texel maps; 2026-10-20)
-    for (e, mut t, d, p, s, casts, rect, synced) in &mut q {
+    for (e, mut t, d, p, s, casts, rect, synced, config) in &mut q {
         if d.is_none() && p.is_none() && s.is_none() && rect.is_none() {
             continue;
         }
@@ -338,6 +352,11 @@ pub fn sync_lights(frame: Res<FrameRows>, mut commands: Commands, mut q: Query<(
             if d.shadow_maps_enabled != sh {
                 d.shadow_maps_enabled = sh;
             }
+            // the frame's <Shadows>: its cascades and biases (RR1)
+            let (mut b, mut nb) = (d.shadow_depth_bias, d.shadow_normal_bias);
+            if biases(v, &mut b, &mut nb) { (d.shadow_depth_bias, d.shadow_normal_bias) = (b, nb); }
+            let c = cascades(v);
+            if let Some(mut was) = config.filter(|was| was.bounds != c.bounds || was.overlap_proportion != c.overlap_proportion) { *was = c; }
         }
         if let Some(mut p) = p {
             let lm = num(v, "lumens", 1.0e6);
@@ -348,6 +367,8 @@ pub fn sync_lights(frame: Res<FrameRows>, mut commands: Commands, mut q: Query<(
             if p.shadow_maps_enabled != sh {
                 p.shadow_maps_enabled = sh;
             }
+            let (mut b, mut nb) = (p.shadow_depth_bias, p.shadow_normal_bias);
+            if biases(v, &mut b, &mut nb) { (p.shadow_depth_bias, p.shadow_normal_bias) = (b, nb); }
         }
         if let Some(mut r) = rect {
             let lm = num(v, "lumens", 1.0e6);
@@ -368,6 +389,8 @@ pub fn sync_lights(frame: Res<FrameRows>, mut commands: Commands, mut q: Query<(
             if s.shadow_maps_enabled != sh {
                 s.shadow_maps_enabled = sh;
             }
+            let (mut b, mut nb) = (s.shadow_depth_bias, s.shadow_normal_bias);
+            if biases(v, &mut b, &mut nb) { (s.shadow_depth_bias, s.shadow_normal_bias) = (b, nb); }
         }
     }
 }

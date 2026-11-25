@@ -6,7 +6,7 @@ import { SKIN_LOOK, SKIN_SURFACE, SKIN_WESL, type SkinLook, type SkinSurface } f
 import { ExtendedMaterial, LinearRgba, ShaderExtension, Srgba, StandardMaterial } from "@raea/render/bevy3d";
 import type { Glitch } from "@raea/physics/physics";
 import { staticFile } from "@raea/video/media";
-import { Goals, Pose, Side, Skeleton, add, eulerXYZ, faceWeights, pose, qmul, qrot, qyaw, rest, scale3, skinJoints, solve, sub, type Face } from "./all";
+import { Goals, Pose, Side, Skeleton, add, eulerXYZ, eyesTo, faceWeights, lidsFor, pose, qmul, qrot, qyaw, rest, scale3, skinJoints, solve, sub, type Face, type Quat } from "./all";
 
 // ---------------------------------------------------------------- placement
 
@@ -26,6 +26,19 @@ export function toBody(at: Placement, p: Vec3): Vec3 {
 /** A point of the body's frame in the scene. */
 export function toScene(at: Placement, p: Vec3): Vec3 {
   return add(at.position ?? [0, 0, 0], qrot(qyaw(at.yaw ?? 0), scale3(p, at.scale ?? 1)));
+}
+
+/**
+ * Where something carried on a joint goes as the body is posed (a slung rifle on RightShoulder, a lantern in a hand):
+ * `at` and `turn` place the thing against the joint as the body stands at rest (metres in the body's frame, which faces
+ * +z with its right at -x, and the thing's turn), and the joint's turn from rest carries both, as a cap rides Head. The
+ * result is a <Model>'s `position` and `rotation` in the scene, and the quaternion.
+ */
+export function onJoint(skel: Skeleton, p: Pose, joint: string, at: Vec3, turn: Quat = [0, 0, 0, 1], placement: Placement = {}): { position: Vec3; rotation: Vec3; quat: Quat } {
+  const j = skinJoints(skel, pose(skel, p)).find((q) => q.name === joint);
+  if (!j) throw new Error(`onJoint: ${skel.name} has no joint ${joint}`);
+  const q = qmul(qyaw(placement.yaw ?? 0), qmul(j.rot, turn));
+  return { position: toScene(placement, add(j.pos, qrot(j.rot, at))), rotation: eulerXYZ(q), quat: q };
 }
 
 /** Goals in the scene's coordinates brought into the body's frame (directions turned, points moved and turned). */
@@ -81,6 +94,11 @@ export interface CharacterProps extends Placement {
    * "mouth-open", "eyebrows-left-up" ...) and presets mixed from them (FACE_PRESETS: blink, smile, frown, surprise,
    * sad, and the lips' open, pucker and wide), 0 to 1; they add */
   face?: Face;
+  /** a point in the scene the eyes turn to (character/eyes.ts): each eye joint turned to it on top of the pose, no
+   * further than an eye goes (35 degrees to a side, 17 up, 25 down), so the eyes cover what the head has not turned.
+   * For a body whose head has eye joints (SOMA's LeftEye and RightEye, which a generated head's eyes follow); a part
+   * that has those joints has its upper lids ride the eyes down (its blink_left and blink_right morphs raised) */
+  gaze?: Vec3;
   /** the hair drawn as hair (character/hair.ts: strand highlights on the body's "hair" material, after lighting): on by
    * default, false for the plain surface, or settings over HAIR_LOOK; `coverage: true` softens the cards' cut edges
    * (alphaMode "coverage", for a scene with <AntiAliasing mode="msaa">: without MSAA the cards draw solid); `color`
@@ -108,10 +126,17 @@ export interface CharacterProps extends Placement {
 export interface CharacterPart {
   /** its .glb */
   src: string;
+  /** the body's joints its glTF has, when it has only some of them (a head: the neck, the head and the eyes); all of
+   * the body's by default, and the engine refuses a part that lacks one it is given */
+  joints?: string[];
   /** its morph targets' weights by name (a kit part carries the body's weight-*, age-* and, for hair, face-*) */
   morphs?: Record<string, number>;
   /** its cloth: a baked simulation of its vertices in its bind pose and the frame drawn (<Model cloth>, docs/cloth.md) */
   cloth?: { src: string; frame: number };
+  /** its "skin" material's settings over the Character's `skin` (its maps and the fine relief's scale are its own: a
+   *  head's UVs aren't the body's), drawn when the Character's `skin` is on. A head part (one with eye joints) is drawn
+   *  as skin then without it, with the Character's settings and maps beside its own glb */
+  skin?: Exclude<CharacterProps["skin"], boolean | undefined>;
   /** <MeshStandardMaterial> re-covering its materials, as the body's children do */
   children?: ReactNode;
 }
@@ -139,6 +164,13 @@ function hairMaterial(h: CharacterProps["hair"]) {
   const base = <StandardMaterial material="hair" perceptual_roughness={1} reflectance={0.04} {...(color ? { base_color: color } : {})} {...(coverage ? { alpha_mode: "AlphaToCoverage" as const } : {})} />;
   return <ExtendedMaterial base={base} extension={<ShaderExtension wesl={HAIR_WESL} uniforms={{ ...HAIR_LOOK, ...look } as Record<string, number | number[]>} />} />;
 }
+
+/** A head's cornea drawn as one: the clear shell over the eye reflects light and adds no colour of its own. A hero's
+ *  head (sheet3d's gnm_headglb.py) has it as a white glTF material at alpha 0.08 under BLEND, which Bevy lights as it
+ *  does skin and lays 8% of over the eye: a grey film that hid chars/gb-sapper's brown irises in any real light (11-17;
+ *  chars/teal's before, then put down to the iris's own shine). Premultiplied over black at alpha 0 adds the
+ *  reflection alone. A part with no material of that name is left as it is. */
+const cornea = () => <StandardMaterial material="cornea" base_color={Srgba.hex("#000000").with_alpha(0)} alpha_mode="Premultiplied" perceptual_roughness={0.03} />;
 
 /** the body's "skin" material shaded as skin (character/skin.ts) */
 function skinMaterial(sk: CharacterProps["skin"], src: string) {
@@ -172,6 +204,7 @@ export function Character(props: CharacterProps) {
   const k = at.scale ?? 1;
   let p = props.pose ?? rest(skel);
   if (props.goals) p = solve(skel, p, goalsToBody(at, props.goals));
+  if (props.gaze) p = eyesTo(skel, p, toBody(at, props.gaze));
   const w = pose(skel, p);
   const turn = qyaw(at.yaw ?? 0);
   // the skin stands at the origin scaled by k, so its joints go where they are in the scene over k
@@ -196,8 +229,16 @@ export function Character(props: CharacterProps) {
       </Model>
       {(props.parts ?? []).map((part) => {
         const id = part.src.split("/").pop()!.replace(/\.glb$/, "");
+        // (a head's lids ride its eyes down: character/eyes.ts)
+        const head = part.joints?.some((j) => j === "LeftEye" || j === "eye_l") ?? false;
+        const lids = props.gaze && head ? lidsFor(skel, p) : 0;
+        const pm = lids > 0 ? { ...part.morphs, blink_left: Math.min(1, (part.morphs?.blink_left ?? 0) + lids), blink_right: Math.min(1, (part.morphs?.blink_right ?? 0) + lids) } : part.morphs;
+        // (a head worn as a part is the skin most seen: drawn as the body's is, or its face was plain plastic, 11-17)
+        const sk = props.skin && !ghost && (part.skin || head) ? { ...(typeof props.skin === "object" ? props.skin : {}), ...part.skin } : undefined;
         return (
-          <Model key={id} name={`${name}-${id}`} src={part.src} bones={bones} scale={k} {...(glitch ? { glitch } : {})} {...pass} {...(part.morphs && Object.keys(part.morphs).length ? { morphs: part.morphs } : {})} {...(part.cloth ? { cloth: part.cloth } : {})}>
+          <Model key={id} name={`${name}-${id}`} src={part.src} bones={part.joints ? Object.fromEntries(part.joints.filter((j) => j in bones).map((j) => [j, bones[j]])) : bones} scale={k} {...(glitch ? { glitch } : {})} {...pass} {...(pm && Object.keys(pm).length ? { morphs: pm } : {})} {...(part.cloth ? { cloth: part.cloth } : {})}>
+            {head && !ghost && cornea()}
+            {sk && skinMaterial(sk, part.src.replace(/\/[^/]*$/, ""))}
             {part.children}
             {id.includes("hair") && props.hair !== false && hairMaterial(props.hair)}
           </Model>

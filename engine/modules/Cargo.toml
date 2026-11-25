@@ -8,3 +8,4 @@ description = "The agent's TypeScript and TSX loaded in process: resolved inside
 
 [dependencies]
 deno_ast = { version = "=0.53.3", features = ["transpiling"] }
+dunce = "1"

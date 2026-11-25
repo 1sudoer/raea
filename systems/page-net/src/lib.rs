@@ -6,7 +6,7 @@
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
 
 mod host;
-pub use host::fetch;
+pub use host::{fetch, load as host_load};
 
 /// Files and data URLs; a path that isn't on disk is looked for under each of `roots` in turn (a server's root: WPT's
 /// `/css/...`).
@@ -37,6 +37,19 @@ mod tests {
         assert_eq!(p, std::path::PathBuf::from("/media/a b.jpg"));
         assert_eq!(p.strip_prefix("/").unwrap(), std::path::Path::new("media/a b.jpg"));
     }
+
+    /// "/artifact.js" from a page's file URL is the same file under a root on every OS: on Windows the URL keeps its
+    /// drive, so the path is C:\artifact.js, which a leading "/" alone didn't take for root-absolute (#124)
+    #[test]
+    fn a_root_absolute_path_is_relative_after_its_root() {
+        use std::path::Path;
+        assert_eq!(super::root_relative(Path::new("/artifact.js")).unwrap(), Path::new("artifact.js"));
+        assert_eq!(super::root_relative(Path::new("/media/a.jpg")).unwrap(), Path::new("media/a.jpg"));
+        assert_eq!(super::root_relative(Path::new("media/a.jpg")), None);
+        let page = url::Url::parse(if cfg!(windows) { "file:///C:/app/feed/page/index.html" } else { "file:///app/feed/page/index.html" }).unwrap();
+        let script = page.join("/artifact.js").unwrap().to_file_path().unwrap();
+        assert_eq!(super::root_relative(&script).unwrap(), Path::new("artifact.js"));
+    }
 }
 
 /// RAEA_PAGE_ROOT's roots, a list as PATH is (an app's Blitz build, then its public/)
@@ -50,11 +63,13 @@ impl NetProvider for FileNet {
         let bytes = match url.scheme() {
             "file" => file_path(&url).and_then(|p| {
                 std::fs::read(&p).ok().or_else(|| {
-                    let rel = p.strip_prefix("/").ok()?;
-                    self.roots.iter().find_map(|r| std::fs::read(r.join(rel)).ok())
+                    let rel = root_relative(&p)?;
+                    self.roots.iter().find_map(|r| std::fs::read(r.join(&rel)).ok())
                 })
             }),
             "data" => raea_io_net::data_url(url.as_str()).map(|(_, b)| b),
+            // the page's own /host/*: its host's (RAEA_PAGE_HOST), as the page's fetch of it is (host.rs)
+            "http" if url.host_str() == Some("localhost") && url.port().is_none() && url.path().starts_with("/host/") => host::load(&url),
             // the page's own origin (http://localhost/, as page_fetch has it): the file under the roots, confined, so an
             // @font-face, image or stylesheet the app names by its URL loads as in Chrome (Excalidraw's fonts did not)
             "http" if url.host_str() == Some("localhost") && url.port().is_none() && !self.roots.is_empty() => {
@@ -93,11 +108,18 @@ pub struct FrameNet {
 impl FrameNet {
     /// `path`, or its root-absolute form under a root, if it resolves inside that root
     pub fn confined(&self, path: &std::path::Path) -> Option<std::path::PathBuf> {
-        self.roots.iter().filter_map(|r| r.canonicalize().ok()).find_map(|root| {
-            let at = |p: std::path::PathBuf| p.canonicalize().ok().filter(|c| c.starts_with(&root));
-            at(path.to_path_buf()).or_else(|| at(root.join(path.strip_prefix("/").ok()?)))
+        self.roots.iter().filter_map(|r| dunce::canonicalize(&r).ok()).find_map(|root| {
+            let at = |p: std::path::PathBuf| dunce::canonicalize(&p).ok().filter(|c| c.starts_with(&root));
+            at(path.to_path_buf()).or_else(|| at(root.join(root_relative(path)?)))
         })
     }
+}
+
+/// A root-absolute path's part after its root: "/artifact.js" is "artifact.js", and so is Windows' "C:\artifact.js",
+/// which is what "/artifact.js" against a page at file:///C:/... comes to (a leading "/" alone missed it there, #124)
+fn root_relative(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component::{Prefix, RootDir};
+    path.has_root().then(|| path.components().skip_while(|c| matches!(c, Prefix(_) | RootDir)).collect())
 }
 
 impl NetProvider for FrameNet {

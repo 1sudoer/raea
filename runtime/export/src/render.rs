@@ -28,13 +28,17 @@ pub fn render(args: &[String]) -> R<String> {
     if args.iter().any(|a| a == "--clay") {
         raea_runtime_scene3d::clay::CLAY.store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    let tsx = PathBuf::from(&args[1]).canonicalize().map_err(|e| format!("{}: {e}", args[1]))?;
+    let tsx = dunce::canonicalize(&PathBuf::from(&args[1])).map_err(|e| format!("{}: {e}", args[1]))?;
     let out = PathBuf::from(flag(args, "-o").ok_or("-o OUT.mp4|OUT.png|DIR")?);
     let dir = tsx.parent().unwrap().to_path_buf();
     let js = std::env::temp_dir().join(format!("raea-cli-{}.js", std::process::id()));
     // the edit's words.json and perception.json beside it, as play loads them (a render without the flags lost the
     // captions its words drive; the corpus found 10 edits so); a flag still wins
     let mut o = comp_opts(args)?;
+    // an input log's `apps`, what reached the app screens in the play it came from, given them again frame by frame
+    // (docs/blitz-bevy.feature H12): the render draws what was played
+    let apps: std::collections::BTreeMap<i64, serde_json::Value> = o.input.as_ref().and_then(|v| v.as_object()).into_iter().flatten().filter_map(|(f, v)| Some((f.parse().ok()?, v.get("apps")?.clone()))).collect();
+    *raea_runtime_page::screen::APP_LOG.lock().unwrap() = (!apps.is_empty()).then_some(apps);
     for (slot, file) in [(&mut o.words, "words.json"), (&mut o.perception, "perception.json")] {
         if slot.is_none() && dir.join(file).exists() {
             let v = json_file(&dir.join(file).display().to_string())?;
@@ -48,13 +52,21 @@ pub fn render(args: &[String]) -> R<String> {
             *slot = Some(v);
         }
     }
+    // a layer is a stamped thing (raea_sys_layers), so --layers stamps the source; RAEA_SOURCE_STAMPS=0 keeps them off
+    let layers_on = args.iter().any(|a| a == "--layers") || std::env::var_os("RAEA_LAYERS").is_some_and(|v| v == "1");
+    if layers_on && std::env::var_os("RAEA_SOURCE_STAMPS").is_none() {
+        // SAFETY: before any thread of the render starts (the bundler and React's runtime start below)
+        unsafe { std::env::set_var("RAEA_SOURCE_STAMPS", "1") };
+    }
     bundle_composition(&tsx, &js, &o, None)?;
+    raea_runtime_react::startup_mark("the composition bundled");
     let wanted = match (flag(args, "--frame"), flag(args, "--at")) {
         (Some(f), _) => Some(vec![f.parse().map_err(|_| "--frame takes a frame number")?]),
         (_, Some(at)) => Some(at.split(',').map(|f| f.trim().parse::<i64>().map_err(|_| "--at takes frame numbers".to_string())).collect::<R<_>>()?),
         _ => None,
     };
-    *MANIFEST.lock().unwrap() = flag(args, "--manifest").map(PathBuf::from);
+    raea_sys_layers::start(layers_on, &out, &tsx);
+    *MANIFEST.lock().unwrap() = Some(flag(args, "--manifest").map_or_else(|| raea_sys_layers::manifest_for(&out, &tsx), PathBuf::from));
     TEN_BIT.store(args.iter().any(|a| a == "--10bit"), std::sync::atomic::Ordering::Relaxed);
     AOV.store(args.iter().any(|a| a == "--aov"), std::sync::atomic::Ordering::Relaxed);
     if AOV.load(std::sync::atomic::Ordering::Relaxed) && !out_ext(&out).is_empty() {
@@ -62,7 +74,7 @@ pub fn render(args: &[String]) -> R<String> {
     }
     let alpha = args.iter().any(|a| a == "--alpha");
     if alpha && !matches!(out_ext(&out).as_str(), "png" | "") {
-        return Err("--alpha writes PNGs (OUT.png or a folder): video here is H.264 or HEVC, which hold no alpha. Encode the folder with alpha after (ffmpeg -i DIR/frame-%05d.png -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le overlay.mov)".into());
+        return Err(format!("--alpha writes PNGs (OUT.png or a folder) or a transparent movie (OUT.mov, --alpha-codec {}): an .{} holds no alpha", raea_io_alpha::NAMES, out_ext(&out)));
     }
     ALPHA.store(alpha, std::sync::atomic::Ordering::Relaxed);
     let kbps = flag(args, "--kbps").map(|k| k.parse::<u32>().ok().filter(|k| *k > 0).ok_or("--kbps takes a bitrate in kbit/s")).transpose()?;
@@ -83,13 +95,16 @@ pub fn render(args: &[String]) -> R<String> {
         None => None,
     };
     // a whole video made from these same inputs before is the export: cloned from the cache, not rendered again
-    let cache = if wanted.is_none() { export_cache(&tsx, &js, &out, args) } else { None };
+    let cache = if wanted.is_none() && !raea_sys_layers::on() { export_cache(&tsx, &js, &out, args) } else { None };
+    raea_runtime_react::startup_mark("the export cache looked up");
     let manifest = MANIFEST.lock().unwrap().clone();
     if let Some(c) = &cache {
         // with --manifest, the manifest kept beside the export comes back too
         let kept_manifest = manifest.as_ref().map(|m| (m, c.with_extension("manifest")));
-        if let (Ok(said), true, true) = (std::fs::read_to_string(c.with_extension("said")), c.exists(), kept_manifest.as_ref().is_none_or(|(_, k)| k.exists())) {
+        // and what it found when it was drawn (one kept before findings were is drawn again, so its checks run)
+        if let (Ok(said), true, true, true) = (std::fs::read_to_string(c.with_extension("said")), c.exists(), kept_manifest.as_ref().is_none_or(|(_, k)| k.exists()), c.with_extension("findings").exists()) {
             if std::fs::copy(c, &out).is_ok() && kept_manifest.as_ref().is_none_or(|(m, k)| std::fs::copy(k, m).is_ok()) {
+                raea_core_facts::finding::replay(&c.with_extension("findings"));
                 let _ = std::fs::File::options().append(true).open(c).and_then(|f| f.set_modified(std::time::SystemTime::now()));
                 let _ = std::fs::remove_file(&js);
                 return Ok(with_exposure(format!("{} (the same export as before: from the export cache)", said.replace("{OUT}", &out.display().to_string())), &out, manifest.as_deref()));
@@ -102,11 +117,11 @@ pub fn render(args: &[String]) -> R<String> {
         if c.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) {
             let tmp = c.with_extension(format!("{}.tmp", std::process::id()));
             let manifest_kept = manifest.as_ref().is_none_or(|m| std::fs::copy(m, c.with_extension("manifest")).is_ok());
-            if manifest_kept && std::fs::copy(&out, &tmp).is_ok() && std::fs::rename(&tmp, c).is_ok() && std::fs::write(c.with_extension("said"), s.replace(&out.display().to_string(), "{OUT}")).is_ok() {
+            if manifest_kept && std::fs::copy(&out, &tmp).is_ok() && std::fs::rename(&tmp, c).is_ok() && std::fs::write(c.with_extension("said"), s.replace(&out.display().to_string(), "{OUT}")).is_ok() && raea_core_facts::finding::keep_to(&c.with_extension("findings")) {
                 if let Some(d) = c.parent() {
                     prune_cache(d, "mp4", 16);
                     // this export is an output: later keys leave it out of the edit's folder
-                    if let Ok(abs) = std::fs::canonicalize(&out) {
+                    if let Ok(abs) = dunce::canonicalize(&out) {
                         use std::io::Write as _;
                         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d.join("outputs.list")) {
                             let _ = writeln!(f, "{}", abs.display());
@@ -125,9 +140,7 @@ pub fn render(args: &[String]) -> R<String> {
 /// measured by rendering them to a folder with --at), and the stats in the manifest with --manifest.
 fn with_exposure(said: String, out: &Path, manifest: Option<&Path>) -> String {
     let pngs: Vec<PathBuf> = if out.is_dir() {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(out).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("frame-")) && p.extension().is_some_and(|x| x == "png")).collect();
-        v.sort();
-        v
+        raea_io_alpha::frames_in(out)
     } else if out.extension().is_some_and(|x| x == "png") {
         vec![out.to_path_buf()]
     } else {
@@ -137,24 +150,48 @@ fn with_exposure(said: String, out: &Path, manifest: Option<&Path>) -> String {
         return said;
     }
     match raea_sys_light_meter::exposure::of_pngs(&pngs) {
-        Ok((e, v)) => {
-            if let Some(m) = manifest {
-                if let Ok(mut doc) = std::fs::read_to_string(m).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).map_err(|e| e.to_string())) {
-                    if let Some(o) = doc.as_object_mut() {
-                        o.insert("exposure".into(), v.clone());
-                        let _ = std::fs::write(m, doc.to_string());
+        Ok((e, mut v)) => {
+            // a frame of the page's own fill (no 3D, no footage: a brand card's ground) is lit by design, so the 3D lighting
+            // advice is measured, not said; a frame with footage keeps it (a clip that drew black). 11-19: a logo card's warn
+            let doc: Option<serde_json::Value> = manifest.and_then(|m| std::fs::read_to_string(m).ok()).and_then(|t| serde_json::from_str(&t).ok());
+            if let Some(d) = doc.as_ref().filter(|d| d["has3d"] == false) {
+                let frames = d["frames"].as_array().cloned().unwrap_or_default();
+                fn fill(f: &serde_json::Value) -> bool {
+                    f["videos"].as_array().is_none_or(Vec::is_empty)
+                }
+                let mut names: Vec<String> = Vec::new();
+                if pngs.len() == 1 && frames.len() == 1 && fill(&frames[0]) {
+                    names.push("the frame".into());
+                } else if pngs.len() == frames.len() {
+                    for (p, f) in pngs.iter().zip(&frames) {
+                        if let (true, Some(n)) = (fill(f), p.file_name()) {
+                            names.push(n.to_string_lossy().into_owned());
+                        }
                     }
                 }
+                if let Some(found) = v["found"].as_array_mut() {
+                    found.retain(|f| !names.iter().any(|n| f["says"].as_str().is_some_and(|s| s.starts_with(&format!("{n}:")))));
+                }
+            }
+            let fs = raea_sys_light_meter::exposure::said(&v); // counted with the render's other findings (DR3)
+            if let (Some(m), Some(mut doc)) = (manifest, doc)
+                && let Some(o) = doc.as_object_mut()
+            {
+                o.insert("exposure".into(), v.clone());
+                let _ = std::fs::write(m, doc.to_string());
             }
             let mut msg = format!("{said}\nEXPOSURE  {}", e.line());
-            for f in v["found"].as_array().into_iter().flatten() {
-                msg.push_str(&format!("\n  {}: {}", f["level"].as_str().unwrap_or(""), f["says"].as_str().unwrap_or("")));
+            for f in &fs {
+                msg.push_str(&format!("\n  {}", f.line()));
             }
             msg
         }
         Err(e) => format!("{said}\nEXPOSURE  not measured: {e}"),
     }
 }
+
+/// A still past this frame takes the live route (render_bundle): the rows to reach it would hold that many scenes.
+const LIVE_PAST: i64 = 3600;
 
 /// A bundled composition rendered by the engine, in this process (the Mac or the iPhone): React on JavaScriptCore inside Bevy steps
 /// its Clock; each frame's page goes through Blitz, its <Video> decoded natively, its 3D as rows; the frames become one
@@ -174,6 +211,13 @@ pub fn render_bundle(js: &Path, dir: &Path, out: &Path, wanted: Option<Vec<i64>>
     }
     if stills && how != "files" {
         let upto = wanted.as_ref().and_then(|w| w.iter().max()).map_or(0, |f| f + 1);
+        // a still far into a 3D piece: its 3D made live at the still, as a game's is. The rows made beforehand hold a
+        // scene for every frame up to it: raea check --quick's three stills of a 13,175-frame film took 10.4 GB that
+        // way and 0.8 GB live, the same pixels as the film's (SG4a)
+        if how != "program" && upto > LIVE_PAST && raea_runtime_view::gpuview::paint_device().is_some() && wanted.as_deref().is_some_and(|w| crate::fed::stills_live(js, dir, w).unwrap_or(false)) {
+            raea_runtime_react::startup_mark("stills past the rows' reach: the 3D made live at each");
+            return render_bundle_with(js, dir, out, wanted, false, None, true);
+        }
         if let Some(scene) = scene_program_checked(js, dir, upto, wanted.as_deref())? {
             return render_bundle_with(js, dir, out, wanted, false, Some(scene), false);
         }
@@ -181,21 +225,34 @@ pub fn render_bundle(js: &Path, dir: &Path, out: &Path, wanted: Option<Vec<i64>>
     // a video: fed, its pages handed to the encoder on the GPU (B1d), until a frame holds 3D, which starts it again
     // with its 3D drawn live under each page
     let video = wanted.is_none() && matches!(ext.as_str(), "mp4" | "mov" | "txt") && how != "files" && raea_runtime_view::gpuview::paint_device().is_some();
+    // a bundle that can show 3D (it holds data-3d, the test live play opens its 3D engine on: runtime/live open.rs)
+    // starts with its 3D live; started as 2D, it threw its first frames away at the first 3D one and started again,
+    // ~300 ms of a warm 150-frame 3D render (11-16). RAEA_3D_FIRST=1 until checked against the probe's frames
+    if video && how != "program" && std::env::var("RAEA_3D_FIRST").as_deref() == Ok("1") && std::fs::read_to_string(js).is_ok_and(|t| t.contains("data-3d")) {
+        raea_runtime_react::startup_mark("the bundle holds 3D: the render starts with its 3D");
+        return live_3d(js, dir, out);
+    }
     BEVY_3D_PROBE.store(video, std::sync::atomic::Ordering::Relaxed);
     let r = render_bundle_with(js, dir, out, wanted, video, None, false);
     BEVY_3D_PROBE.store(false, std::sync::atomic::Ordering::Relaxed);
     if video && r.as_ref().err().is_some_and(|e| e.contains(FED_3D)) {
         raea_runtime_react::startup_mark("a 3D frame met: the render starts again with its 3D");
-        // its 3D made live as each frame steps, React once a frame (#26, #38); RAEA_3D=program makes its rows first
+        // RAEA_3D=program makes its rows first
         if how != "program" {
-            LIVE_CLIPS.store(true, std::sync::atomic::Ordering::Relaxed);
-            let r = render_bundle_with(js, dir, out, None, true, None, true);
-            LIVE_CLIPS.store(false, std::sync::atomic::Ordering::Relaxed);
-            return r;
+            return live_3d(js, dir, out);
         }
         let scene = scene_program_checked(js, dir, 0, None)?;
         return render_bundle_with(js, dir, out, None, scene.is_some(), scene, false);
     }
+    r
+}
+
+/// A video fed with its 3D made live as each frame steps, React once a frame (#26, #38), each frame's scene kept for the
+/// clipping check at its end.
+fn live_3d(js: &Path, dir: &Path, out: &Path) -> R<String> {
+    LIVE_CLIPS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let r = render_bundle_with(js, dir, out, None, true, None, true);
+    LIVE_CLIPS.store(false, std::sync::atomic::Ordering::Relaxed);
     r
 }
 
@@ -264,11 +321,14 @@ pub(crate) fn render_bundle_with(js: &Path, dir: &Path, out: &Path, wanted: Opti
         if folder {
             std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
         }
+        // each still's scene, for the end checks once the page is known (made live or from rows alike)
+        let mut kept: Vec<(i64, Frame)> = Vec::new();
         for (i, &f) in wanted.iter().enumerate() {
             let px = raea_gpu_device::check::frame_caught(f, || { // a panic drawing it an error naming it (#33)
             engine_before(&app, &mut cx, f);
             app.world().resource::<ReactOutbox>().send(json!({"t": "event", "name": "raea-frame", "value": f}));
-            settle(&mut app, Some(f), 20.0)?;
+            settle_with(&mut app, Some(f), 20.0, &mut |w, q| layout_answer(w, pg, &mut cx, f, fps, q))?;
+            kept.push((f, Frame { screens: Vec::new(), mix: None, page: None, sounds: Vec::new(), scene: scene_of(app.world_mut()), clear: None, same: false }));
             cx.now = f;
             pg.at_frame(f, fps);
             let mut px = bevy_over_3d(app.world_mut(), pg, &mut cx, fps)?;
@@ -282,7 +342,7 @@ pub(crate) fn render_bundle_with(js: &Path, dir: &Path, out: &Path, wanted: Opti
                 }
             }
             let (px, twice) = raea_gpu_device::check::black_checked(f, px, raea_sys_page::redraw_full, || bevy_over_3d(app.world_mut(), pg, &mut cx, fps))?;
-            if twice { raea_gpu_device::check::black_twice(f, pg.canary().and_then(|()| cx.scene3d.as_ref().map_or(Ok(()), |e| e.canary())))?; }
+            if twice { raea_gpu_device::check::black_twice(f, pg.canary().and_then(|()| cx.scene3d.as_ref().map_or(Ok(()), |e| e.canary())))?; lost(f, pg.visible_paint()); }
             Ok(px)
             })
             .map_err(|e| if i == 0 { format!("{e}; no frame was written") } else { format!("{e}; the {i} frames before it are in {}", out.display()) })?;
@@ -291,8 +351,9 @@ pub(crate) fn render_bundle_with(js: &Path, dir: &Path, out: &Path, wanted: Opti
             if folder { write_aov(out, i, cx.scene3d.as_mut())?; }
         }
         // with --manifest, its file as a 2D render writes it (it wrote none, and an older one stayed looking current, #28)
-        let clipping = FED_CLIPPING.lock().unwrap().take().and_then(|t| t.join().ok()).unwrap_or_default();
-        write_manifest(&mut cx, (w, h, fps), clipping, |_| json!([]))?;
+        drop(FED_CLIPPING.lock().unwrap().take());
+        let clipping = scene::told_taking(&mut kept, cx.manifest.as_deref(), w, h, fps);
+        write_manifest(&mut cx, (w, h, fps, total), clipping, |_| json!([]))?;
         return Ok(if folder {
             format!("APPLIED  {} frames rendered to {} (bevy_ui, the page over its 3D)", wanted.len(), out.display())
         } else {
@@ -304,12 +365,12 @@ pub(crate) fn render_bundle_with(js: &Path, dir: &Path, out: &Path, wanted: Opti
     let t0 = std::time::Instant::now();
     // RAEA_TIMES: where a render's frames go (React's commit, the page recorded and submitted, the page before
     // collected and stored), totals in ms
-    let times = std::env::var_os("RAEA_TIMES").is_some();
+    let times = raea_io_trace::stat("RAEA_TIMES");
     let (mut t_react, mut t_snap, mut t_page) = (0f64, 0f64, 0f64);
     for &f in &wanted {
         let t0 = std::time::Instant::now();
         app.world().resource::<ReactOutbox>().send(json!({"t": "event", "name": "raea-frame", "value": f}));
-        settle(&mut app, Some(f), 20.0)?;
+        settle_with(&mut app, Some(f), 20.0, &mut |w, q| layout_answer(w, &mut page, &mut cx, f, fps, q))?;
         cx.now = f;
         let t1 = std::time::Instant::now();
         page.at_frame(f, fps);
@@ -346,8 +407,8 @@ pub(crate) fn render_bundle_with(js: &Path, dir: &Path, out: &Path, wanted: Opti
     let react_ms = t0.elapsed().as_secs_f64() * 1e3 / wanted.len().max(1) as f64;
     drop(app);
     // 3D parts passing through each other on screen: on stderr, and in the manifest for the legacy app's checks
-    let clipping = scene::told(&frames, w, h, fps);
-    write_manifest(&mut cx, (w, h, fps), clipping, |cx| heard(&frames, &tones, cx, fps))?;
+    let clipping = scene::told(&frames, cx.manifest.as_deref(), w, h, fps);
+    write_manifest(&mut cx, (w, h, fps, total), clipping, |cx| heard(&frames, &tones, cx, fps))?;
 
     let ext = out_ext(out);
     // raea-render's IR built directly from the frames and drawn by raea-render (checked equal to the retired rrl's compile of the same

@@ -7,6 +7,7 @@ publish = false
 description = "The Blitz-Bevy bridge's bench (run.sh): its examples, each a Bevy program that checks one of the bridge's claims (B3 H1-H11)"
 
 [dev-dependencies]
+dunce = "1"
 raea-io-home = { path = "../../io/home" }
 raea-runtime-react = { path = "../../runtime/react" }
 raea-runtime-page = { path = "../../runtime/page" }

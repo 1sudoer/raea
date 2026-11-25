@@ -14,7 +14,7 @@ they match the version they were made from; the prose around them is written by 
 - **Help.** `raea help` (or `raea` alone) lists every verb's forms. `raea help --json` gives the same as data: each
   verb's forms, its flags, how many values each flag takes, how many arguments it takes and where it runs.
 - **Strict arguments.** A verb refuses a flag or an argument its forms don't name, rather than ignoring it, so a
-  typo is caught. The four verbs with parsers of their own (`media`, `gen`, `physics`, `blender`) list their own forms.
+  typo is caught. The five verbs with parsers of their own (`media`, `gen`, `physics`, `blender`, `godot`) list their own forms.
 - **Output.** A verb prints its result on stdout and exits 0. When it can't do what it was asked, it prints a line
   starting with `REFUSED` that says why and what to do instead, and exits 1. A file refused again is told what
   changed since the last refusal.
@@ -35,6 +35,7 @@ Render, play and package what you wrote.
 | [`raea render`](render.md) | Render a composition to an MP4, a PNG or a folder of frames, on the GPU and headless. |
 | [`raea play`](play.md) | Play a game live in a window, or headless with scripted keys, snapshots and a timing report. |
 | [`raea export-game`](export-game.md) | Package a game as a program of its own: a Mac app or a command-line program. |
+| [`raea export`](export.md) | The composition as a CapCut draft ready in its timeline: its footage and sounds as clips of their own files at their trims and gains, everything raea draws as transparent overlay clips above them. |
 | [`raea bundle`](bundle.md) | Bundle a composition into one JavaScript file that render_bundle draws, on the Mac or the iPhone. |
 | [`raea app`](app.md) | Run, check headless and package a desktop app written as one TSX file on @raea/ui. |
 | [`raea run`](run.md) | Run a TypeScript program on the engine, headless, and print what it prints. |
@@ -46,14 +47,15 @@ The workspace, its projects and what a project holds.
 | Verb | What it does |
 | --- | --- |
 | [`raea init`](init.md) | Add a project's starting files where they're missing: edit.tsx, cuts.ts, components/ and AGENTS.md. |
-| [`raea workspace`](workspace.md) | Make, adopt or show a workspace: the git repository that holds a studio's projects and controllers. |
+| [`raea workspace`](workspace.md) | Make, adopt or show a workspace: the git repository that holds a studio's projects and house taste. |
 | [`raea project`](project.md) | Make a project in the workspace, list them, or move one between inline and a repository of its own. |
-| [`raea controller`](controller.md) | Read and change the workspace's controllers: its settings and workflows, each a TypeScript file. |
-| [`raea spec`](spec.md) | Print a spec file's default export as JSON, checked against its schema: briefs, scripts, taste, plans and controllers. |
-| [`raea part`](part.md) | Copy a ready-made part into the project's components/, to use and change as your own. |
+| [`raea spec`](spec.md) | Print a spec file's default export as JSON, checked against its schema: briefs, scripts, taste and an object's parts. |
+| [`raea component`](component.md) | Copy a ready-made component or set into the project's components/, or the workspace's shared/components/, to use and change as your own. |
+| [`raea part`](part.md) | The old name of raea component: copy a ready-made component into the project's components/, to use and change as your own. |
 | [`raea add`](add.md) | Add, remove and install npm packages for a project, with no Node or npm: raea.lock and node_modules. |
 | [`raea brand`](brand.md) | Read a brand kit from a website on this machine: colours, fonts and logos into brand/ and BRAND.md. |
 | [`raea library`](library.md) | Search and manage the person's media libraries in the raea app: folders and drives indexed on this machine, searched by meaning. |
+| [`raea index`](indexer.md) | Make every picture on a folder or a drive searchable by words, embedded on this Mac's Neural Engine, and keep the index open for the raea app. |
 
 ## Check
 
@@ -61,13 +63,19 @@ What's wrong before anyone watches it.
 
 | Verb | What it does |
 | --- | --- |
-| [`raea check`](check.md) | Check a composition's text in a second, or an export against the floor: text, contrast, safe areas, freezes, flashing, cues and loudness. |
+| [`raea check`](check.md) | Check a composition's text in a second, a project against every rule it holds, or an export against the floor: text, contrast, safe areas, freezes, flashing, cues and loudness. |
 | [`raea judge`](judge.md) | Judge a 3D scene's review sheets blind, by a model on a frozen rubric or a fresh agent session, with the pass decided in code. |
-| [`raea scene`](scene.md) | Find floating, sunk and clipping 3D parts, say what each part rests on, and meter a shot's light. |
+| [`raea make`](make.md) | A scene, kit or shot made to its plan: the plan stop, the kit's references, generators, pick, prep and landing, a shot list's framing and lens charts, and whether it's done, decided in code; the agent's Stop hook holds it there. |
+| [`raea fingerprint`](fingerprint.md) | A person's sense of good work, learned on this Mac: axes with small heads over on-device encoders that score a render moment by moment and say what they can't judge yet. |
+| [`raea findings`](findings.md) | What each render and check found, read back from the project's record: fixed, new and carried since the one before. |
+| [`raea scene`](scene.md) | Find floating, sunk and clipping 3D parts, say what each part rests on, meter a shot's light, and hold every frame to the stage checks a render runs. |
+| [`raea light`](light.md) | Measure a scene's light on each light path against its path-traced reference: distance in stops, the worst tile, flicker and cost. |
+| [`raea bench`](bench.md) | Each case on each denoiser against its converged truth: FLIP, RMSE, bias, flicker, blotches, lag after a disocclusion or a light going out, a frame's cost, and how many of MetalFX's numbers each meets. |
+| [`raea world`](world.md) | A frame as one world: its layers, text, 3D parts, camera, shots, clips, cues and lines as entities, queried across media. |
 | [`raea solid`](solid.md) | Measure, view and export a solid: parts built from code with exact volumes, joints and parameters. |
 | [`raea next`](next.md) | The two or three most useful next steps for a project, read from its brief, compositions, renders and checks. |
 | [`raea doctor`](doctor.md) | Find what doesn't match this version of raea: old brief files, an older workspace format, an agent's stale skill. |
-| [`raea hook`](hook.md) | Claude Code's PostToolUse hook: the quick text check after an agent saves a composition. |
+| [`raea hook`](hook.md) | Every agent's tool hooks: media opened in the Mac's viewer goes to raea show, and the quick check after a composition is saved. |
 | [`raea traces`](traces.md) | List the sessions raea apps left, newest first, with how each ended and its glitches, or tell one in full. |
 
 ## Footage
@@ -95,27 +103,38 @@ Music read, foley and instruments made on this machine.
 | [`raea sao`](sao.md) | Make a sound effect from a description with Stable Audio Open, on this machine. |
 | [`raea tokensynth`](tokensynth.md) | Make an instrument's notes from a description of its timbre with TokenSynth, on this machine. |
 | [`raea setup-audio`](setup-audio.md) | Install or check the local audio models: Stable Audio Open for foley and TokenSynth for instruments. |
+| [`raea voice`](voice.md) | Speech in and out on this computer, as lines of JSON on stdin and stdout: what raea.app's Ideate hears and speaks with. While it speaks it doesn't listen, unless --duplex (headphones: it listens all the time) or --over (speakers: its own voice is taken out of the microphone's sound, new and not yet tried across real rooms). |
 
 ## Generate and 3D tools
 
-Generated media, physics bakes and Blender.
+Generated media, physics, light and weathering bakes, clothes and motion for SOMA's body, Blender and Godot.
 
 | Verb | What it does |
 | --- | --- |
 | [`raea gen`](gen.md) | Generate images, video, music, sound, speech, 3D models and text through made.app, fal, Replicate, OpenRouter, Modal or ComfyUI. |
 | [`raea physics`](physics.md) | Make the bakes <Physics> and <Goo> play: rigid bodies, soft goo, and parts cut out of a .glb. |
+| [`raea bake`](bake.md) | Bake a composition's bounce light into lightmaps on raea's own ray tracer, and measure the bake against Cycles. |
+| [`raea wear`](wear.md) | Bake what weathers a model: where rain reaches and runs, what the sun sees, edges, hollows and touch, as maps raea/wear reads. |
+| [`raea clothes`](clothes.md) | Clothes for SOMA's body from words: make sews a garment from a sewing pattern (GarmentCode, MIT), cut to SOMA's measurements and draped by raea's own cloth, as assets/clothes/NAME.json and its .glb; cover lays one on the skin by procedure; wear puts garments on a body. |
+| [`raea motion`](motion.md) | Body motion made on this machine by Kimodo (NVIDIA), on MLX on a Mac and on PyTorch on Linux and Windows: a SOMA clip from a line of words and, with --keys, Kimodo constraints (full-body keyframes, hand or foot targets, a root path, as sdk/body/tools/between.ts writes them), as the clip sdk/body/tools/fromkimodo.ts reads. |
 | [`raea blender`](blender.md) | Run a Blender Python script headless, with raea's library of mesh scripts: convert, decimate, repair, split, bake, rig, cloth. |
+| [`raea godot`](godot.md) | Run a TypeScript script against Godot's whole API in a headless Godot with GodotJS, record what it draws as frames, or open the editor on the project. |
 
 ## Agents and setup
 
-What an agent reads, and the tools raea installs.
+What an agent reads and shows the person, and the tools raea installs.
 
 | Verb | What it does |
 | --- | --- |
 | [`raea guide`](guide.md) | Print raea's craft guides: the floor read before any edit, the modes, the notes and the 3D guides. |
+| [`raea fix`](fix.md) | A problem looked up before you guess: what you see or the error text, "quoted" for an exact phrase. |
 | [`raea context`](context.md) | Print what to read before working on a project: its taste, brief and look, the floor and its modes' guides. |
+| [`raea notes`](notes.md) | A person's notes as files the work is held to: each taken word for word, then restated as asks before anything changes. |
+| [`raea show`](show.md) | Show the person something in the raea app, as an item they can use and answer: stills, a video, a sound, a script, an interactive .tsx or a question. |
 | [`raea skill`](skill.md) | Print the agent skill this raea ships, matched to its version, or one of its references. |
 | [`raea skills`](skills.md) | Install raea's agent skill where Claude Code, Codex, Kimi or Gemini read skills, with its MCP server and hook. |
-| [`raea setup`](setup.md) | Find Blender, or download its current LTS, and install its MCP add-on. |
+| [`raea setup`](setup.md) | Find Blender, or download its current LTS, and install raea's add-on and the MCP add-on. |
+| [`raea bug`](bug.md) | Report a bug in raea itself to raea's server: a line saying what's wrong and what happened, with raea's version and the OS added, no account needed. |
+| [`raea ask`](ask.md) | Ask about a piece's picture and sound: clef-omni answers in words and a probability, paid from your raea plan, and every answer is kept so a question can be calibrated. |
 
 <!-- generated:end -->

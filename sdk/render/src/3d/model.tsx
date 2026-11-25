@@ -6,6 +6,7 @@ import { modelScreens, type ModelScreens } from "../screen";
 import { pageLayers } from "../layers";
 import { Place3d, useCamera3d, usePlace3d } from "../events3d";
 import { MeshStandardMaterialProps, PerspectiveCameraProps, Vec3, checkMaterial, checkPass, checkVec, colours, node3d, samplerSpec, type SamplerSpec } from "./all";
+import { detailNode, type Detail } from "./detail";
 
 /** What a light or camera holds: Bevy's own reflected components on it (<BevyComponent>, or a generated wrapper such
  * as bevy_light's ShadowFilteringMethod or bevy_pbr's ScreenSpaceReflections), applied through Bevy's TypeRegistry. */
@@ -30,7 +31,8 @@ export function OrthographicCamera({ height = 10, children, ...rest }: Orthograp
   if (rest.lookAt !== undefined) checkVec("OrthographicCamera", "lookAt", rest.lookAt);
   if (rest.up !== undefined) checkVec("OrthographicCamera", "up", rest.up);
   if (!(height > 0 && Number.isFinite(height))) throw new RangeError(`OrthographicCamera: height is the view's height in metres, above 0, got ${height}`);
-  useCamera3d({ position: rest.position, lookAt: rest.lookAt, height, up: rest.up });
+  // a camera into an image (`target`, R3F23a) isn't the one the pointer picks through
+  useCamera3d({ position: rest.position, lookAt: rest.lookAt, height, up: rest.up }, rest.active !== false && rest.target === undefined);
   return node3d("PerspectiveCamera", { ...rest, ortho: height }, children);
 }
 
@@ -221,6 +223,8 @@ export interface ModelProps {
   flat?: boolean;
   /** false: its meshes cast no shadow (true by default) */
   shadow?: boolean;
+  /** where it's drawn: its distances or sizes on screen, cross-faded, and its shadow (Detail; raea-sys-lod) */
+  detail?: Detail;
   /** false: no shadow falls on its meshes, its own included (true by default): a furry coat of many cards that would
    * otherwise speckle itself in the shadow maps */
   receiveShadow?: boolean;
@@ -346,7 +350,8 @@ export function Model(props: ModelProps) {
   checkGrid("Model", p);
   if (props.nodes !== undefined) checkNodes(props.nodes);
   if (props.hide !== undefined && !(Array.isArray(props.hide) && props.hide.every((h) => typeof h === "string"))) throw new TypeError(`Model: hide is a list of node names, got ${JSON.stringify(props.hide)}`);
-  const kids = <InModel.Provider value={true}>{props.children}</InModel.Provider>;
+  delete p.detail;
+  const kids = <InModel.Provider value={true}>{props.children}{detailNode("Model", props.detail)}</InModel.Provider>;
   if (props.screens === undefined) return node3d("Model", p, kids);
   if (typeof props.screens !== "object" || props.screens === null) throw new TypeError("Model: screens maps a material's name to a screen: { monitor_screen: <Screen><Game /></Screen> }");
   const { specs, parts } = modelScreens("Model", props.name ?? props.src.split("/").pop()!.replace(/\.(glb|gltf)$/i, ""), props.screens);

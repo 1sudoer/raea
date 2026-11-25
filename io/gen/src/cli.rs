@@ -31,30 +31,13 @@ fn read_json(p: impl AsRef<Path>) -> Result<J, String> {
 }
 
 /// A flow file: JSON as it is, or TypeScript (raea/gen's `flow()` as the default export) run with bun under the SDK's
-/// import names.
+/// import names (raea-io-gen-core tsflow.rs, which adds raea/gen to them).
 fn read_flow(p: &str) -> Result<Flow, String> {
     if ![".ts", ".mts", ".tsx"].iter().any(|e| p.ends_with(e)) {
         return Flow::parse(&read_json(p)?);
     }
     let file = std::path::absolute(p).map_err(|e| format!("{p}: {e}"))?;
-    let sdk = raea_io_home::home().join("sdk");
-    let entry = std::env::temp_dir().join(format!("raea-gen-flow-{}.ts", std::process::id()));
-    let js = "const m = await import(process.argv[2]);\nconst f = typeof m.default === \"function\" ? await m.default() : await m.default;\nconsole.log(JSON.stringify(f));\n";
-    std::fs::write(&entry, js).map_err(|e| format!("{}: {e}", entry.display()))?;
-    let out = std::process::Command::new("bun")
-        .arg("--tsconfig-override")
-        .arg(sdk.join(raea_io_home::sdk::LIST))
-        .arg(&entry)
-        .arg(&file)
-        .output();
-    let _ = std::fs::remove_file(&entry);
-    let out = out.map_err(|e| format!("{p}: a TypeScript flow runs with bun, which didn't start ({e})"))?;
-    // bun reports an override that isn't the file's own folder as an internal error; it isn't one
-    let err: String = String::from_utf8_lossy(&out.stderr).lines().filter(|l| !l.contains("directory mismatch")).collect::<Vec<_>>().join("\n");
-    if !out.status.success() {
-        return Err(format!("{p}: {}", err.trim()));
-    }
-    let v: J = serde_json::from_slice(&out.stdout).map_err(|e| format!("{p}: its default export isn't a flow ({e})"))?;
+    let v = crate::tsflow::run(&file, &raea_io_home::home().join("sdk")).map_err(|e| format!("{p}: {e}"))?;
     Flow::parse(&v)
 }
 
@@ -75,6 +58,7 @@ fn runner<'a>(args: &[String], base: &Path, local: Option<&'a dyn Local>) -> Run
     r.policy.exact = args.iter().any(|a| a == "--exact");
     r.policy.comfy_on_replicate = args.iter().any(|a| a == "--comfy-on-replicate") || crate::setting("RAEA_COMFY_ON") .as_deref() == Some("replicate");
     r.policy.tripo = !args.iter().any(|a| a == "--no-tripo") && crate::tripo::available();
+    r.policy.keys = crate::route::Keys::here();
     if let Some(l) = local.filter(|_| !args.iter().any(|a| a == "--no-local")) {
         r.policy.local = l.names();
         r.local = Some(l);
@@ -120,7 +104,7 @@ pub fn command(args: &[String], local: Option<&dyn Local>) -> Result<String, Str
             let images: Vec<&str> = args.windows(2).filter(|w| w[0] == "--image").map(|w| w[1].as_str()).collect();
             let mut flow = Flow::default();
             for (k, f) in images.iter().enumerate() {
-                let abs = std::fs::canonicalize(f).map_err(|e| format!("{f}: {e}"))?;
+                let abs = dunce::canonicalize(f).map_err(|e| format!("{f}: {e}"))?;
                 flow.steps.insert(format!("in{k}"), Step::new("media.load", json!({"path": abs})));
             }
             let refs: Vec<J> = (0..images.len()).map(|k| json!(format!("@in{k}"))).collect();

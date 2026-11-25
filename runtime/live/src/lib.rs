@@ -15,8 +15,13 @@ use raea_runtime_react::{ReactOutbox, ReactPlugin};
 mod open;
 mod sound;
 mod pointer;
+mod pick3d;
+pub use pick3d::want_wire;
 pub use sound::warm_audio;
 mod draw;
+mod react;
+pub use react::needs_react;
+mod props;
 
 type R<T> = Result<T, String>;
 
@@ -56,6 +61,9 @@ pub struct Live {
     frame: i64,
     /// the gamepads' marked keys the last frame was given beside its input ("Pad0:South"), for its input log
     pads: Vec<String>,
+    /// the keys an app screen took from the last frame (the page didn't get them), left out of its input log, which
+    /// keeps them under `apps` (`app_input`)
+    taken: Vec<String>,
     /// the pointer on the page's elements, as the last frame left it (pointer.rs)
     pointer: pointer::PagePointer,
     /// generated sounds' files, by what they were made from (looked up once)
@@ -73,6 +81,10 @@ pub struct Live {
     /// this session's seed and the time (ms) its frame 0 is at: its Math.random and Date (motion/pure.ts), sent with each
     /// frame and kept in an input log, so a replay draws what was played
     session: (u32, f64),
+    /// frames told as `raea render` tells them (open_render): the composition's own seed, clock and length, no input
+    render: bool,
+    /// the props set over its defaults while it plays, and what they change that the 3D holds (props.rs)
+    props: props::Props,
 }
 
 /// A live session's seed and start: RAEA_SEED when it's set (a test), else from the clock and the process
@@ -165,9 +177,30 @@ impl Live {
         let (_, kind, props, kids) = q.iter(w).find(|(n, ..)| n.0 == id)?;
         let mut props = props.map(|p| p.0.clone()).unwrap_or_default();
         let owner = props.remove("data-raea-owner").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        // a 3D part's element holds its own props as the SDK's JSON (data-props) and its kind as data-3d: answered as
+        // those, so an inspector that asks again by id shows the part's props, not the holder's
+        let mut kind = kind.0.clone();
+        let mut part = None;
+        if let (Some(k), Some(own)) = (props.get("data-3d").and_then(Value::as_str).map(str::to_string), props.get("data-props").and_then(Value::as_str).and_then(|t| serde_json::from_str::<serde_json::Map<String, Value>>(t).ok())) {
+            kind = k;
+            part = raea_sys_frame::layer::key_from_props(&own);
+            props = own;
+            props.retain(|k, _| !k.starts_with("data-raea-"));
+        }
         props.retain(|k, v| k != "children" && !(k.starts_with("on") && k[2..].starts_with(|c: char| c.is_ascii_uppercase())) && !v.is_null());
         let text: String = kids.map(|ks| ks.iter().filter_map(|e| w.get::<raea_runtime_react::ReactText>(e).map(|t| t.0.clone())).collect()).unwrap_or_default();
-        Some(json!({"id": id, "kind": kind.0, "owner": owner, "rect": rect, "props": props, "text": text}))
+        let mut e = json!({"id": id, "kind": kind, "owner": owner, "rect": rect, "props": props, "text": text});
+        // a 3D part's box is where it is drawn now, not its holder's (which has none): an inspector asking again by id
+        // as the scene moves lost the outline it had from the click
+        if let Some(key) = part {
+            let at = self.locate(std::slice::from_ref(&key), &[])["parts"][0].take();
+            if at.is_array() {
+                e["rect"] = at;
+            }
+            e["part"] = json!(true);
+            e["key"] = json!(key);
+        }
+        Some(e)
     }
 
     pub fn step(&mut self, f: i64, keys: &[String], pointer: Option<(f64, f64, bool)>) -> R<()> {
@@ -177,8 +210,13 @@ impl Live {
     /// `step_at`, its sound synced too when `sound`.
     fn step_inner(&mut self, f: i64, keys: &[String], pointer: Option<(f64, f64, bool)>, lag: f64, sound: bool) -> R<()> {
         self.lag = (lag, std::time::Instant::now());
+        // the 3D's holds worked out after the last props (props.rs) were this frame's
+        self.props.base = None;
         self.frame = f;
         self.pads.clear();
+        self.taken.clear();
+        // the app screens step to this frame at the page's next sync (screen.rs step_all)
+        self.page.set_app_frame(f, self.fps);
         let t0 = std::time::Instant::now();
         if self.baked.is_some() {
             // a baked timeline: its recorded commits, no JS; the clips it cuts to soon opened ahead; the page styled at
@@ -201,6 +239,9 @@ impl Live {
                 Some(e) => Some(raea_runtime_page::screen::route(&mut self.page, e, keys, pointer, (self.w, self.h))),
                 None => None,
             };
+            if let Some(r) = &routed {
+                self.taken = keys.iter().filter(|k| !r.contains(k)).cloned().collect();
+            }
             let keys = routed.as_deref().unwrap_or(keys);
             // the pointer on the page's elements: their on* handlers, before the frame's step (pointer.rs)
             if let Some(p) = pointer {
@@ -209,13 +250,28 @@ impl Live {
                     self.app.world().resource::<ReactOutbox>().send(m);
                 }
             }
-            self.app.world().resource::<ReactOutbox>().send_raw(frame_event(f, keys, pointer, Some(self.session)));
-            raea_runtime_react::scene::settle(&mut self.app, Some(f), 5.0)?;
+            self.app.world().resource::<ReactOutbox>().send_raw(if self.render { format!(r#"{{"t":"event","name":"raea-frame","value":{f}}}"#) } else { frame_event(f, keys, pointer, Some(self.session)) });
+            // a layout read the composition makes (docs/layout-reads.feature LR2): the live page synced to the World as
+            // it is mid-settle, laid out, and its boxes; the frame's draw syncs it again with the 3D's holders. Preview,
+            // play, the app's stage and an exported game all step here
+            let (page, brand) = (&mut self.page, self.brand.as_deref());
+            let mut lay = |w: &mut World, q: &str| {
+                page.sync(w, &std::collections::HashMap::new(), brand).map_err(|e| e.to_string())?;
+                page.lay_out();
+                Ok(page.layout_snapshot(q))
+            };
+            let seen = raea_runtime_react::flushed();
+            raea_runtime_react::scene::settle_with(&mut self.app, Some(f), 5.0, &mut lay)?;
+            // a props pass (set_props): the frame is taken once its marker says the props have landed, not at the mark
+            // the frame already had, which a paused stage drew again unchanged (docs/realtime.feature RT4e)
+            if let Some(n) = self.props.wanted.take() {
+                props::landed(&mut self.app, &mut self.props.marker, n, seen, &mut |app| raea_runtime_react::scene::settle_with(app, Some(f), 5.0, &mut lay).map(drop))?;
+            }
             // a game's 3D: this frame's scene, as it was just computed, set on the live engine
             if let Some(ls) = self.live3d.as_mut() {
                 let t = std::time::Instant::now();
                 raea_runtime_export::live_scene(self.app.world_mut(), ls, &mut self.scene, (self.w, self.h), self.fps, &self.dir)?;
-                if std::env::var_os("RAEA_LIVE_TRACE").is_some() && t.elapsed().as_secs_f64() > 0.002 {
+                if raea_io_trace::stat("RAEA_LIVE_TRACE") && t.elapsed().as_secs_f64() > 0.002 {
                     eprintln!("raea live: frame {f}: its 3D rows {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
                 }
             }
@@ -225,7 +281,7 @@ impl Live {
         if sound {
             self.sound(f);
         }
-        if std::env::var_os("RAEA_LIVE_TRACE").is_some() && t0.elapsed().as_secs_f64() > 0.02 {
+        if raea_io_trace::stat("RAEA_LIVE_TRACE") && t0.elapsed().as_secs_f64() > 0.02 {
             eprintln!("raea live: frame {f}: settle {:.1} ms, sound {:.1} ms", (t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3);
         }
         Ok(())
@@ -314,7 +370,7 @@ fn sound_key(js: &Path, dir: &Path) -> u64 {
     }
     let bundle = twox_hash::XxHash3_64::oneshot(&h);
     walk(dir, &mut h, 0);
-    if std::env::var_os("RAEA_SOUND_TRACE").is_some() {
+    if raea_io_trace::stat("RAEA_SOUND_TRACE") {
         eprintln!("raea live: sound key: bundle {bundle:016x} ({} bytes), with the project {:016x}", std::fs::metadata(js).map(|m| m.len()).unwrap_or(0), twox_hash::XxHash3_64::oneshot(&h));
     }
     twox_hash::XxHash3_64::oneshot(&h)
@@ -335,7 +391,13 @@ impl Live {
     /// The keys the last frame stepped was given: `keys` and the gamepads marked beside them, as its input log records
     /// them, so a render of the log gives the game the same pads (bench/render-play's live-gamepad).
     pub fn played_keys(&self, keys: &[String]) -> Vec<String> {
-        keys.iter().chain(&self.pads).cloned().collect()
+        keys.iter().chain(&self.pads).filter(|k| !self.taken.contains(k)).cloned().collect()
+    }
+
+    /// What reached the app screens in the last frame stepped, as its input log keeps it (`apps`): a render of the
+    /// log gives them the same (runtime/page/src/screen.rs).
+    pub fn app_input(&self) -> Option<serde_json::Value> {
+        raea_runtime_page::screen::logged(&self.page)
     }
 }
 

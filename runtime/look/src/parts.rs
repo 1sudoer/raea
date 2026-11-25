@@ -10,16 +10,24 @@ pub fn visible(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, track: 
     }
 }
 
-/// A sprite sheet (`grid` [columns, rows], from the first frame): the cell `frame` shows, keyed (an <ImagePlane>'s,
-/// a <Sprite>'s)
+/// A sprite sheet (`grid` [columns, rows]): the cell `frame` shows and the grid, both keyed, so a part whose `src`
+/// changes to a sheet of another grid shows that sheet's cells (an <ImagePlane>'s, a <Sprite>'s). A frame without a
+/// grid is one cell.
 pub fn sheet(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, its: &[Item]) {
-    if let Some(Value::Array(g)) = its[0].props.get("grid") {
-        if let [c, r] = g.as_slice() {
-            row.insert("sheet_cols".into(), V::N(c.as_f64().unwrap_or(1.0)));
-            row.insert("sheet_rows".into(), V::N(r.as_f64().unwrap_or(1.0)));
-            column(p, row, id, "sheet_frame", &its.iter().map(|i| n(&i.props, "frame", 0.0).floor()).collect::<Vec<_>>());
-        }
+    let grid = |i: &Item| match i.props.get("grid") {
+        Some(Value::Array(g)) => match g.as_slice() {
+            [c, r] => Some([c.as_f64().unwrap_or(1.0), r.as_f64().unwrap_or(1.0)]),
+            _ => None,
+        },
+        _ => None,
+    };
+    if !its.iter().any(|i| grid(i).is_some()) {
+        return;
     }
+    let grids: Vec<[f64; 2]> = its.iter().map(|i| grid(i).unwrap_or([1.0, 1.0])).collect();
+    column(p, row, id, "sheet_cols", &grids.iter().map(|g| g[0]).collect::<Vec<_>>());
+    column(p, row, id, "sheet_rows", &grids.iter().map(|g| g[1]).collect::<Vec<_>>());
+    column(p, row, id, "sheet_frame", &its.iter().map(|i| n(&i.props, "frame", 0.0).floor()).collect::<Vec<_>>());
 }
 
 /// `color` keyed as col_r, col_g, col_b (`default` where a frame has none); `srgb` ([r, g, b], a Bevy Srgba's
@@ -48,10 +56,11 @@ pub fn keyed_vec(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, its: 
 /// `own:uniforms` component rows from each frame they change, which raea-sys-shader's own_live.rs packs into the
 /// part's Material; none when they never change over a render's frames (the spec the part is made with holds them),
 /// but one for a single frame (live play's, whose next frame may change them). `spec` finds an item's Material spec: a
-/// mesh's material's `shader`, a 2D part's own. Called after the part's row is pushed.
-pub fn own_uniforms(p: &mut Program, id: &str, its: &[Item], spec: impl Fn(&Item) -> Option<&Value>) {
+/// mesh's material's `shader`, a 2D part's own. With `ext`, a ShaderExtension's spec (no `own`) is sent too: its
+/// uniforms froze at the part's first frame without (docs/stage-guards.feature SG1). Called after the part's row is pushed.
+pub fn own_uniforms(p: &mut Program, id: &str, its: &[Item], ext: bool, spec: impl Fn(&Item) -> Option<&Value>) {
     let each: Vec<(usize, Value)> = its.iter().enumerate().filter_map(|(f, it)| {
-        let s = spec(it).filter(|s| s.get("own").is_some())?;
+        let s = spec(it).filter(|s| ext || s.get("own").is_some())?;
         let v = serde_json::json!({ "uniforms": s.get("uniforms").cloned().unwrap_or(Value::Null), "buffers": s.get("buffers").cloned().unwrap_or(Value::Null) });
         Some((f, serde_json::json!({ "type": "own:uniforms", "value": v })))
     }).collect();
@@ -107,4 +116,45 @@ pub fn srcs_of(its: &[Item]) -> Vec<String> {
         }
         None => src_path(s),
     }).collect()
+}
+
+/// A screen's columns (<Screen>, <Model screens>): its spec (a panel's `screen`) or a model's `screens` and `hide`,
+/// JSON, from the first frame; the tube's power keyed when it changes.
+pub fn screen_columns(p: &mut Program, row: &mut BTreeMap<String, V>, id: &str, its: &[Item]) {
+    let first = &its[0].props;
+    for (k, col) in [("screen", "screen"), ("screens", "screens"), ("hide", "hide")] {
+        if let Some(v) = first.get(k).filter(|v| !v.is_null()) {
+            row.insert(col.into(), V::S(v.to_string()));
+        }
+    }
+    if its.iter().any(|i| i.props.contains_key("screenPower")) {
+        column(p, row, id, "screen_power", &its.iter().map(|i| n(&i.props, "screenPower", 1.0)).collect::<Vec<_>>());
+    }
+    // a flat screen's brightness over the frames (the spec holds the first; engine/screen.rs's sync_screens reads this)
+    if its.iter().any(|i| screen_bright(&i.props).is_some()) {
+        column(p, row, id, "screen_bright", &its.iter().map(|i| screen_bright(&i.props).unwrap_or(1.0)).collect::<Vec<_>>());
+    }
+}
+
+/// A flat screen's `brightness`, from its spec (Screen's prop)
+pub fn screen_bright(props: &Map<String, Value>) -> Option<f64> {
+    props.get("screen")?.get("brightness")?.as_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sheet's grid is keyed as its cell is, so a src that changes to a sheet of another grid shows that sheet's
+    /// cells (the grid was the first frame's: 0.1.1's showreel, 11-10).
+    #[test]
+    fn a_sheets_grid_is_keyed() {
+        let plane = |grid: [u32; 2], frame: u32| Item { kind: "panel", props: std::sync::Arc::new(serde_json::json!({"grid": grid, "frame": frame}).as_object().unwrap().clone()), shape: None, material: None, at: None, world: Default::default() };
+        let (mut p, mut row) = (Program::default(), BTreeMap::new());
+        sheet(&mut p, &mut row, "plane0", &[plane([2, 1], 0), plane([1, 2], 1)]);
+        let keyed = |c: &str| p.keys.get(&("plane0".to_string(), c.to_string())).map(|k| k.iter().map(|(f, v, _)| (*f, *v)).collect::<Vec<_>>());
+        assert_eq!(keyed("sheet_cols"), Some(vec![(0, 2.0), (1, 1.0)]));
+        assert_eq!(keyed("sheet_rows"), Some(vec![(0, 1.0), (1, 2.0)]));
+        assert_eq!(keyed("sheet_frame"), Some(vec![(0, 0.0), (1, 1.0)]));
+    }
 }

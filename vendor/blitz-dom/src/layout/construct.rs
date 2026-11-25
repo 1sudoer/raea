@@ -1167,6 +1167,8 @@ pub(crate) fn build_inline_layout_into(
     }
     text_layout.text = builder.build_into(&mut text_layout.layout);
     text_layout.text_nodes = std::mem::take(&mut text_transformer.texts);
+    // raea: the families its styles asked for, checked now that the builder has let go of the fonts (#174)
+    crate::not_applied::check_families(font_ctx);
     return;
 
     fn build_inline_layout_recursive(
@@ -1432,10 +1434,16 @@ fn inline_edges(node: &Node) -> [bool; 4] {
         style::values::generics::length::GenericMargin::LengthPercentage(l) => nz(l),
         _ => false,
     };
+    // a border is there when it has a width and a style: with `border-style: none` (the initial style) its width is
+    // still `medium` in the computed values, though it draws and takes nothing, as table.rs's side_width reads it.
+    // Counted from the width alone, every plain span had a border edge, and the spacer at each edge split the shaping
+    // there, so kerning across spans was lost (snapcn's word-flip, a letter a span, drew 5.6 px wider than Chrome;
+    // docs/layout-reads.feature LR10)
+    let border = |w: app_units::Au, s: style::values::computed::BorderStyle| !s.none_or_hidden() && w.to_f32_px() != 0.0;
     [
         auto_or(&m.margin_left),
-        nz(&p.padding_left.0) || b.border_left_width.0.to_f32_px() != 0.0,
+        nz(&p.padding_left.0) || border(b.border_left_width.0, b.border_left_style),
         auto_or(&m.margin_right),
-        nz(&p.padding_right.0) || b.border_right_width.0.to_f32_px() != 0.0,
+        nz(&p.padding_right.0) || border(b.border_right_width.0, b.border_right_style),
     ]
 }

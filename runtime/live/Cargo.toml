@@ -7,17 +7,22 @@ publish = false
 description = "A composition stepped live at the display's rate: its page, 3D and sound each frame, with the person's keys and pointer"
 
 [dependencies]
+dunce = "1"
 raea-runtime-react = { path = "../../runtime/react", default-features = false }
 raea-runtime-page = { path = "../page" }
 raea-runtime-sound = { path = "../sound", default-features = false }
 raea-runtime-export = { path = "../export" }
 raea-runtime-bake = { path = "../bake" }
+# which of a part's columns a running world takes frame by frame (live_dynamic): the rest a props change is held on
+raea-runtime-scene = { path = "../scene" }
 raea-render = { path = "../../engine/render", default-features = false, features = ["native"] }
 raea-gpu-device = { path = "../../gpu/device" }
 raea-io-net = { path = "../../io/net" }
 raea-io-trace = { path = "../../io/trace" }
 raea-core-program = { path = "../../core/program" }
 raea-sys-mix = { path = "../../systems/mix" }
+raea-sys-frame = { path = "../../systems/frame" }
+raea-sys-hold = { path = "../../systems/hold" }
 bevy = { version = "=0.20.0", default-features = false, features = ["std", "default_app"] }
 serde_json = "1"
 wgpu = "=30.0.1"

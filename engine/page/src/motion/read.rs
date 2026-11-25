@@ -14,6 +14,24 @@ impl BlitzPage {
             std::thread::yield_now();
         }
         self.dump();
+        self.layers();
+    }
+
+    /// The page laid out and nothing drawn (`raea world`, docs/direction.feature DR1): the main world's schedules run
+    /// (styles, layout) until its fonts and images are in, the render world's never, so the GPU is given no work. What
+    /// `manifest` and `boxes` read after it is what `draw` would have laid out.
+    pub fn lay_out(&mut self) {
+        for _ in 0..LOADING_UPDATES {
+            // the time the render world sends at each drawn update (bevy_render's send_time), or bevy_time warns
+            if let Some(s) = self.app.get_sub_app(bevy::render::RenderApp).and_then(|r| r.world().get_resource::<bevy::time::TimeSender>()) {
+                let _ = s.0.try_send(std::time::Instant::now());
+            }
+            self.app.main_mut().update();
+            if !self.loading() {
+                break;
+            }
+            std::thread::yield_now();
+        }
     }
 
     /// RAEA_PAGE_DUMP leaves this page out: a page beside the composition's (raea-render's image rows, rows2d.rs) wrote
@@ -52,7 +70,9 @@ impl BlitzPage {
         }
         self.dump();
         let image = self.image();
-        Ok(self.read(&[(image, self.w, self.h, ENCODER_COPY)])?.remove(0))
+        let px = self.read(&[(image, self.w, self.h, ENCODER_COPY)])?.remove(0);
+        self.layers();
+        Ok(px)
     }
 
     /// Each image drawn by one update and copied to the CPU once, in one submit, each into a buffer labelled `label`
@@ -119,6 +139,25 @@ impl BlitzPage {
         Some([b.x as f32, b.y as f32, b.width as f32, b.height as f32])
     }
 
+    /// The page's layout as a composition's script reads it (`page.layout`, docs/layout-reads.feature LR1): raea-sys-page's
+    /// snapshot with offsets, each element under the id `id` gives it (None leaves it out), and `s`, the computed style
+    /// of the elements in `styles` (op ids; getComputedStyle, LR5). Lay the page out first.
+    pub fn layout_snapshot(&self, id: impl Fn(u64) -> Option<u64>, styles: &[u64]) -> String {
+        let docs = self.app.world().non_send::<Docs>();
+        let Some(doc) = docs.0.get(&self.page) else { return "{\"vw\":0,\"vh\":0,\"n\":[],\"o\":[]}".into() };
+        let snap = raea_sys_page::snapshot_by(doc, &self.nodes, &id, true);
+        if styles.is_empty() {
+            return snap;
+        }
+        let mut s = serde_json::Map::new();
+        for &op in styles {
+            let (Some(&n), Some(key)) = (self.nodes.by_id.get(&op), id(op)) else { continue };
+            let Some(cs) = doc.get_node(n).and_then(|n| n.primary_styles()) else { continue };
+            s.insert(key.to_string(), computed_style(&cs));
+        }
+        format!("{},\"s\":{}}}", &snap[..snap.len() - 1], serde_json::Value::Object(s))
+    }
+
     /// The element the ops made that's topmost at the point (page px), as Blitz's hit test finds it (transforms and
     /// pointer-events as drawn): the nearest element up from the hit that has an id.
     pub fn hit(&mut self, x: f32, y: f32) -> Option<u64> {
@@ -166,4 +205,41 @@ impl BlitzPage {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
+}
+
+impl BlitzPage {
+    /// The composition's page as layer indices at a render's frame, recorded (`raea render --layers`); a page beside
+    /// the composition's (`not_dumped`) or a page with no render clock records nothing. Called once the frame's update has laid
+    /// the page out (after its read, for a read frame).
+    pub(crate) fn layers(&mut self) {
+        let (Some((now, _, fps)), true, true) = (self.clock, self.dumps, raea_sys_layers::on()) else { return };
+        let (w, h, page) = (self.w, self.h, self.page);
+        let scale = self.app.world().get::<Page>(page).map_or(1.0, |p| p.scale as f64);
+        let mut docs = self.app.world_mut().non_send_mut::<Docs>();
+        let Some(doc) = docs.0.get_mut(&page) else { return };
+        let (px, layers) = raea_sys_layers::page_ids(doc, scale, w, h);
+        raea_sys_layers::with(|r| r.frame((now * fps).round() as i64, w, h, &px, &layers));
+    }
+}
+
+/// What getComputedStyle answers (LR5): these properties' computed values, as stylo serializes them (Chrome's spelling:
+/// px lengths, rgb() colours, a font list as written).
+const COMPUTED: &[&str] = &[
+    "display", "position", "visibility", "opacity", "color", "background-color", "font-family", "font-size", "font-weight", "font-style", "font-stretch",
+    "line-height", "letter-spacing", "word-spacing", "text-align", "text-transform", "text-indent", "white-space", "font-feature-settings", "font-variation-settings",
+    "width", "height", "top", "right", "bottom", "left", "margin-top", "margin-right", "margin-bottom", "margin-left", "padding-top", "padding-right",
+    "padding-bottom", "padding-left", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width", "box-sizing", "transform",
+    "transform-origin", "z-index", "overflow-x", "overflow-y", "flex-direction", "justify-content", "align-items", "gap", "filter",
+];
+
+/// An element's computed style as {property: value} for [`COMPUTED`].
+fn computed_style(cs: &style::properties::ComputedValues) -> serde_json::Value {
+    use style::properties::{PropertyDeclarationId, PropertyId};
+    let mut out = serde_json::Map::new();
+    for name in COMPUTED {
+        if let Some(id) = PropertyId::parse_enabled_for_all_content(name).ok().and_then(|p| p.longhand_id()) {
+            out.insert((*name).into(), cs.computed_value_to_string(PropertyDeclarationId::Longhand(id)).into());
+        }
+    }
+    serde_json::Value::Object(out)
 }

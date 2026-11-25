@@ -38,7 +38,7 @@ fn main() {
         std::process::exit(2);
     };
     let n = |i: usize, d: u32| args.get(i).and_then(|a| a.parse().ok()).unwrap_or(d);
-    let a = Args { js: PathBuf::from(js).canonicalize().expect("the bundle"), out: out.clone(), size: (n(2, 640), n(3, 360)), frame: n(4, 30) as i64, fps: n(5, 30) as f64, scene_only };
+    let a = Args { js: dunce::canonicalize(&PathBuf::from(js)).expect("the bundle"), out: out.clone(), size: (n(2, 640), n(3, 360)), frame: n(4, 30) as i64, fps: n(5, 30) as f64, scene_only };
     if window {
         std::process::exit(in_window(a));
     }

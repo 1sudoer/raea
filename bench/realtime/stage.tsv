@@ -1,0 +1,15 @@
+# The realtime bench's stage rows (stage.sh): a composition with one control in its defaultProps, the value it is
+# changed to on the running stage, the frame compared and how many draws of it are captured. Tab-separated:
+#   path      the composition, from the repo root (or absolute: a copy outside the repo)
+#   prop      the control, a key of its <Composition defaultProps>
+#   a         its value as written (as the source spells it)
+#   b         the value set with stage.props, as JSON (and written into the copy's defaultProps as spelled)
+#   frame     the frame compared
+#   updates   draws of the frame captured (1 for a frame drawn at once; many for ray-traced light converging)
+#   seed      optional: RAEA_SEED for the window, so the live session takes the render's seed
+bench/realtime/cases/title.tsx	hue	210	30	75	3
+bench/realtime/cases/random.tsx	hue	210	30	75	2
+bench/realtime/cases/random.tsx	hue	210	30	75	2	340724834
+bench/realtime/cases/raster.tsx	color	"#d04a3a"	"#3ac06a"	75	4
+bench/realtime/cases/caption.tsx	color	"#d04a3a"	"#3ac06a"	75	4
+bench/realtime/cases/solari.tsx	glow	600	2400	75	65	-	seq

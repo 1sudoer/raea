@@ -11,7 +11,9 @@ use super::*;
 pub fn export_cache(tsx: &Path, js: &Path, out: &Path, args: &[String]) -> Option<PathBuf> {
     let ext = out.extension()?.to_str()?.to_ascii_lowercase();
     // RAEA_FRAME_LOG measures a render, so it renders (a hit would hand back the earlier file and write no log)
-    if !matches!(ext.as_str(), "mp4" | "mov") || std::env::var_os("RAEA_AUDIO_BOUNCE").is_some() || std::env::var_os("RAEA_FRAME_LOG").is_some() {
+    // RAEA_HIDE_MEDIA, RAEA_HIDE_LAYERS and RAEA_LAYER draw a page the bundle doesn't say (CSS the render adds): never the cache's
+    let hides = ["RAEA_HIDE_MEDIA", "RAEA_HIDE_LAYERS", "RAEA_LAYER"].iter().any(|k| std::env::var_os(k).is_some());
+    if !matches!(ext.as_str(), "mp4" | "mov") || hides || std::env::var_os("RAEA_AUDIO_BOUNCE").is_some() || std::env::var_os("RAEA_FRAME_LOG").is_some() {
         return None;
     }
     let root = match std::env::var("RAEA_EXPORT_CACHE") {
@@ -30,7 +32,7 @@ pub fn export_cache(tsx: &Path, js: &Path, out: &Path, args: &[String]) -> Optio
     eat(&bundle);
     eat(ext.as_bytes());
     // this build (its binary's modification time and size): another engine paints other bytes
-    if let Some(m) = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()).and_then(|e| e.metadata().ok()) {
+    if let Some(m) = std::env::current_exe().ok().and_then(|e| dunce::canonicalize(e).ok()).and_then(|e| e.metadata().ok()) {
         let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
         eat(&t.to_le_bytes());
         eat(&m.len().to_le_bytes());
@@ -46,7 +48,7 @@ pub fn export_cache(tsx: &Path, js: &Path, out: &Path, args: &[String]) -> Optio
             continue;
         }
         // a path by where it really is (/var and /private/var are one folder)
-        match std::fs::canonicalize(a) {
+        match dunce::canonicalize(a) {
             Ok(p) => eat(p.as_os_str().as_encoded_bytes()),
             Err(_) => eat(a.as_bytes()),
         }
@@ -77,7 +79,7 @@ pub fn export_cache(tsx: &Path, js: &Path, out: &Path, args: &[String]) -> Optio
             }
         }
     }
-    let out_abs = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+    let out_abs = dunce::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
     walk(tsx.parent()?, 0, &out_abs, &mut files);
     // exports this cache wrote (an earlier render's OUT.mp4 beside the edit) are outputs, not inputs, unless the
     // composition plays them: a cut laid from its shots' renders (anything/cut/intro.tsx over intro/renders/*.mp4)
@@ -87,16 +89,22 @@ pub fn export_cache(tsx: &Path, js: &Path, out: &Path, args: &[String]) -> Optio
     // never a stale export)
     let text = String::from_utf8_lossy(&bundle);
     let made: std::collections::HashSet<PathBuf> = std::fs::read_to_string(root.join("outputs.list")).unwrap_or_default().lines().map(PathBuf::from).collect();
-    files.retain(|p| !made.contains(&std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())) || p.file_stem().is_some_and(|n| text.contains(&*n.to_string_lossy())));
+    // (a file is one of them only if its name is one of theirs, or it is a link to one: only those are resolved)
+    let names: std::collections::HashSet<&std::ffi::OsStr> = made.iter().filter_map(|m| m.file_name()).collect();
+    let may_be_made = |p: &Path| p.file_name().is_some_and(|n| names.contains(n)) || p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink());
+    files.retain(|p| !may_be_made(p) || !made.contains(&dunce::canonicalize(p).unwrap_or_else(|_| p.clone())) || p.file_stem().is_some_and(|n| text.contains(&*n.to_string_lossy())));
     // absolute media paths the bundle names (an import from outside the edit's folder becomes its path)
     for q in text.split('"').skip(1).step_by(2) {
         if q.starts_with('/') && q.len() < 4096 && Path::new(q).extension().and_then(|x| x.to_str()).is_some_and(|x| MEDIA_EXTS.contains(&x.to_ascii_lowercase().as_str())) {
             files.push(PathBuf::from(q));
         }
     }
-    files.push(std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok())?);
+    files.push(std::env::current_exe().ok().and_then(|e| dunce::canonicalize(e).ok())?);
     files.sort();
     files.dedup();
+    // the optimized copies there are, listed once: asking each media file for its own read its first and last MiB and
+    // listed this folder again (2,417 files in one real project, before a render's first frame). Only a video has any
+    let copies: Vec<String> = std::fs::read_dir(raea_io_media::mezz::dir()).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
     for p in &files {
         eat(p.as_os_str().as_encoded_bytes());
         match std::fs::metadata(p) {
@@ -108,12 +116,14 @@ pub fn export_cache(tsx: &Path, js: &Path, out: &Path, args: &[String]) -> Optio
         }
         // which file its decoders read: a video's optimized copy, once complete, changes the pixels without touching
         // the source (raea_io_media::mezz)
-        if MEDIA_EXTS.contains(&p.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase().as_str()) {
-            if raea_io_media::mezz::has(p) {
+        let video = matches!(p.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "mp4" | "mov" | "m4v");
+        if video && !copies.is_empty() && let Some(fp) = raea_io_media::mezz::fingerprint(p) {
+            // its whole copy (FP.EXT) and its range copies (FP@A-B.EXT): the frames inside them come from the copies
+            let named = |mark: char| copies.iter().any(|n| n.strip_prefix(fp.as_str()).is_some_and(|rest| rest.starts_with(mark) && !rest.contains("partial")));
+            if named('.') {
                 eat(b"mezz");
             }
-            // its range copies too: the frames inside them come from the copies
-            for r in raea_io_media::mezz::ranges(p) {
+            for r in named('@').then(|| raea_io_media::mezz::ranges(p)).unwrap_or_default() {
                 eat(format!("mezz@{}-{}", r.first, r.last).as_bytes());
             }
         }
@@ -177,8 +187,8 @@ pub fn bundle_cache(tsx: &Path, o: &CompOpts) -> Option<PathBuf> {
         walk(&js.join("lite"), 0, &mut files);
         files.extend(stat(&js.join("node_modules/bevy-react/src/bridge.ts")).map(|(n, t)| (js.join("node_modules/bevy-react/src/bridge.ts"), n, t)));
     }
-    // sdk/tsconfig.base.json: what the SDK's import names mean (rewrite_into)
-    for p in [js.join("tsconfig.json"), js.join("package.json"), js.join("bun.lock"), raea_io_home::home().join("sdk").join(raea_io_home::sdk::LIST)] {
+    // sdk/tsconfig.base.json: what the SDK's import names mean (rewrite_into); and the edit itself when it is a dot file, which the walk passes over (the app's preview wrapper, .raea-view-NAME.tsx, is rewritten at one path and got the bundle of the last one)
+    for p in [js.join("tsconfig.json"), js.join("package.json"), js.join("bun.lock"), raea_io_home::home().join("sdk").join(raea_io_home::sdk::LIST)].into_iter().chain(file.starts_with('.').then(|| tsx.to_path_buf())) {
         files.extend(stat(&p).map(|(n, t)| (p, n, t)));
     }
     files.extend(std::env::current_exe().ok().and_then(|p| stat(&p).map(|(n, t)| (p, n, t))));
@@ -189,6 +199,7 @@ pub fn bundle_cache(tsx: &Path, o: &CompOpts) -> Option<PathBuf> {
         eat(&t.to_le_bytes());
     }
     eat(file.as_bytes());
+    eat(if crate::fresh::stamps() { b"stamps" } else { b"plain" });
     eat(if o.lite { entry_lite(&file, o) } else { entry(&file, o) }.as_bytes());
     // the bundler: raea-bundle's library, by its path, size and time
     if let Some((p, n, t)) = inproc::lib().ok().and_then(|l| stat(&l.path).map(|(n, t)| (l.path.clone(), n, t))) {
@@ -201,23 +212,22 @@ pub fn bundle_cache(tsx: &Path, o: &CompOpts) -> Option<PathBuf> {
 
 /// The newest `keep` files with extension `ext` in `dir` kept, by when they were last written or used.
 pub fn prune_cache(dir: &Path, ext: &str, keep: usize) {
-    // a write that never finished (its process killed between the copy and the rename) goes after an hour
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 3600);
-            if old && e.path().extension().is_some_and(|x| x == "tmp") {
-                let _ = std::fs::remove_file(e.path());
-            }
+    let mut all = vec![];
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let (p, t) = (e.path(), e.metadata().and_then(|m| m.modified()).ok());
+        // a write that never finished (its process killed between the copy and the rename) goes after an hour
+        if p.extension().is_some_and(|x| x == "tmp") && t.and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 3600) {
+            let _ = std::fs::remove_file(&p);
+        } else if let (Some(t), true) = (t, p.extension().is_some_and(|x| x == ext)) {
+            all.push((t, p));
         }
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut all: Vec<_> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == ext)).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
-    if all.len() <= keep {
-        return;
-    }
     all.sort_by(|a, b| b.0.cmp(&a.0));
+    // the oldest go, with what an export keeps beside it: its message, manifest and findings
     for (_, p) in all.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(p);
+        for f in ["said", "manifest", "findings"].map(|s| p.with_extension(s)).into_iter().chain([p]) {
+            let _ = std::fs::remove_file(f);
+        }
     }
 }
 
@@ -252,7 +262,7 @@ pub(crate) fn sweep_stale_work_in(dir: &Path, now: std::time::SystemTime) {
         // raea-cli-r{pid}-ThreadId(n), raea-cli-b{pid}: gone only when the system says no such process is left, running
         // when it says it runs (this process's own folders too)
         let pid = name.get(10..).and_then(|s| s.split('-').next()).and_then(|p| p.parse::<u32>().ok());
-        let running = pid.map(|p| if p == std::process::id() { Some(true) } else { crate::pid::running(p) });
+        let running = pid.map(|p| if p == std::process::id() { Some(true) } else { raea_runtime_pid::running(p) });
         let gone = running == Some(Some(false));
         // the age rule is for a folder whose process isn't known to run: a long render stops touching its folder's top
         // level well before it ends (#31), and a killed render's PID handed to another process keeps its folder

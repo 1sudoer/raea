@@ -11,7 +11,7 @@ use raea_runtime_look::camera;
 use serde_json::json;
 
 fn cam(props: serde_json::Value) -> Item {
-    Item { kind: "camera", props: Arc::new(props.as_object().unwrap().clone()), shape: None, material: None, world: Mat4::IDENTITY }
+    Item { kind: "camera", props: Arc::new(props.as_object().unwrap().clone()), shape: None, material: None, at: None, world: Mat4::IDENTITY }
 }
 
 #[test]
@@ -47,4 +47,24 @@ fn a_camera_with_a_rotation_keeps_it_exactly_and_one_without_has_none() {
     let mut plain: BTreeMap<String, V> = [("id".to_string(), V::S("cam".into()))].into();
     camera(&[vec![cam(json!({ "position": [4, 3, 6], "lookAt": [0, 0.2, 0], "rotation": [0.1, 0.2, 0.3] }))]], &mut Program::default(), &mut plain);
     assert!(!plain.contains_key("rot_qw"), "a rotation that isn't a quaternion places nothing");
+}
+
+#[test]
+fn an_environment_room_is_a_source_of_its_own_by_its_blur() {
+    // <Environment room blur> (three's RoomEnvironment, #165): no file, the engine makes it; the same room on two
+    // frames is one source, a file beside it another
+    let env = |p: serde_json::Value| Item { kind: "environment", props: Arc::new(p.as_object().unwrap().clone()), shape: None, material: None, at: None, world: Mat4::IDENTITY };
+    let frames = vec![
+        vec![cam(json!({ "position": [0, 0, 5] })), env(json!({ "room": true, "blur": 0.04, "intensity": 1 }))],
+        vec![cam(json!({ "position": [0, 0, 5] })), env(json!({ "room": true, "blur": 0.04, "intensity": 0.5 }))],
+        vec![cam(json!({ "position": [0, 0, 5] })), env(json!({ "src": "sky.hdr" }))],
+        vec![cam(json!({ "position": [0, 0, 5] })), env(json!({ "room": true }))],
+    ];
+    let mut row: BTreeMap<String, V> = [("id".to_string(), V::S("cam".into()))].into();
+    camera(&frames, &mut Program::default(), &mut row);
+    let srcs: Vec<String> = match row.get("env_srcs") {
+        Some(V::S(s)) => serde_json::from_str(s).unwrap(),
+        other => panic!("no env_srcs: {other:?}"),
+    };
+    assert_eq!(srcs, ["room:0.04", "sky.hdr", "room:0"]);
 }

@@ -1,0 +1,12 @@
+[package]
+name = "raea-sys-body"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "The character's body in Rust (docs/hands.feature), as sdk/body has it in TypeScript: the game_engine rig, poses and forward kinematics, arm and leg IK that reports what it changed, joint limits, a pose fitted to points seen, and a model of real hand poses"
+
+[dependencies]
+# the glam Bevy 0.20 uses, so a pose passes to the engine as it is
+glam = "0.33"
+serde_json = "1"

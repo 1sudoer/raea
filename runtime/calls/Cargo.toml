@@ -12,13 +12,17 @@ ml = ["dep:raea-sys-ml", "dep:raea-sys-speech"]
 
 [dependencies]
 raea-runtime-plugins = { path = "../plugins" }
+# raea/wear's bake as the native call wear.bake, registered with these (docs/wear.feature WR4)
+raea-runtime-wear = { path = "../wear" }
 raea-native = { path = "../../engine/native", default-features = false }
+raea-io-trace = { path = "../../io/trace" }
 raea-core-shape = { path = "../../core/shape" }
 raea-core-place = { path = "../../core/place" }
 raea-core-scene = { path = "../../core/scene" }
 raea-io-media = { path = "../../io/media", default-features = false, features = ["soft-audio", "apple"] }
 raea-io-net = { path = "../../io/net" }
 raea-sys-mix = { path = "../../systems/mix" }
+raea-sys-grab = { path = "../../systems/grab" }
 raea-sys-fonts = { path = "../../systems/fonts" }
 raea-sys-ml = { path = "../../systems/ml", optional = true }
 raea-sys-speech = { path = "../../systems/speech", optional = true }

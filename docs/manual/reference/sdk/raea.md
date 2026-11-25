@@ -38,7 +38,7 @@ See [Your first video](../../start/first-video.md) for the whole loop, and
 import { AbsoluteFill, ACTION_KEY, actionsIn, Animate } from "raea"
 ```
 
-`raea` exports 18 components, 8 hooks, 52 functions, 8 values, 91 types. Source: [sdk/raea/src/index.tsx](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/index.tsx).
+`raea` exports 21 components, 9 hooks, 65 functions, 11 values, 109 types. Source: [sdk/raea/src/index.tsx](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/index.tsx).
 
 ## Components
 
@@ -52,7 +52,7 @@ A box over the whole of its parent, laid out as a flex column; `style` is merged
 | `className` | `string` | Tailwind or CSS classes |
 | `children` | `ReactNode` | what fills it |
 
-Used in: [ui/images/image_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node.tsx), [ui/images/ui_texture_slice_flip_and_tile](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice_flip_and_tile.tsx), [ui/images/image_node_resizing](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node_resizing.tsx), [ui/images/ui_texture_atlas_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas_slice.tsx), [ui/images/ui_texture_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice.tsx), [ui/images/ui_texture_atlas](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas.tsx), [ui/layout/grid](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/grid.tsx), [ui/layout/ghost_nodes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/ghost_nodes.tsx), and 95 more.
+Used in: [ui/images/image_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node.tsx), [ui/images/ui_texture_slice_flip_and_tile](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice_flip_and_tile.tsx), [ui/images/image_node_resizing](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node_resizing.tsx), [ui/images/ui_texture_atlas_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas_slice.tsx), [ui/images/ui_texture_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice.tsx), [ui/images/ui_texture_atlas](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas.tsx), [ui/layout/grid](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/grid.tsx), [ui/layout/ghost_nodes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/ghost_nodes.tsx), and 99 more.
 
 ### `Animate`
 
@@ -69,7 +69,7 @@ Sound in step with the frame; no picture. A muted or ended Audio is silent.
 
 | Prop | Type | What it does |
 | --- | --- | --- |
-| `src` (required) | `string \| GeneratedAsset` | a file URL, or a generated asset from lyria() or sao() |
+| `src` (required) | `string \| GeneratedAsset` | a file URL (staticFile), or a generated sound from sao() |
 
 Also takes the props of [`MediaProps`](video.md#mediaprops).
 
@@ -106,9 +106,23 @@ Declares a composition inside the root. It draws nothing itself; a renderer find
 | `fps` (required) | `number` | frames a second |
 | `durationInFrames` (required) | `number` | its length in frames |
 | `defaultProps` | `P` | the props it's rendered with (JSON-like values only) |
+| `calculateMetadata` | `CalculateMetadata<P>` | its size, rate, length or props worked out from the props it's rendered with (`defaultProps` under the command line's `--props`): what it returns replaces the values above, so one composition renders a video per props file. It returns its values directly, not a promise |
+| `controls` | `Controls<P>` | the composition's controls: which of its defaultProps a person may tune, and how. Each names a defaultProps key, whose value is the control's; the feed's Controls panel shows them on the timeline and a change reaches the live picture as that prop |
 | `edit` | `Edit` | a hand edit laid over the composition (docs/craft-system.md, L): written back by the app's timeline |
 
-Used in: [ui/images/image_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node.tsx), [ui/images/ui_texture_slice_flip_and_tile](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice_flip_and_tile.tsx), [ui/images/image_node_resizing](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node_resizing.tsx), [ui/images/ui_texture_atlas_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas_slice.tsx), [ui/images/ui_texture_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice.tsx), [ui/images/ui_texture_atlas](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas.tsx), [ui/layout/grid](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/grid.tsx), [ui/layout/ghost_nodes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/ghost_nodes.tsx), and 148 more.
+Used in: [ui/images/image_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node.tsx), [ui/images/ui_texture_slice_flip_and_tile](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice_flip_and_tile.tsx), [ui/images/image_node_resizing](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node_resizing.tsx), [ui/images/ui_texture_atlas_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas_slice.tsx), [ui/images/ui_texture_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice.tsx), [ui/images/ui_texture_atlas](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas.tsx), [ui/layout/grid](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/grid.tsx), [ui/layout/ghost_nodes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/ghost_nodes.tsx), and 153 more.
+
+### `Effect`
+
+The picture under it, through the effect, for as long as its <Sequence> runs.
+
+| Prop | Type | What it does |
+| --- | --- | --- |
+| `kind` (required) | `string` | which effect: blur, mono, sepia, vivid, faded, contrast, bright, dark, invert or hue; with `parts`, its own name |
+| `parts` | `EffectPart[]` | an effect of its own, as CSS filter functions (a plugin's): each [function, value at amount 0, value at amount 1, unit], such as [["blur", 0, 6, "px"], ["saturate", 1, 1.6]] |
+| `amount` | `number` | how much of it, from 0 (none) to 1 (all, the default) |
+| `in` | `number` | frames it takes to come on at its part's start (0: on at once) |
+| `out` | `number` | frames it takes to go off by its part's end (0: off at once) |
 
 ### `Freeze`
 
@@ -167,14 +181,36 @@ The master: every sound in the composition brought to `lufs` integrated loudness
 
 ### `Nudge`
 
-Moves its child by (x, y): an element gets the move in front of its own transform; a component, whose box it
-can't reach, moves inside a full-frame layer.
+Places its child: an element gets the move in front of its own transform and the fade times its own opacity; a
+component, whose box it can't reach, or a part with a mask, is placed inside a full-frame layer.
 
 | Prop | Type | What it does |
 | --- | --- | --- |
 | `x` | `number` | how far to move it, in the composition's pixels |
 | `y` | `number` | how far to move it down, in the composition's pixels |
+| `scale` | `number` | how much bigger (2) or smaller (0.5), about its centre |
+| `rotate` | `number` | a turn, in degrees, about its centre |
+| `opacity` | `number` | 0 (gone) to 1 (as it was), times its own opacity |
+| `mirror` | `boolean` | flipped left to right |
+| `crop` | `[left: number, top: number, right: number, bottom: number]` | how much is cut off its left, top, right and bottom, each a share of that side from 0 to 0.9 |
+| `mask` | `Mask` | what of it is seen: a shape in shares of the frame (line, mirror, circle, rect, heart, star), turned, feathered or inverted (sdk/video cutout.ts, TL7f) |
+| `blend` | `Blend` | how it is drawn over what is under it: screen, multiply, overlay and the rest of CSS's blend modes |
+| `chroma` | `ChromaKey` | a colour taken out of it, as a green screen is: { color, strength, shadow } |
+| `adjust` | `Adjust` | its brightness, contrast, saturation, exposure, sharpen, highlights, shadows, temperature, tint, fade, vignette and grain, each 0 as shot (sdk/video adjust.ts, TL7g) |
+| `keys` | `Partial<Record<NudgeProp, NudgeKey[]>>` | any of the above over time: its keys, each [frame, value, ease?], in frames from where this part's time starts (its <Sequence>'s first frame), by the names in NUDGE_KEYED ("mask.x", "chroma.strength", "crop.left" for what is inside a mask, a key or a crop). A keyed property's still value is ignored. |
 | `children` | `ReactNode` | the part it places: an element, or a component, which moves inside a full-frame layer |
+
+### `OffthreadVideo`
+
+`<Video>` under the name a project moving from another React video tool may use for it, with its props.
+
+| Prop | Type | What it does |
+| --- | --- | --- |
+| `framing` | `"face"` | ours: frame the take on the largest face |
+| `punchIn` | `number` | ours: multiplies the framing's scale (1.15 is the usual) |
+| `matte` | `VideoMatte` | ours: its cutout: the mattes made of its file, which it wears as its mask, so what is cut out shows what is under it |
+
+Also takes the props of [`MediaProps`](video.md#mediaprops).
 
 ### `Overlay`
 
@@ -213,6 +249,8 @@ Shifts time by `from` and shows its children only for `durationInFrames` frames.
 | `className` | `string` | the wrapping box's classes |
 | `children` | `ReactNode` | what plays in it, at its own local time |
 
+Used in: [manual: hello](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/hello.tsx).
+
 ### `Series`
 
 Plays its Series.Sequence children back to back, each shifted by its own offset.
@@ -240,6 +278,17 @@ render gives the same element back.
 
 Also takes the props of [`StaggerProps`](animation.md#staggerprops) (`each`, `grid`, `exitEach`); [`AnimateOwnProps`](animation.md#animateownprops).
 
+### `Transition`
+
+Its children, coming in over the part's first frames, going out over its last, and moving by a Combo throughout.
+
+| Prop | Type | What it does |
+| --- | --- | --- |
+| `in` | `TransitionEdge` | over the part's first frames |
+| `out` | `TransitionEdge` | over the part's last frames |
+| `combo` | `ComboLoop` | a Combo over the whole part: a cycle every `frames`, from its first frame |
+| `children` | `ReactNode` | the part it brings in and takes out: what the <Sequence> holds |
+
 ### `Video`
 
 A video clip in step with the frame; `data-source-time` is the source time (seconds) to show.
@@ -248,10 +297,21 @@ A video clip in step with the frame; `data-source-time` is the source time (seco
 | --- | --- | --- |
 | `framing` | `"face"` | ours: frame the take on the largest face |
 | `punchIn` | `number` | ours: multiplies the framing's scale (1.15 is the usual) |
+| `matte` | `VideoMatte` | ours: its cutout: the mattes made of its file, which it wears as its mask, so what is cut out shows what is under it |
 
 Also takes the props of [`MediaProps`](video.md#mediaprops).
 
 ## Hooks
+
+### `useControl`
+
+A control's value as the frame is drawn: the composition's prop of that name, the
+value a person set on the live stage or, in a render, its defaultProps. For a part deep in the tree, so the value
+needn't be passed down as a prop; the root component can read its props as any component does.
+
+```ts
+function useControl<T = unknown>(name: string): T
+```
 
 ### `useCurrentFrame`
 
@@ -261,7 +321,7 @@ The frame being rendered, counted from the start of the nearest enclosing Sequen
 function useCurrentFrame(): number
 ```
 
-Used in: [ui/scroll_and_overflow/overflow_transform](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/scroll_and_overflow/overflow_transform.tsx), [ui/render_ui_to_texture](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/render_ui_to_texture.tsx), [ui/ui_material](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/ui_material.tsx), [ui/styling/gradients](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/styling/gradients.tsx), [ui/text/text_debug](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/text/text_debug.tsx), [ui/text/text](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/text/text.tsx), [ui/text/font_atlas_debug](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/text/font_atlas_debug.tsx), [3d/fog_volumes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/fog_volumes.tsx), and 43 more.
+Used in: [ui/scroll_and_overflow/overflow_transform](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/scroll_and_overflow/overflow_transform.tsx), [ui/render_ui_to_texture](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/render_ui_to_texture.tsx), [ui/ui_material](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/ui_material.tsx), [ui/styling/gradients](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/styling/gradients.tsx), [ui/text/text_debug](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/text/text_debug.tsx), [ui/text/text](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/text/text.tsx), [ui/text/font_atlas_debug](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/text/font_atlas_debug.tsx), [3d/fog_volumes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/3d/fog_volumes.tsx), and 47 more.
 
 ### `useGameEvents`
 
@@ -284,7 +344,7 @@ in order. Frames count from the nearest enclosing Sequence, so a game starts whe
 function useGameState<S>(initial: S, step: Step<S>): S
 ```
 
-Used in: [shader/shader_prepass](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/shader/shader_prepass.tsx), [shader/sprite_material](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/shader/sprite_material.tsx).
+Used in: [shader/shader_prepass](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/shader/shader_prepass.tsx), [shader/sprite_material](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/shader/sprite_material.tsx), [manual: squash](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/squash.tsx).
 
 ### `useInput`
 
@@ -318,11 +378,13 @@ function useSong(map: SongMap, options?: UseSongOptions): SongMoment & { song: S
 
 ### `useVideoConfig`
 
-The settings of the composition being rendered (a Sequence's width and height win inside it).
+The settings of the composition being rendered (inside a Sequence, its width, height and length win).
 
 ```ts
 function useVideoConfig(): VideoConfig
 ```
+
+Used in: [manual: title](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/title.tsx), [manual: turntable](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/turntable.tsx).
 
 ### `useWords`
 
@@ -350,6 +412,22 @@ function actionsIn(input: FrameInput): { name: string; args: any; }[]
 function applyActions<S>(actions: PanelActions<S>, state: S, input: FrameInput): S
 ```
 
+### `cancelRender`
+
+Fail the render: the error goes where a composition's throw goes (a data-raea-error the render reports and stops on).
+
+```ts
+function cancelRender(err: unknown): void
+```
+
+### `continueRender`
+
+Release a hold delayRender opened; the last one released wakes the frame. A handle already released does nothing.
+
+```ts
+function continueRender(handle: number): void
+```
+
 ### `curveFn`
 
 A curve name as a function (the engine's easing::Easing::parse, the same names).
@@ -364,6 +442,38 @@ The same move later by `frames`.
 
 ```ts
 function delay(m: MoveLike, frames: number): Move
+```
+
+### `delayRender`
+
+Hold the frame until `continueRender(handle)`. `label` names it if it's still open when its time runs out.
+
+```ts
+function delayRender(label?: string, options?: { timeoutInMilliseconds?: number; } | undefined): number
+```
+
+### `effectAt`
+
+How much of the effect is on at `frame` of a part `duration` frames long, coming on over `enter` and off over `exit`.
+
+```ts
+function effectAt(frame: number, duration: number, enter?: number, exit?: number): number
+```
+
+### `effectFilter`
+
+The CSS filter of `kind` at `amount` (0 to 1, clamped); undefined for a kind raea doesn't draw.
+
+```ts
+function effectFilter(kind: string, amount?: number): string | undefined
+```
+
+### `effectPartsError`
+
+Why `parts` isn't an effect's parts, or undefined when it is.
+
+```ts
+function effectPartsError(parts: unknown): string | undefined
 ```
 
 ### `fade`
@@ -416,6 +526,15 @@ The compositions the registered root declares, in order.
 function getCompositions(): RegisteredComposition[]
 ```
 
+### `getInputProps`
+
+The props given on the command line (`raea render --props '{"n": 2}'` or `--props props.json`), anywhere in a
+program; `{}` when none were. A composition's component gets them over its `defaultProps`.
+
+```ts
+function getInputProps<T extends Record<string, unknown> = Record<string, unknown>>(): T
+```
+
 ### `gridDelay`
 
 A grid item's distance from an origin, in steps (raea-animate's StaggerPattern::Grid, the same rule).
@@ -440,6 +559,19 @@ range (`extend`, the default, carries on; `clamp` holds the end value; `identity
 
 ```ts
 function interpolate(x: number, input: readonly number[], output: readonly number[], options?: InterpolateOptions): number
+```
+
+Used in: [manual: turntable](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/turntable.tsx), [manual: hello](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/hello.tsx).
+
+### `interpolateColors`
+
+`interpolate` for CSS colours: `input` mapped through `inputRange` to a colour between the two of `outputRange` it
+falls between, mixed in sRGB with alpha, as `rgba(r, g, b, a)` (channels rounded to whole numbers). Any CSS colour
+the canvas parses: a name, #rgb, #rrggbb(aa), rgb(a)() or hsl(a)(). Held at the end colours outside the range;
+`options` can change that and add an easing, as `interpolate`'s.
+
+```ts
+function interpolateColors(input: number, inputRange: readonly number[], outputRange: readonly string[], options?: InterpolateOptions): string
 ```
 
 ### `isGeneratedAsset`
@@ -512,6 +644,14 @@ Every step at once.
 function parallel(...steps: Step[]): Group
 ```
 
+### `partsFilter`
+
+The CSS filter of an effect given as parts, at `amount` (0 to 1, clamped).
+
+```ts
+function partsFilter(parts: EffectPart[], amount?: number): string
+```
+
 ### `pop`
 
 scale `from` (0.6), `peak` (1.08) at `frames`/2, 1 at `frames` (8); in over 3 frames.
@@ -545,6 +685,16 @@ a slow push-in on footage: scale 1 to 1 + `amount` (0.04) across `frames` (90), 
 function pushIn(o?: { amount?: number; frames?: number; }): Move
 ```
 
+### `random`
+
+A number in [0, 1) from a seed, a string or a number: the same on every frame, every run and every machine, so a
+scatter seeded `random("star" + i)` holds still while the frames change. A number seeds as its text (1 and "1" give
+the same). `null` is `Math.random()`, which raea seeds per frame. `hash01` is the same for integers only.
+
+```ts
+function random(seed: string | number | null): number
+```
+
 ### `regionBand`
 
 Works out the vertical band each name stands for, given perception and the composition size.
@@ -561,7 +711,7 @@ Names the root component the renderer starts from, and records its compositions.
 function registerRoot(given: ReactElement<unknown, string | JSXElementConstructor<any>> | ComponentType): void
 ```
 
-Used in: [ui/images/image_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node.tsx), [ui/images/ui_texture_slice_flip_and_tile](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice_flip_and_tile.tsx), [ui/images/image_node_resizing](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node_resizing.tsx), [ui/images/ui_texture_atlas_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas_slice.tsx), [ui/images/ui_texture_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice.tsx), [ui/images/ui_texture_atlas](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas.tsx), [ui/layout/grid](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/grid.tsx), [ui/layout/ghost_nodes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/ghost_nodes.tsx), and 148 more.
+Used in: [ui/images/image_node](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node.tsx), [ui/images/ui_texture_slice_flip_and_tile](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice_flip_and_tile.tsx), [ui/images/image_node_resizing](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/image_node_resizing.tsx), [ui/images/ui_texture_atlas_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas_slice.tsx), [ui/images/ui_texture_slice](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_slice.tsx), [ui/images/ui_texture_atlas](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/images/ui_texture_atlas.tsx), [ui/layout/grid](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/grid.tsx), [ui/layout/ghost_nodes](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/bench/bevy-parity/ui/layout/ghost_nodes.tsx), and 153 more.
 
 ### `replayDecider`
 
@@ -654,6 +804,30 @@ Where the song is at `t` seconds: a pure function of the map.
 function songAt(map: SongMap, t: number): SongMoment
 ```
 
+### `speedLength`
+
+How many frames `span` source frames take under the curve (points from speedPoints).
+
+```ts
+function speedLength(ps: SpeedPoint[], span: number): number
+```
+
+### `speedPoints`
+
+The points checked and in order, one at each end.
+
+```ts
+function speedPoints(owner: string, curve: SpeedPoint[]): SpeedPoint[]
+```
+
+### `speedSource`
+
+The source frame, counted from the curve's start, showing `frame` frames in; `span` once the curve has run out.
+
+```ts
+function speedSource(ps: SpeedPoint[], span: number, frame: number): number
+```
+
 ### `spring`
 
 A damped spring's value at `frame`: from `from` (0) to `to` (1), started `delay` frames late, by its `config`
@@ -663,6 +837,8 @@ stretches it to end at that frame. `measureSpring` says how long one takes to se
 ```ts
 function spring(opts: SpringOptions): number
 ```
+
+Used in: [manual: title](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/title.tsx).
 
 ### `stagger`
 
@@ -792,6 +968,14 @@ The easing curves, each a function of progress 0..1: `linear`, `quad`, `cubic`, 
 `back`, `elastic`, `bounce` and `bezier(x1, y1, x2, y2)`, eased in as they are; `Easing.out(f)` and `Easing.inOut(f)`
 turn one round. Pass one as `interpolate`'s `easing`.
 
+Used in: [manual: turntable](https://github.com/shinyobjectz/raea/blob/main/docs/manual/examples/turntable.tsx).
+
+### `EFFECT_FNS`
+
+The filter functions a part may name, each with the units it takes.
+
+### `EFFECTS`
+
 ### `FEED_KEY`
 
 The prefix of the keys the app hands every panel for what it knows: `feed:transcript` (the conversation's last lines,
@@ -806,6 +990,10 @@ publishing { send: { n, text } } (a higher n is a new message); a panel drives t
 ### `firstDecider`
 
 The default decider: the first candidate.
+
+### `HOLD_TIMEOUT_MS`
+
+How long a hold may stay open before the render fails naming it, unless delayRender is told otherwise.
 
 ### `MEDIA_ROOT`
 
@@ -935,6 +1123,27 @@ type AssetKind = "lyria" | "sao" | "tokensynth"
 
 The props of [`Audio`](#audio), tabled there.
 
+### `CalculateMetadata`
+
+What `calculateMetadata` is given and may return.
+
+```ts
+type CalculateMetadata = (given: { defaultProps: P; props: P; compositionId: string }) => { durationInFrames?: number; width?: number; height?: number; fps?: number; props?: P; } | void
+```
+
+### `ChoiceControl`
+
+One of a list: a string or a number from `options`.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"choice"` | what it is: one of a list |
+| `options` (required) | `readonly (string \| number)[]` | what it may be, in the order the panel lists them (at least one, none twice) |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
 ### `ChoicePoint`
 
 A choice point as a decider sees it: which machine, where, and the candidates whose guards hold.
@@ -953,9 +1162,46 @@ A choice point as a decider sees it: which machine, where, and the candidates wh
 
 The props of [`Clock`](#clock), tabled there.
 
+### `ColourControl`
+
+A colour: a hex string, "#rgb", "#rgba", "#rrggbb" or "#rrggbbaa".
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"colour"` | what it is: a colour |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
 ### `CompositionProps`
 
 The props of [`Composition`](#composition), tabled there.
+
+### `Control`
+
+```ts
+type Control = NumberControl | SwitchControl | ChoiceControl | ColourControl | TextControl
+```
+
+### `ControlCost`
+
+How a change to a control reaches the picture. `live` (the default): the running stage draws it at once, as a
+prop. `reopen`: the stage opens the file again first, for what a running 3D world keeps from its first frame (a
+shape, a model's file, an instance count, a picture map, a shader). `resim`: everything from the frame it changes
+on is worked out again, for state carried from frame to frame (physics, particles, a game's fold).
+
+```ts
+type ControlCost = "live" | "reopen" | "resim"
+```
+
+### `Controls`
+
+A composition's controls, by the defaultProps key each one tunes.
+
+```ts
+type Controls = { readonly [K in keyof P & string]?: Control }
+```
 
 ### `Curve`
 
@@ -1032,6 +1278,28 @@ a split, a cut word or a moved span is a change to this list; the length becomes
 | Field | Type | What it is |
 | --- | --- | --- |
 | `segments` | `readonly (readonly [number, number])[]` | the composition's own frame ranges, [from, to), played one after another |
+| `scale` | `number` | the composition drawn at this fraction of its size (above 0, at most 1), what is where kept: it is laid out at its width and height (useVideoConfig still says them) and the whole drawn smaller, so a 3D view traces fewer pixels. A draft's, where a smaller picture changes nothing that ships: the app's composition drafts and a scene's kept frames draw at 0.5 |
+
+### `EffectKind`
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `string` | its name in the composition's code: <Effect kind> |
+| `title` (required) | `string` | what the person sees |
+| `filter` (required) | `(amount: number) => string` | the CSS filter at `amount` |
+
+### `EffectPart`
+
+An effect as data: each part one CSS filter function, its value going
+from `from` (amount 0, where it changes nothing) to `to` (amount 1), with its unit: ["blur", 0, 6, "px"].
+
+```ts
+type EffectPart = [fn: string, from: number, to: number, unit?: string]
+```
+
+### `EffectProps`
+
+The props of [`Effect`](#effect), tabled there.
 
 ### `ExtrapolateMode`
 
@@ -1162,15 +1430,16 @@ The props of [`Loop`](#loop), tabled there.
 | Field | Type | What it is |
 | --- | --- | --- |
 | `src` (required) | `string` | the file: staticFile("clip.mp4"), or a generated asset |
-| `startFrom` | `number` | the media's own frame it starts playing from (0); the same as trimBefore |
-| `endAt` | `number` | the media's frame it stops before (exclusive): it holds the last frame, or loops; the same as trimAfter |
-| `trimBefore` | `number` | frames of the media cut off its start (the newer name for startFrom) |
-| `trimAfter` | `number` | the media's frame it's cut at (the newer name for endAt) |
+| `startFrom` | `number` | where in the media it starts playing (0), counted in the composition's frames, not the media's own: a 24 fps clip in a 60 fps film starts at its 4 s with startFrom={240}; the same as trimBefore |
+| `endAt` | `number` | where in the media it stops (exclusive), in the composition's frames like startFrom: it holds the last frame, or loops; the same as trimAfter |
+| `trimBefore` | `number` | how much of the media is cut off its start, in the composition's frames (the newer name for startFrom) |
+| `trimAfter` | `number` | where the media is cut, in the composition's frames (the newer name for endAt) |
 | `volume` | `VolumeProp` | linear gain, 1 being unity (0.5 is about -6 dB, 1.78 about +5 dB), or a function of the media's own frame |
 | `gainDb` | `VolumeProp` | ours: the gain in decibels (or a function of the media's own frame returning it); wins over volume |
 | `fadeIn` | `number` | ours: seconds to ramp the sound in from silence at its start (applied by the renderer at the audio's rate) |
-| `fadeOut` | `number` | ours: seconds to ramp the sound out to silence at its end |
+| `fadeOut` | `number` | ours: seconds to ramp the sound out to silence by its end: the end of its Sequence or Loop pass, or endAt, whichever comes first (one removed some other way fades out after it's gone) |
 | `playbackRate` | `number` | how fast it plays (1): 2 is double speed |
+| `speedCurve` | `SpeedPoint[]` | ours: its speed as a curve over its source, [place, speed] points: the place from 0 (startFrom) to 1 (endAt, which it needs), the speed from 0.1 to 10 and changing in a straight line between two points. Wins over playbackRate; its Sequence is as long as the curve takes (`speedLength`) |
 | `muted` | `boolean` | play no sound |
 | `loop` | `boolean` | start again from `startFrom` when it reaches `endAt` |
 | `bus` | `string` | the bus it plays into: a named channel of the edit's Tone graph (music, sfx, voice, ambience, ui), so it takes that bus's volume, effects and ducking (raea/tone `buses`) |
@@ -1206,6 +1475,30 @@ type MoveName = "rise" | "pop" | "slam" | "slide" | "wipe" | "fill" | "strike" |
 ### `NudgeProps`
 
 The props of [`Nudge`](#nudge), tabled there.
+
+### `NumberControl`
+
+A number, dragged on a slider when it has both ends.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"number"` | what it is: a number |
+| `min` | `number` | the least it may be |
+| `max` | `number` | the most it may be |
+| `step` | `number` | what one step of the slider or an arrow key moves it by (above 0) |
+| `unit` | `string` | its unit, shown after it ("px", "°", "s") |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
+### `OffthreadVideoProps`
+
+`<OffthreadVideo>`'s props: `<Video>`'s.
+
+```ts
+type OffthreadVideoProps = VideoProps
+```
 
 ### `PanelAction`
 
@@ -1334,6 +1627,15 @@ The props of [`Region`](#region), tabled there.
 | `fps` (required) | `number` | frames a second |
 | `durationInFrames` (required) | `number` | its length in frames |
 | `defaultProps` (required) | `Record<string, unknown>` | the props it's rendered with (JSON-like values only) |
+| `controls` (required) | `Readonly<Record<string, RegisteredControl>>` | its controls, by defaultProps key, in the order they're declared ({} when it has none) |
+
+### `RegisteredControl`
+
+A control as a registered composition holds it: its cost said.
+
+```ts
+type RegisteredControl = Control & { cost: ControlCost }
+```
 
 ### `SequenceLayout`
 
@@ -1528,6 +1830,12 @@ The props of [`SongPlot`](#songplot), tabled there.
 | `energy` (required) | `number` | its mean energy, 0..1 |
 | `cuts` (required) | `number` | suggested cuts per bar: 0.25, 0.5, 1, 2 or 4 |
 
+### `SpeedPoint`
+
+```ts
+type SpeedPoint = [place: number, speed: number]
+```
+
 ### `SpringConfig`
 
 | Field | Type | What it is |
@@ -1613,6 +1921,32 @@ What a step may be given besides the context and env.
 | `decide` | `Decider` | picks at choice points (default firstDecider) |
 | `trace` | `(r: TransitionRecord) => void` | receives every transition this step takes, as a row |
 
+### `SwitchControl`
+
+On or off: a boolean.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"switch"` | what it is: on or off |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
+### `TextControl`
+
+A string: a title, a caption, a name.
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `"text"` | what it is: a string |
+| `multiline` | `boolean` | a box of several lines rather than one |
+| `maxLength` | `number` | the most characters it may hold |
+| `label` | `string` | what the panel calls it (the key when left out) |
+| `group` | `string` | the panel's group it sits in ("Grade", "Camera"); ungrouped controls come first |
+| `cost` | `ControlCost` | how a change reaches the picture: "live" unless said |
+| `about` | `string` | one line on what it changes, for the panel's tooltip and an agent reading the code |
+
 ### `TimelineWord`
 
 | Field | Type | What it is |
@@ -1644,6 +1978,27 @@ many steps in the state at least (`after`), and what to do on the way (`actions`
 ```ts
 type TransitionConfig = Target<N> & When<C, E> & { /** steps in the state before this transition may fire (0) */ after?: number; actions?: Actions<C, E>; /** what the transition means: a decider reads it (a model's option description), reports show it */ description?: string; }
 ```
+
+### `TransitionEdge`
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `kind` (required) | `TransitionKind` | which transition: fade, slide, wipe or zoom |
+| `frames` (required) | `number` | how many of the part's frames it takes |
+
+### `TransitionKind`
+
+fade: through black. slide: in from the right, out to the left. wipe: uncovered from the left, covered from the
+left. zoom: grows in from 85%, shrinks out to 85%, fading. A dissolve between two parts that only touch has no
+frames of the other to mix with, so it is written as a fade.
+
+```ts
+type TransitionKind = "fade" | "slide" | "wipe" | "zoom"
+```
+
+### `TransitionProps`
+
+The props of [`Transition`](#transition), tabled there.
 
 ### `TransitionRecord`
 

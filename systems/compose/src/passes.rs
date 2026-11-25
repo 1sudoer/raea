@@ -41,14 +41,14 @@ pub enum Pass {
     Sky,
 }
 
-/// The pass RAEA_PASS asks for, if any.
+/// The pass the channel pass asks for (`pass=depth` from TypeScript's stats.on, or RAEA_PASS), if any.
 pub fn wanted() -> Option<Pass> {
-    match std::env::var("RAEA_PASS").as_deref() {
-        Ok("depth") => Some(Pass::Depth),
-        Ok("normal") => Some(Pass::Normal),
-        Ok("albedo") => Some(Pass::Albedo),
-        Ok("sun") => Some(Pass::Sun),
-        Ok("sky") => Some(Pass::Sky),
+    match raea_io_trace::stat_value("RAEA_PASS").as_deref() {
+        Some("depth") => Some(Pass::Depth),
+        Some("normal") => Some(Pass::Normal),
+        Some("albedo") => Some(Pass::Albedo),
+        Some("sun") => Some(Pass::Sun),
+        Some("sky") => Some(Pass::Sky),
         _ => None,
     }
 }
@@ -57,6 +57,14 @@ pub fn wanted() -> Option<Pass> {
 #[derive(Component, Clone, Copy, ExtractComponent)]
 #[extract_app(bevy::render::RenderApp)]
 struct PassView(u32);
+
+/// A camera whose prepasses a pass after it reads (`--aov`'s motion vectors and depth, RAEA_PASS's depth and normals),
+/// bound as single-sampled textures: it draws with MSAA off on every frame, whatever its row asks, and keeps the depth
+/// and normal prepasses an effect brought when the effect goes (raea-sys-post's msaa_for_3d and sync). Put on with the
+/// prepasses, never taken off (#159: the row's post-processing turned MSAA back on under them, and the pass's bind
+/// group refused the frame).
+#[derive(Component, Clone, Copy, Default)]
+pub struct PrepassRead;
 
 pub fn install(app: &mut App) {
     let Some(pass) = wanted() else { return };
@@ -78,7 +86,8 @@ pub fn install(app: &mut App) {
 fn mark(pass: Pass, mut commands: Commands, cams: Query<Entity, (With<Camera3d>, Without<PassView>)>, mut mats: ResMut<Assets<StandardMaterial>>) {
     for e in &cams {
         let mut c = commands.entity(e);
-        c.insert((PassView(pass as u32), DepthPrepass, NormalPrepass, Msaa::Off));
+        // single-sampled on every frame, whatever the camera's row asks (#159)
+        c.insert((PassView(pass as u32), DepthPrepass, NormalPrepass, Msaa::Off, PrepassRead));
         if pass == Pass::Albedo {
             c.insert((Tonemapping::None, super::bevy_api::Untonemapped)).remove::<DistanceFog>().remove::<bevy::post_process::bloom::Bloom>().remove::<bevy::render::view::ColorGrading>();
         }
@@ -204,7 +213,7 @@ fn draw(view: ViewQuery<(&ViewTarget, &ExtractedView, &PassView, Option<&ViewPre
     let (Some(depth), Some(normal)) = (prepass.depth_only_view(), prepass.normal_view()) else { return };
     let device = ctx.render_device().clone();
     let world_from_clip = extracted.world_from_view.to_matrix() * extracted.clip_from_view.inverse();
-    let rays = std::env::var("RAEA_PASS_RAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(64u32);
+    let rays = raea_io_trace::stat_value("RAEA_PASS_RAYS").and_then(|v| v.parse().ok()).unwrap_or(64u32);
     let sun_dir = sun.map(|s| s.0).unwrap_or(Vec3::Y).normalize_or(Vec3::Y);
     let mut params = bevy::render::render_resource::UniformBuffer::from(Params {
         view_from_clip: extracted.clip_from_view.inverse(),
@@ -212,7 +221,7 @@ fn draw(view: ViewQuery<(&ViewTarget, &ExtractedView, &PassView, Option<&ViewPre
         sun: sun_dir.extend(0.267f32.to_radians().cos()),
         // the sky pass's reach in millimetres (RAEA_PASS_REACH metres; 50 by default, the room and out of it; half a
         // metre or so makes it contact occlusion)
-        frame: UVec4::new(frame.0, rays, (std::env::var("RAEA_PASS_REACH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(50.0) * 1000.0) as u32, 0),
+        frame: UVec4::new(frame.0, rays, (raea_io_trace::stat_value("RAEA_PASS_REACH").and_then(|v| v.parse::<f32>().ok()).unwrap_or(50.0) * 1000.0) as u32, 0),
     });
     params.write_buffer(&device, &queue);
     let copy = kept.map(|k| &k.0.default_view).unwrap_or(normal);

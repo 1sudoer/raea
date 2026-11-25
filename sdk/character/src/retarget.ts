@@ -13,7 +13,7 @@
 // thumb goes where the source's does (palms down for a source without a thumb). The trunk, neck and head keep their
 // own build and take the capture's turns from rest. The pelvis travels as the source's hips do, scaled by the hips'
 // height over the feet.
-import { B, SIDES, captured, joint, pose, qaxis, qfromTo, qinv, qmul, qnorm, qrot, slerp, sub, type Quat, type Skeleton } from "raea/character";
+import { B, SIDES, captured, oldName, sameJoint, somaName, joint, pose, qaxis, qfromTo, qinv, qmul, qnorm, qrot, slerp, sub, type Quat, type Skeleton } from "raea/character";
 import type { Vec3 } from "raea/3d";
 import { clipFrame, type Bvh, type Clip } from "./clip";
 import { clearOfTrunk, solveFrame, type IkRig } from "./retarget-ik";
@@ -70,6 +70,9 @@ function bvhWorld(b: Bvh, f: { root: Vec3; turns: Quat[] }): { rot: Quat[]; pos:
 }
 
 /** The body joint each limb bone aims at (its next joint down the limb), and the bone the hand carries on from. */
+/** a body joint's source joint in a BVH map, the map keyed by either naming (bones.ts) */
+const mapped = (map: Record<string, string>, name: string): string | undefined => map[name] ?? map[oldName(name)] ?? map[somaName(name)];
+
 const AIM: Record<string, string> = Object.fromEntries(SIDES.flatMap((s) => [
   [B.clavicle(s), B.upperarm(s)], [B.upperarm(s), B.lowerarm(s)], [B.lowerarm(s), B.hand(s)],
   [B.thigh(s), B.calf(s)], [B.calf(s), B.foot(s)], [B.foot(s), B.ball(s)],
@@ -112,7 +115,7 @@ export function retarget(skel: Skeleton, b: Bvh, o: RetargetOptions): Clip {
   const fps = o.fps ?? 30, shrug = o.shrug ?? SHRUG;
   const J = skel.joints.slice(0, captured(skel)), nj = J.length;
   const srcOf = (name: string) => {
-    const want = o.map ? o.map[name] : name;
+    const want = o.map ? mapped(o.map, name) : name;
     if (!want) return -1;
     const i = b.joints.findIndex((x) => x.name === want);
     if (i < 0 && o.map) throw new Error(`retarget ${o.name}: the map sends ${name} to ${want}, which the BVH hasn't`);
@@ -148,14 +151,14 @@ export function retarget(skel: Skeleton, b: Bvh, o: RetargetOptions): Clip {
   // the rest fix F per joint
   const fix: Quat[] = J.map(() => [0, 0, 0, 1] as Quat);
   const restDir = (i: number): Vec3 => {
-    const c = J.findIndex((x) => x.parent === i && AIM[J[i].name] === x.name);
+    const c = J.findIndex((x) => x.parent === i && AIM[somaName(J[i].name)] === somaName(x.name));
     return c >= 0 ? sub(J[c].head, J[i].head) : sub(J[i].tail, J[i].head);
   };
   J.forEach((j, i) => {
-    const aim = AIM[j.name];
+    const aim = AIM[somaName(j.name)];
     // (not the clavicles: a capture's shoulder joints sit where its markers put them, ACCAD's sloped 34 degrees and CMU's
     // nearly level, so a clavicle laid along its source's took that marker set's slope; it moves from the body's own rest)
-    if (aim !== undefined && src[i] >= 0 && !SIDES.some((s) => j.name === B.clavicle(s))) {
+    if (aim !== undefined && src[i] >= 0 && !SIDES.some((s) => sameJoint(j.name, B.clavicle(s)))) {
       const si = src[joint(skel, aim)];
       const sd = si >= 0 ? sub(R0[si], R0[src[i]]) : undefined;
       if (sd && len(sd) > 1e-6) fix[i] = qfromTo(restDir(i), qrot(A, sd));
@@ -169,7 +172,7 @@ export function retarget(skel: Skeleton, b: Bvh, o: RetargetOptions): Clip {
       fix[h] = qfromTo(sub(J[h].tail, J[h].head), sd);
     }
     // the forearm and hand twisted about their own length so the thumb goes the source's way (forward if it has none)
-    const thumbName = o.map?.[B.finger("thumb", 1, s)];
+    const thumbName = o.map && mapped(o.map, B.finger("thumb", 1, s));
     const ti = thumbName ? b.joints.findIndex((x) => x.name === thumbName) : -1;
     const want: Vec3 = ti >= 0 && b.joints[ti].end ? qrot(A, sub(add3(R0[ti], b.joints[ti].end!), R0[src[h]])) : [0, 0, 1];
     const thumb0 = sub(skel.joints[joint(skel, B.finger("thumb", 1, s))].head, J[h].head);

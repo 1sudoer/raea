@@ -27,7 +27,9 @@ pub fn probe_of(path: &Path) -> R<Probe> {
         return Ok(Probe { kind: "image", video: None, audio: None, image: Some((w, h)), duration: 0.0, bytes, track: None });
     }
     let track = video_track(path);
-    let video = backend()?.open_video(path).ok().map(|d| d.info().clone()).filter(|i| i.width > 0 && i.frames > 0).map(|mut i| {
+    let opened = open_video(path);
+    let why = opened.as_ref().err().cloned();
+    let video = opened.ok().map(|d| d.info().clone()).filter(|i| i.width > 0 && i.frames > 0).map(|mut i| {
         // the file's own timing over what the decoder counted
         if let Some(t) = &track {
             i.duration = t.duration;
@@ -38,7 +40,9 @@ pub fn probe_of(path: &Path) -> R<Probe> {
     });
     let audio = soft()?.decode_audio(path).ok().filter(|a| a.len() > 0).map(|a| (a.rate, a.channels.len(), a.duration()));
     if video.is_none() && audio.is_none() {
-        return Err(format!("{}: no picture or sound raea can read", path.display()));
+        // what each backend said about the picture: a missing FFmpeg, a codec none of them reads
+        let why = why.map(|w| format!(" ({})", w.split_once(": no backend reads it (").map_or(w.as_str(), |(_, r)| r.trim_end_matches(')')).to_string())).unwrap_or_default();
+        return Err(format!("{}: no picture or sound raea can read{why}", path.display()));
     }
     // the container's own duration when it says one (ffprobe's format duration), else the longest stream
     let duration = container_duration(path).unwrap_or_else(|| video.as_ref().map(|v| v.duration).unwrap_or(0.0).max(audio.map(|a| a.2).unwrap_or(0.0)));
@@ -270,7 +274,7 @@ pub fn probe(path: &Path) -> R<Value> {
 
 /// A measured frame rate (frames over duration) snapped to the standard rate it is within 1% of: a phone's variable-rate
 /// take that averages 23.92 is 24 (ffprobe's avg_frame_rate says 24/1).
-pub(crate) fn standard_fps(fps: f64) -> f64 {
+pub fn standard_fps(fps: f64) -> f64 {
     let rates = [24000.0 / 1001.0, 24.0, 25.0, 30000.0 / 1001.0, 30.0, 48.0, 50.0, 60000.0 / 1001.0, 60.0, 120.0];
     // the nearest, within 1% (30 is 30, not 29.97)
     rates.into_iter().filter(|r| (fps - r).abs() / r < 0.01).min_by(|a, b| (fps - a).abs().total_cmp(&(fps - b).abs())).unwrap_or(fps)

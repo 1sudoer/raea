@@ -11,6 +11,8 @@ mod stylo_data;
 #[cfg(feature = "svg")]
 mod svg;
 mod text;
+/// raea: a text field's history, for Cmd+Z (undo.rs)
+pub(crate) mod undo;
 
 pub use attributes::{Attribute, Attributes};
 #[cfg(feature = "custom-widget")]

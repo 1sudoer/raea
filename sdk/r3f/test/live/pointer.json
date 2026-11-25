@@ -1,0 +1,12 @@
+{
+  "0": ["Pointer:600:40"],
+  "4": ["Pointer:227:180"],
+  "8": ["Pointer:227:180:down"],
+  "10": ["Pointer:227:180"],
+  "14": ["Pointer:600:300"],
+  "16": ["Pointer:600:300:down"],
+  "18": ["Pointer:540:300:down"],
+  "20": ["Pointer:480:300:down"],
+  "22": ["Pointer:420:300:down"],
+  "24": ["Pointer:420:300"]
+}

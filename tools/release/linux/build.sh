@@ -2,8 +2,9 @@
 # In the container (Dockerfile here): a Linux release from /rel, a clone at the release SHA, with /target a folder of its
 # own: raea with the plugin catalog and the two app hosts (targets.feature T1f), each in a cargo call, stripped, then
 # tools/release.sh under Xvfb (its release check opens the web target's window, which needs a display on Linux). Run
-# release.sh with bash: zsh reads `$ref:apps` as a path modifier. The skills gate reads /rel/apps/app (clone the
-# feed app there at the commit the release SHA records). A virtiofs /target holds deleted files until the VM stops.
+# release.sh with bash: zsh reads `$ref:apps` as a path modifier. The skills gate reads /rel/apps/app (in the release
+# SHA's own tree since 11-16; before, a clone of the feed app at the commit it records). A virtiofs /target holds
+# deleted files until the VM stops.
 set -uo pipefail
 V=${1:?version}; jobs=${2:-8}
 export CARGO_TARGET_DIR=/target CARGO_INCREMENTAL=0

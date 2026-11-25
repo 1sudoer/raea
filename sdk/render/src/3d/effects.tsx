@@ -127,6 +127,9 @@ export interface BloomProps {
   skip?: string[];
   /** each named pass's share of it, 0 (as skip) to 1 (all of it, as "scene" has) */
   passes?: Record<string, number>;
+  /** the glow added on top of the frame, brightening it, as three.js's and postprocessing's bloom do; by default it
+   * takes its light from around the bright parts (Bevy's energy-conserving bloom) */
+  additive?: boolean;
 }
 
 /** Glow around bright parts (emissive materials, strong highlights). Put it inside the Canvas3D.
@@ -212,6 +215,9 @@ export interface GradeProps {
   tint?: number;
   /** the whole frame's saturation after tone mapping (1 keeps it) */
   saturation?: number;
+  /** stops of exposure on every pixel just before tone mapping, unlit colours and emission included (0 keeps it):
+   *  <ToneMapping exposure> is the camera's, which brightens only what lights shade */
+  exposure?: number;
   /** the grade on the shadows: saturation, contrast, gamma, gain, lift */
   shadows?: GradeSection;
   /** the grade on the midtones */
@@ -242,8 +248,14 @@ export function Grade(props: GradeProps) {
 
 export interface EnvironmentProps {
   /** an equirectangular panorama in the media folder: a Radiance .hdr (Poly Haven's), an OpenEXR .exr, or an 8-bit
-   * .png/.jpg. Change it between frames to cut from one place to another */
-  src: string;
+   * .png/.jpg. Change it between frames to cut from one place to another. Give it or `room`, not both */
+  src?: string;
+  /** three.js's RoomEnvironment in place of a panorama: a white studio room with soft light boxes, made by raea with
+   * no file. It is the light a three.js scene gets from PMREMGenerator.fromScene(new RoomEnvironment(), blur), which
+   * <R3F> turns into this */
+  room?: boolean;
+  /** with `room`, its blur in radians before it lights (fromScene's sigma: three's examples use 0.04); 0 by default */
+  blur?: number;
   /** how strongly it lights the scene (1 by default: a sky about as bright as an AmbientLight of 2.5 overall); animate
    * it, or set 0 to switch it off for a shot */
   intensity?: number;
@@ -253,22 +265,51 @@ export interface EnvironmentProps {
   background?: boolean;
   /** the sky's brightness, when it should differ from the light's (`intensity` by default) */
   backgroundIntensity?: number;
+  /** the openings the sky lights a room through (a skylight, a window), each its four corners in order round it, in
+   * metres (a rectangle or any parallelogram). Traced lighting (Solari, the path tracer) samples the sky through each
+   * as it samples a lamp, so a room lit through a small opening gets that light smooth and whole, where rays bounced at
+   * random find it too rarely for the denoiser to keep (photo 5's hall: half its floor's sky light). Light passes both
+   * ways; up to 8; the first frame's hold. Raster lighting doesn't read them */
+  portals?: [number, number, number][][];
+}
+
+/** an <Environment>'s portals: each four corners, a parallelogram with some area */
+function checkPortals(portals: unknown) {
+  if (portals === undefined) return;
+  const bad = (why: string) => new TypeError(`Environment: portals ${why}, got ${JSON.stringify(portals)}`);
+  if (!Array.isArray(portals) || portals.length > 8) throw bad("is a list of up to 8 openings");
+  for (const q of portals) {
+    if (!(Array.isArray(q) && q.length === 4 && q.every((p) => Array.isArray(p) && p.length === 3 && p.every((x) => typeof x === "number" && Number.isFinite(x))))) throw bad("are each four corners [x, y, z]");
+    const [a, b, c, d] = q as [number, number, number][];
+    const u = b.map((x, i) => x - a[i]), v = d.map((x, i) => x - a[i]);
+    const edge = Math.max(Math.hypot(...u), Math.hypot(...v));
+    if (!(edge > 0) || Math.hypot(...a.map((x, i) => x + c[i] - b[i] - d[i])) > 0.01 * edge) throw bad("are each a parallelogram, corners in order round it");
+    if (Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) < 1e-6) throw bad("each have some area");
+  }
 }
 
 /** Light from all around, out of a panorama: soft light from the sky and reflections of it in every glossy or metal
  * surface (image-based lighting), and with `background` the panorama as the sky. Put it inside the Canvas3D, once a
  * frame; its src, intensity, rotation and background may change from frame to frame (a cut from a hall to a street).
+ * With `room` in place of a panorama it is three.js's RoomEnvironment, soft studio light with no file.
  * Bevy's EnvironmentMapLight with maps already filtered is <EnvironmentMapLight>.
  * Its panorama is filtered by Bevy's generator and, with `background`, drawn as the sky (engine/render
  * environment.rs): @bevy bevy_light::probe::GeneratedEnvironmentMapLight. Bevy's Skybox from its own cubemap is <Skybox>. */
 export function Environment(props: EnvironmentProps) {
-  if (typeof props.src !== "string" || props.src === "") throw new TypeError(`Environment: src must be a panorama's path, staticFile("sky.hdr"), got ${JSON.stringify(props.src)}`);
-  if (!/\.(hdr|exr|png|jpe?g)$/i.test(props.src.split("?")[0])) throw new TypeError(`Environment: src must be an equirectangular .hdr, .exr, .png or .jpg, got ${JSON.stringify(props.src)}`);
-  for (const k of ["intensity", "backgroundIntensity"] as const) {
+  if (props.room !== undefined && typeof props.room !== "boolean") throw new TypeError(`Environment: room is true or false, got ${JSON.stringify(props.room)}`);
+  if (props.room) {
+    if (props.src !== undefined) throw new TypeError(`Environment: give src (a panorama) or room, not both`);
+  } else {
+    if (typeof props.src !== "string" || props.src === "") throw new TypeError(`Environment: src must be a panorama's path, staticFile("sky.hdr"), or room for three's RoomEnvironment, got ${JSON.stringify(props.src)}`);
+    if (!/\.(hdr|exr|png|jpe?g)$/i.test(props.src.split("?")[0])) throw new TypeError(`Environment: src must be an equirectangular .hdr, .exr, .png or .jpg, got ${JSON.stringify(props.src)}`);
+    if (props.blur !== undefined) throw new TypeError(`Environment: blur is the room's (with room), not a panorama's`);
+  }
+  for (const k of ["intensity", "backgroundIntensity", "blur"] as const) {
     const v = props[k];
     if (v !== undefined && !(typeof v === "number" && v >= 0 && Number.isFinite(v))) throw new RangeError(`Environment: ${k} must be 0 or more, got ${v}`);
   }
   if (props.rotation !== undefined && !(typeof props.rotation === "number" && Number.isFinite(props.rotation))) throw new RangeError(`Environment: rotation must be a number of radians, got ${props.rotation}`);
+  checkPortals(props.portals);
   return node3d("Environment", props as unknown as Record<string, unknown>);
 }
 
@@ -334,7 +375,7 @@ export interface AmbientOcclusionProps {
 /** Screen-space ambient occlusion: creases, corners and the ground under things darken where the sky's and the room's
  * light can't reach. It darkens ambient and environment light (an <AmbientLight>, an <Environment>), not the direct
  * light of a sun or a lamp. Turns multisampling off, so the edges are smoothed by SMAA instead (see <AntiAliasing>).
- * Put it inside the Canvas3D, once; the first frame's holds for the piece.
+ * Put it inside the Canvas3D, once; each frame's is its own, so a shot can have it and the next not.
  * @bevy bevy_pbr::ssao::ScreenSpaceAmbientOcclusion */
 export function AmbientOcclusion(props: AmbientOcclusionProps) {
   if (props.quality !== undefined && !["low", "medium", "high", "ultra"].includes(props.quality)) throw new RangeError(`AmbientOcclusion: quality must be "low", "medium", "high" or "ultra", got ${JSON.stringify(props.quality)}`);
@@ -344,16 +385,24 @@ export function AmbientOcclusion(props: AmbientOcclusionProps) {
 
 export interface AntiAliasingProps {
   /** "msaa" (4x multisampling, the default), "smaa" (morphological, high preset: the default with AmbientOcclusion,
-   * which can't multisample), "fxaa" (cheapest, softest) or "none". Each draws a frame from that frame alone, so a
-   * render equals its play (temporal anti-aliasing isn't offered: it needs the frames before) */
-  mode: "msaa" | "smaa" | "fxaa" | "none";
+   * which can't multisample), "fxaa" (cheapest, softest), "none", or "steady": raea's temporal filter, each frame
+   * drawn from a slightly different place inside its pixels and blended with the frames before it, so what one frame
+   * can only draw as a pattern of pixels (levels cross-fading by distance, far detail a pixel wide, noisy light)
+   * settles to its true share; single-sampled, with depth and motion prepasses (on Berlin's fly, faster than msaa).
+   * The others draw a frame from that frame alone, so a render equals its play; "steady" needs the frames before, so a
+   * render that starts partway through differs from its play for its first few frames */
+  mode: "msaa" | "smaa" | "fxaa" | "none" | "steady";
+  /** "steady"'s rates: the frames a still pixel's history averages (32), a moving one's (8), and the motion in pixels
+   * at which a pixel counts as moving (4). Fewer frames follow change sooner and settle less */
+  steady?: { still?: number; moving?: number; px?: number };
 }
 
-/** How the 3D's edges are smoothed. Put it inside the Canvas3D, once; the first frame's holds for the piece.
+/** How the 3D's edges are smoothed. Put it inside the Canvas3D, once; each frame's is its own.
  * @bevy bevy_anti_alias::smaa::Smaa
  * @bevy bevy_anti_alias::fxaa::Fxaa */
 export function AntiAliasing(props: AntiAliasingProps) {
-  if (!["msaa", "smaa", "fxaa", "none"].includes(props.mode)) throw new RangeError(`AntiAliasing: mode must be "msaa", "smaa", "fxaa" or "none", got ${JSON.stringify(props.mode)}`);
+  if (!["msaa", "smaa", "fxaa", "none", "steady"].includes(props.mode)) throw new RangeError(`AntiAliasing: mode must be "msaa", "smaa", "fxaa", "none" or "steady", got ${JSON.stringify(props.mode)}`);
+  for (const [k, v] of Object.entries(props.steady ?? {})) if (!(typeof v === "number" && v > 0)) throw new RangeError(`AntiAliasing: steady.${k} must be a number over 0, got ${v}`);
   return node3d("AntiAliasing", props as unknown as Record<string, unknown>);
 }
 
@@ -379,7 +428,7 @@ export interface ShadowsProps {
 }
 
 /** Shadow quality for every light in the Canvas3D: map size, the sun's cascades, biases, filtering. Put it inside the
- * Canvas3D, once; the first frame's holds for the piece. mapSize sets both shadow maps' size, filter the camera's
+ * Canvas3D, once; each frame's is its own. mapSize sets both shadow maps' size, filter the camera's
  * filtering, and the cascade props the sun's cascades (engine/render scene3d.rs):
  * @bevy bevy_light::directional_light::DirectionalLightShadowMap
  * @bevy bevy_light::point_light::PointLightShadowMap

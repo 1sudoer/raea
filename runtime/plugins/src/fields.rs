@@ -33,7 +33,7 @@ pub fn row_names(world: &mut World, v: &Value) -> Result<Option<Entity>, String>
 
 /// A picture as a Handle<Image> field gives it (a path in the edit, an inline {width, height, pixels}, "render:NAME"),
 /// for a material built outside the component rows (raea-sys-material's shader_ext.rs: a surface shader's textures).
-/// Called once the rows are applied (apply_rows), so a "render:NAME" meets the camera that draws into it.
+/// A "render:NAME" is the image every row of the load naming it shares (the engine's load empties them before its rows spawn).
 pub fn image(world: &mut World, v: &Value) -> Result<Handle<Image>, String> {
     let refs = world.remove_resource::<Refs>().unwrap_or_default();
     let reg = world.resource::<AppTypeRegistry>().clone();
@@ -192,34 +192,9 @@ impl Fields<'_> {
             // meet in it
             // ("render:NAME:WxH:depth" a depth image, Depth32Float with a comparison sampler, a camera's DepthCopy
             // copies its depth into and a Material samples as texture_depth_2d)
+            // (":float" after the size an Rgba16Float image, a GPGPU pass's: raea-sys-frame's render_image.rs)
             Value::String(x) if asset == TypeId::of::<Image>() && x.starts_with("render:") => {
-                let rest = &x["render:".len()..];
-                let (rest, depth) = rest.strip_suffix(":depth").map_or((rest, false), |r| (r, true));
-                let (name, size) = match rest.rsplit_once(':') {
-                    Some((n, sz)) if sz.contains('x') => (n, Some(sz)),
-                    _ => (rest, None),
-                };
-                let (w, h) = match size {
-                    Some(sz) => {
-                        let (w, h) = sz.split_once('x').unwrap();
-                        let p = |d: &str| d.parse::<u32>().ok().filter(|n| (1..=8192).contains(n));
-                        p(w).zip(p(h)).ok_or_else(|| format!("{x:?}: a render image's size is WxH in pixels (1 to 8192)"))?
-                    }
-                    None => (512, 512),
-                };
-                if name.is_empty() {
-                    return Err(format!("{x:?}: a render image needs a name (\"render:mirror\")"));
-                }
-                if let Some(hd) = self.world.get_resource::<RenderImages>().and_then(|r| r.0.get(name)) {
-                    if size.is_some() && hd.1 != (w, h) {
-                        return Err(format!("{x:?}: the render image {name:?} is already {}x{}", hd.1.0, hd.1.1));
-                    }
-                    return Ok(hd.0.clone().untyped());
-                }
-                let img = if depth { raea_sys_shader::own::depth_image(w, h) } else { Image::new_target_texture(w, h, bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb, None) };
-                let hd = self.world.resource_mut::<Assets<Image>>().add(img);
-                self.world.get_resource_or_init::<RenderImages>().0.insert(name.to_string(), (hd.clone(), (w, h)));
-                Ok(hd.untyped())
+                RenderImages::image(self.world, x, Some(raea_sys_shader::own::depth_image)).map(|h| h.untyped())
             }
             Value::String(x) => self.load_path(asset, name, x),
             Value::Object(_) => {

@@ -4,6 +4,7 @@ export * from "./core";
 export * from "./materials";
 export * from "./lights";
 export * from "./model";
+export * from "./detail";
 export * from "./effects";
 export * from "./volumetric";
 export * from "./post";

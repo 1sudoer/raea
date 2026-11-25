@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { useFrame } from "@react-three/fiber";
 import { createContext, useContext, useRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { inflateSync } from "node:zlib";
 import * as THREE from "three";
 import { Clock, useCurrentFrame } from "@raea/app/clock";
 import { convert } from "../src/input/scene";
@@ -94,22 +95,38 @@ describe("the clock", () => {
 });
 
 describe("the scene graph", () => {
-  test("an InstancedMesh holding still is Instances; moving, a mesh a copy", () => {
+  test("an InstancedMesh is one Instances, still or moving, its copies' colours with it (R3F20)", () => {
     const geo = new THREE.BoxGeometry(), mat = new THREE.MeshStandardMaterial({ color: "#336699" });
-    const im = new THREE.InstancedMesh(geo, mat, 3);
+    const im = new THREE.InstancedMesh(geo, mat, 4);
     const m = new THREE.Matrix4();
-    for (let i = 0; i < 3; i++) im.setMatrixAt(i, m.makeTranslation(i * 2, 0, 0));
+    for (let i = 0; i < 4; i++) im.setMatrixAt(i, m.makeTranslation(i * 2, 0, 0));
+    im.count = 3;
     const a = partsOf(() => <primitive object={im} />);
     const inst = flat(a.parts).find((p) => p.type === "Instances")!;
-    expect((inst.props.at as unknown[]).length).toBe(3);
-    expect((inst.props.at as { position: number[] }[])[2].position).toEqual([4, 0, 0]);
+    const at = () => inst.props.at as { position: number[]; scale: number[]; color?: number[] }[];
+    expect(at().length).toBe(4);
+    expect(at()[2].position).toEqual([4, 0, 0]);
+    // past `count`: still sent, so the count holds, shrunk to nothing
+    expect(at()[3].scale).toEqual([1e-5, 1e-5, 1e-5]);
+    expect(at()[0].color).toBeUndefined();
     im.setMatrixAt(1, m.makeTranslation(0, 5, 0));
+    im.setColorAt(2, new THREE.Color(1, 0, 0));
     im.instanceMatrix.needsUpdate = true;
-    const b = convert(a.st.scene, a.st.camera, a.st.gl, 360);
-    const meshes = flat(b.parts).filter((p) => p.type === "Mesh");
-    expect(meshes.length).toBe(3);
-    expect(meshes[1].props.position).toEqual([0, 5, 0]);
+    const b = flat(convert(a.st.scene, a.st.camera, a.st.gl, 360).parts);
+    expect(b.filter((p) => p.type === "Mesh").length).toBe(0);
+    const moved = b.find((p) => p.type === "Instances")!.props.at as { position: number[]; color: number[] }[];
+    expect(moved[1].position).toEqual([0, 5, 0]);
+    expect(moved[2].color).toEqual([1, 0, 0]);
     end(a.key);
+  });
+
+  test("an InstancedMesh under a ShaderMaterial is a mesh a copy", () => {
+    const sh = new THREE.ShaderMaterial({ vertexShader: "void main() { gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }", fragmentShader: "void main() { gl_FragColor = vec4(1.0); }" });
+    const im = new THREE.InstancedMesh(new THREE.BoxGeometry(), sh, 2);
+    const r = partsOf(() => <primitive object={im} />);
+    expect(flat(r.parts).filter((p) => p.type === "Instances").length).toBe(0);
+    expect(flat(r.parts).filter((p) => p.type === "Mesh").length).toBe(2);
+    end(r.key);
   });
 
   test("a mesh swapped into the same place with another shader program is another part; the same program keeps its", () => {
@@ -179,6 +196,15 @@ describe("the scene graph", () => {
     expect(meshes.map((m) => (m.children![0].props.indices as number[]).length)).toEqual([6, 6, 6, 6, 6, 6]);
     end(r.key);
   });
+  test("an opacity past 1 or below 0 (an overshooting easing) is clamped, as three draws it", () => {
+    const r = partsOf(() => <>
+      <mesh><boxGeometry /><meshBasicMaterial transparent opacity={1.03} /></mesh>
+      <mesh><boxGeometry /><meshStandardMaterial transparent opacity={-0.02} /></mesh>
+    </>);
+    const ops = flat(r.parts).filter((p) => p.type === "Mesh").map((m) => m.children!.find((c) => "opacity" in c.props)!.props.opacity);
+    expect(ops).toEqual([1, 0]);
+    end(r.key);
+  });
 });
 
 describe("textures", () => {
@@ -192,5 +218,26 @@ describe("textures", () => {
     const img = new THREE.Texture({ src: "media/wood.jpg", width: 4, height: 4 } as unknown as HTMLImageElement);
     expect(srcOf(img)).toBe("media/wood.jpg");
     expect(pngOf(new Uint8Array(4), 1, 1).length).toBeGreaterThan(40);
+  });
+
+  test("a DataTexture's first row is its picture's top: three's v 0 unflipped, Bevy's v 0", () => {
+    const t = new THREE.DataTexture(new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]), 1, 2);
+    t.needsUpdate = true;
+    const png = Uint8Array.from(atob(srcOf(t)!.split(",")[1]), (c) => c.charCodeAt(0));
+    const at = png.findIndex((_, i) => String.fromCharCode(...png.subarray(i, i + 4)) === "IDAT");
+    const len = new DataView(png.buffer).getUint32(at - 4);
+    const rows = inflateSync(png.subarray(at + 4, at + 4 + len));
+    // each row a filter byte then rgba: red first, blue below it
+    expect([...rows.subarray(1, 4), ...rows.subarray(6, 9)]).toEqual([255, 0, 0, 0, 0, 255]);
+  });
+});
+
+describe("ambient light (docs/img2raea.feature IR2)", () => {
+  test("a scene with none gets one of 0, so a raea camera doesn't keep Bevy's default; a scene's own is kept alone", () => {
+    const none = flat(partsOf(() => <directionalLight position={[1, 2, 3]} />).parts).filter((p) => p.type === "AmbientLight");
+    expect(none.map((p) => p.props.intensity)).toEqual([0]);
+    const own = flat(partsOf(() => <ambientLight intensity={0.5} />).parts).filter((p) => p.type === "AmbientLight");
+    expect(own.length).toBe(1);
+    expect(own[0].props.intensity as number).toBeGreaterThan(0);
   });
 });

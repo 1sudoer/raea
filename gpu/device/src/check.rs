@@ -10,7 +10,7 @@ use std::time::Duration;
 /// work for a while after a hang, and says why); then a 4-byte copy through `queue`, read back. Err says what the GPU
 /// didn't do.
 pub fn canary(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
-    if fault() >= 2 {
+    if fault() == 2 {
         return Err("RAEA_BLACK_FAULT=2 fails it".into());
     }
     #[cfg(target_vendor = "apple")]
@@ -60,16 +60,18 @@ pub fn black(px: &[u8]) -> bool {
 }
 
 /// RAEA_BLACK_FAULT, the black-frame redraw's check (sdk/raea/bench/black-frame): 1, each frame's first draw read
-/// back black, as a GPU fault that leaves no error does; 2, every draw black and the canary failing too.
+/// back black, as a GPU fault that leaves no error does; 2, every draw black and the canary failing too; 3, every draw
+/// black and the canary passing, as a draw Vello drops whole does (#96).
 pub fn fault() -> u8 {
     match std::env::var("RAEA_BLACK_FAULT").as_deref() {
         Ok("1") => 1,
         Ok("2") => 2,
+        Ok("3") => 3,
         _ => 0,
     }
 }
 
-/// `px` as the fault RAEA_BLACK_FAULT asks for leaves it: black (its alpha kept) on a first draw at 1, on any at 2.
+/// `px` as the fault RAEA_BLACK_FAULT asks for leaves it: black (its alpha kept) on a first draw at 1, on any at 2 or 3.
 pub fn injected(mut px: Vec<u8>, redraw: bool) -> Vec<u8> {
     if fault() > u8::from(redraw) {
         for p in px.chunks_exact_mut(4) {
@@ -162,6 +164,10 @@ pub fn on_settle(settle: fn()) {
 /// skipped too (#23).
 pub fn fed_checked<T>(f: i64, first: T, wait: fn(), redraw_full: fn(bool), paint: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     wait();
+    // a frame raea-page refused (`refuse`) fails the render naming it, as a still's does (`black_checked`): the fed
+    // render had no one to read the refusal, encoded the frame as it came and went on
+    let unrefused = || refused().map_or(Ok(()), |why| Err(format!("frame {f}: {why}")));
+    unrefused()?;
     if take_skipped().is_none() {
         return Ok(first);
     }
@@ -170,6 +176,7 @@ pub fn fed_checked<T>(f: i64, first: T, wait: fn(), redraw_full: fn(bool), paint
     redraw_full(false);
     let again = again?;
     wait();
+    unrefused()?;
     match take_skipped() {
         Some(why) => Err(format!("frame {f}: {why}")),
         None => Ok(again),
@@ -293,6 +300,14 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(e, "frame 7: a page (1920x1080) wasn't drawn");
+        // the fed render's frame, which no read back checks: a refused one fails the render by its number too, and
+        // the frame after it isn't refused with it
+        fn drawn() {}
+        assert_eq!(fed_checked(8, 1, drawn, full, || panic!("no draw skipped")).unwrap(), 1);
+        refuse("a page (1920x1080) was drawn without 2 of its images".into());
+        let e = fed_checked(9, 1, drawn, full, || panic!("no draw skipped")).unwrap_err();
+        assert_eq!(e, "frame 9: a page (1920x1080) was drawn without 2 of its images");
+        assert_eq!(fed_checked(10, 1, drawn, full, || panic!("no draw skipped")).unwrap(), 1);
     }
 
     #[test]

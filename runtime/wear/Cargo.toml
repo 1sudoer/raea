@@ -1,0 +1,22 @@
+[package]
+name = "raea-runtime-wear"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "raea/wear's bake as a native call (wear.bake) and a verb (raea wear bake): a .glb's cause maps made once in the composition's asset store"
+
+[dependencies]
+# the native-call registry
+raea-native = { path = "../../engine/native", default-features = false }
+# the composition's asset store, where a bake is kept
+raea-io-assets = { path = "../../io/assets" }
+# a bake's time counted as made on first use, not as settling
+raea-sys-bake = { path = "../../systems/bake" }
+# the bake itself (docs/wear.feature WR1-WR3, WR9)
+raea-sys-weathering = { path = "../../systems/weathering" }
+serde_json = "1"
+
+[dev-dependencies]
+# a small wall and floor written as a .glb for the tests
+raea-sys-glb = { path = "../../systems/glb" }

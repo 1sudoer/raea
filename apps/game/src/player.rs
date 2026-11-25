@@ -50,11 +50,11 @@ pub(crate) fn find_game(args: &[String]) -> R<PathBuf> {
         return Ok(PathBuf::from(d));
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = exe.canonicalize().unwrap_or(exe);
+    let exe = dunce::canonicalize(&exe).unwrap_or(exe);
     let here = exe.parent().unwrap_or(Path::new("."));
     for c in [here.join("../Resources/game"), here.join("game")] {
         if c.join(MANIFEST).exists() {
-            return Ok(c.canonicalize().unwrap_or(c));
+            return Ok(dunce::canonicalize(&c).unwrap_or(c));
         }
     }
     Err(format!("no game beside {} (an exported game's player looks in ../Resources/game or game/; --game DIR names one)", exe.display()))
@@ -300,7 +300,7 @@ pub(crate) fn selftest(game: &Game, secs: f64, args: &[String]) -> R<String> {
         "has_3d": game.has_3d,
         "snapshots": snapped,
         "panics": panics,
-        "env": {"home": std::env::var("HOME").unwrap_or_default(), "raea_vars_given": std::env::vars().filter(|(k, _)| k.starts_with("RAEA_") && k != "RAEA_AUDIO_MUTE" && k != "RAEA_AUDIO_TAP").count()},
+        "env": {"home": raea_io_home::user_home().unwrap_or_default().display().to_string(), "raea_vars_given": std::env::vars().filter(|(k, _)| k.starts_with("RAEA_") && k != "RAEA_AUDIO_MUTE" && k != "RAEA_AUDIO_TAP").count()},
     });
     if let Some(p) = flag(args, "--json") {
         std::fs::write(&p, serde_json::to_string_pretty(&report).unwrap()).map_err(|e| format!("{p}: {e}"))?;

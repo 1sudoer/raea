@@ -1,9 +1,12 @@
 // Composition and registerRoot: record what's registered so a renderer can list compositions
 // (spec: "Declaring and registering", "The clock renderers use").
 import { Children, isValidElement, type ComponentType, type ReactElement, type ReactNode } from "react";
+import { useVideoConfig } from "@raea/app/clock";
 import { Audio, Video } from "./media";
 import { Region } from "./region";
 import { Freeze, Loop, Sequence, Series } from "./timeline";
+import { validControls, type Control, type Controls, type ControlCost, type RegisteredControl } from "./controls";
+export type { ChoiceControl, ColourControl, Control, ControlCost, Controls, NumberControl, RegisteredControl, SwitchControl, TextControl } from "./controls";
 
 export interface CompositionProps<P extends Record<string, unknown> = Record<string, unknown>> {
   /** the composition's id: letters, digits and dashes (`raea render --composition` picks it) */
@@ -20,8 +23,31 @@ export interface CompositionProps<P extends Record<string, unknown> = Record<str
   durationInFrames: number;
   /** the props it's rendered with (JSON-like values only) */
   defaultProps?: P;
+  /** its size, rate, length or props worked out from the props it's rendered with (`defaultProps` under the command
+   *  line's `--props`): what it returns replaces the values above, so one composition renders a video per props file.
+   *  It returns its values directly, not a promise */
+  calculateMetadata?: CalculateMetadata<P>;
+  /** the composition's controls: which of its defaultProps a person may tune, and how (docs/realtime.feature RT4).
+   *  Each names a defaultProps key, whose value is the control's; the feed's Controls panel shows them on the
+   *  timeline and a change reaches the live picture as that prop */
+  controls?: Controls<P>;
   /** a hand edit laid over the composition (docs/craft-system.md, L): written back by the app's timeline */
   edit?: Edit;
+}
+
+/** What `calculateMetadata` is given and may return. */
+export type CalculateMetadata<P extends Record<string, unknown> = Record<string, unknown>> = (given: { defaultProps: P; props: P; compositionId: string }) => {
+  durationInFrames?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  props?: P;
+} | void;
+
+/** The props given on the command line (`raea render --props '{"n": 2}'` or `--props props.json`), anywhere in a
+ *  program; `{}` when none were. A composition's component gets them over its `defaultProps`. */
+export function getInputProps<T extends Record<string, unknown> = Record<string, unknown>>(): T {
+  return ((globalThis as { __raea_input_props?: unknown }).__raea_input_props ?? {}) as T;
 }
 
 /** A hand edit: `segments` are the composition's own frame ranges, [from, to), played one after another, so a trim,
@@ -29,6 +55,11 @@ export interface CompositionProps<P extends Record<string, unknown> = Record<str
 export interface Edit {
   /** the composition's own frame ranges, [from, to), played one after another */
   segments?: readonly (readonly [number, number])[];
+  /** the composition drawn at this fraction of its size (above 0, at most 1), what is where kept: it is laid out at
+   *  its width and height (useVideoConfig still says them) and the whole drawn smaller, so a 3D view traces fewer
+   *  pixels. A draft's, where a smaller picture changes nothing that ships: the app's composition drafts and a scene's
+   *  kept frames draw at 0.5 (docs/lightspeed.feature PF4) */
+  scale?: number;
 }
 
 export interface RegisteredComposition {
@@ -46,6 +77,8 @@ export interface RegisteredComposition {
   durationInFrames: number;
   /** the props it's rendered with (JSON-like values only) */
   defaultProps: Record<string, unknown>;
+  /** its controls, by defaultProps key, in the order they're declared ({} when it has none) */
+  controls: Readonly<Record<string, RegisteredControl>>;
 }
 
 const ID_PATTERN = /^[A-Za-z0-9-]+$/;
@@ -75,16 +108,34 @@ function validate(props: CompositionProps<any>, taken: readonly RegisteredCompos
   if (typeof props.component !== "function" && (typeof props.component !== "object" || props.component === null)) {
     fail("component", "must be a React component");
   }
+  const jsonObject = (field: string, v: unknown) => {
+    if (!isJsonLike(v, new Set()) || Array.isArray(v)) fail(field, "must be an object of JSON-like values (no functions, class instances or cycles)");
+  };
+  const declared = props.defaultProps ?? {};
+  jsonObject("defaultProps", declared);
+  // the command line's props over its own (--props, MV4), then what calculateMetadata makes of them
+  const input = getInputProps();
+  let defaultProps: Record<string, unknown> = Object.keys(input).length ? { ...declared, ...input } : declared;
+  if (props.calculateMetadata !== undefined) {
+    if (typeof props.calculateMetadata !== "function") fail("calculateMetadata", "must be a function");
+    const meta = props.calculateMetadata({ defaultProps: declared, props: defaultProps, compositionId: props.id });
+    if (meta && typeof (meta as { then?: unknown }).then === "function") fail("calculateMetadata", "returned a promise: it returns its values directly (pass data it would load with --props)");
+    if (meta) {
+      const { props: made, ...size } = meta;
+      // (a copy: an element's props are frozen)
+      props = { ...props, ...Object.fromEntries(Object.entries(size).filter(([, v]) => v !== undefined)) };
+      if (made !== undefined) {
+        jsonObject("calculateMetadata's props", made);
+        defaultProps = made;
+      }
+    }
+  }
   for (const field of ["width", "height", "durationInFrames"] as const) {
     const v = props[field];
     if (!Number.isInteger(v) || v <= 0) fail(field, `must be a positive integer, got ${v}`);
   }
   if (typeof props.fps !== "number" || !(props.fps > 0) || !Number.isFinite(props.fps)) {
     fail("fps", `must be a positive number, got ${props.fps}`);
-  }
-  const defaultProps = props.defaultProps ?? {};
-  if (!isJsonLike(defaultProps, new Set()) || Array.isArray(defaultProps)) {
-    fail("defaultProps", "must be an object of JSON-like values (no functions, class instances or cycles)");
   }
   const segments = props.edit?.segments;
   if (segments !== undefined) {
@@ -94,14 +145,25 @@ function validate(props: CompositionProps<any>, taken: readonly RegisteredCompos
       if (!ok) fail("edit.segments", `has ${JSON.stringify(seg)}: each is [from, to) with 0 <= from < to <= ${props.durationInFrames}`);
     }
   }
+  const draft = props.edit?.scale;
+  if (draft !== undefined && !(typeof draft === "number" && draft > 0 && draft <= 1)) fail("edit.scale", `must be a number above 0 and at most 1, got ${draft}`);
+  // with the command line's --scale (MV5): laid out at its own size, drawn at that many times it
+  const scale = (draft ?? 1) * ((globalThis as { __raea_scale?: number }).__raea_scale ?? 1);
+  const [w, h] = scale === 1 ? [props.width, props.height] : [Math.max(1, Math.round(props.width * scale)), Math.max(1, Math.round(props.height * scale))];
+  const controls = validControls(props.controls, defaultProps as Record<string, unknown>, fail);
+  // --hold N:M: frame N drawn M times, so what still changes on screen is the renderer's own (raea light steady)
+  const hold = (globalThis as { __raea_hold?: [number, number] }).__raea_hold;
+  const Whole = segments ? edited(props.component, segments) : props.component;
+  const cut: ComponentType<any> = hold ? (p) => <Freeze frame={hold[0]}><Whole {...p} /></Freeze> : Whole;
   return {
     id: props.id,
-    component: segments ? edited(props.component, segments) : props.component,
-    width: props.width,
-    height: props.height,
+    component: w === props.width && h === props.height ? cut : scaled(cut, props.width, props.height, w, h),
+    width: w,
+    height: h,
     fps: props.fps,
-    durationInFrames: segments ? segments.reduce((n, [a, b]) => n + b - a, 0) : props.durationInFrames,
+    durationInFrames: hold ? hold[1] : segments ? segments.reduce((n, [a, b]) => n + b - a, 0) : props.durationInFrames,
     defaultProps,
+    controls,
   };
 }
 
@@ -127,6 +189,35 @@ function edited(Component: ComponentType<any>, segments: readonly (readonly [num
   return Edited;
 }
 
+/** The component laid out at its own size (`width` by `height`, which useVideoConfig reports inside it) in a box
+ *  drawn at `w` by `h`: an edit's scale. */
+function scaled(Component: ComponentType<any>, width: number, height: number, w: number, h: number): ComponentType<any> {
+  const style = { position: "absolute", left: 0, top: 0, width, height, transform: `scale(${w / width}, ${h / height})`, transformOrigin: "0 0" } as const;
+  function Scaled(props: Record<string, unknown>) {
+    return (
+      <div style={style}>
+        <Sequence layout="none" width={width} height={height}>
+          <Component {...props} />
+        </Sequence>
+      </div>
+    );
+  }
+  Scaled.displayName = `Scaled(${Component.displayName ?? Component.name ?? "Composition"})`;
+  return Scaled;
+}
+
+/** A control's value as the frame is drawn (docs/realtime.feature RT4c): the composition's prop of that name, the
+ *  value a person set on the live stage or, in a render, its defaultProps. For a part deep in the tree, so the value
+ *  needn't be passed down as a prop; the root component can read its props as any component does. */
+export function useControl<T = unknown>(name: string): T {
+  const { defaultProps } = useVideoConfig();
+  if (!Object.prototype.hasOwnProperty.call(defaultProps, name)) {
+    const keys = Object.keys(defaultProps);
+    throw new Error(`useControl("${name}"): the composition has no prop "${name}" (its defaultProps has ${keys.length ? keys.join(", ") : "none"})`);
+  }
+  return defaultProps[name] as T;
+}
+
 /** Declares a composition inside the root. It draws nothing itself; a renderer finds it through registerRoot. */
 export function Composition<P extends Record<string, unknown>>(_props: CompositionProps<P>) {
   return null;
@@ -140,11 +231,146 @@ const HOOKED: ReadonlySet<unknown> = new Set<unknown>([
 // A call to a hook in a component's source: `use(` or `useSomething(` (also after a dot, as bundlers write it).
 const HOOK_CALL = /\buse(?:[A-Z][\w$]*)?\s*\(/;
 
+const CLOSE: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+// what a `/` follows when it starts a regex literal rather than dividing
+const REGEX_AFTER = /[(,=:[!&|?{};+\-*%<>~^]/;
+const REGEX_WORD = /\b(?:return|typeof|case|do|else|in|of|new|delete|void|throw|yield|await)$/;
+
+/** Where the string, template literal, comment or regex literal at `i` ends (the index after it); -1 when it's code. */
+function opaqueEnd(s: string, i: number): number {
+  const c = s[i];
+  if (c === '"' || c === "'") {
+    for (let j = i + 1; j < s.length; j++) {
+      if (s[j] === "\\") j++;
+      else if (s[j] === c || s[j] === "\n") return j + 1;
+    }
+    return s.length;
+  }
+  if (c === "`") {
+    for (let j = i + 1; j < s.length; j++) {
+      if (s[j] === "\\") j++;
+      else if (s[j] === "`") return j + 1;
+      else if (s[j] === "$" && s[j + 1] === "{") j = closeOf(s, j + 1) - 1;
+    }
+    return s.length;
+  }
+  if (c !== "/") return -1;
+  if (s[i + 1] === "/") {
+    const e = s.indexOf("\n", i);
+    return e < 0 ? s.length : e + 1;
+  }
+  if (s[i + 1] === "*") {
+    const e = s.indexOf("*/", i + 2);
+    return e < 0 ? s.length : e + 2;
+  }
+  let k = i - 1;
+  while (k >= 0 && /\s/.test(s[k])) k--;
+  if (k >= 0 && !REGEX_AFTER.test(s[k]) && !REGEX_WORD.test(s.slice(Math.max(0, k - 7), k + 1))) return -1; // division
+  let inClass = false;
+  for (let j = i + 1; j < s.length; j++) {
+    if (s[j] === "\\") j++;
+    else if (s[j] === "[") inClass = true;
+    else if (s[j] === "]") inClass = false;
+    else if (s[j] === "/" && !inClass) {
+      let end = j + 1;
+      while (end < s.length && /[a-z]/i.test(s[end])) end++;
+      return end;
+    }
+    else if (s[j] === "\n") return j + 1;
+  }
+  return s.length;
+}
+
+/** The index after the bracket that closes the one at `i`, past strings, comments and the like. */
+function closeOf(s: string, i: number): number {
+  let depth = 0;
+  for (let j = i; j < s.length; ) {
+    const e = opaqueEnd(s, j);
+    if (e >= 0) {
+      j = e;
+      continue;
+    }
+    if (CLOSE[s[j]]) depth++;
+    else if (s[j] === ")" || s[j] === "]" || s[j] === "}") {
+      depth--;
+      if (depth === 0) return j + 1;
+    }
+    j++;
+  }
+  return s.length;
+}
+
+/** Where an arrow function's expression body starting at `i` ends: at a `,`, `;` or closing bracket outside brackets. */
+function expressionEnd(s: string, i: number): number {
+  for (let j = i; j < s.length; ) {
+    const e = opaqueEnd(s, j);
+    if (e >= 0) {
+      j = e;
+      continue;
+    }
+    if (CLOSE[s[j]]) {
+      j = closeOf(s, j);
+      continue;
+    }
+    if (s[j] === "," || s[j] === ";" || s[j] === ")" || s[j] === "]" || s[j] === "}") return j;
+    j++;
+  }
+  return s.length;
+}
+
+/**
+ * A function's source without the bodies of the functions written inside it: a component given inline
+ * (`component={() => ...}`), a render prop or a callback runs when React or the caller runs it, not when this function
+ * is called, so a hook there isn't this function's. Each inner `=>` body and `function` body becomes empty.
+ */
+function ownSource(s: string): string {
+  // this function's own body: after its first `=>`, or inside its first `{`, outside its parameters' brackets
+  let body = -1;
+  for (let j = 0; j < s.length && body < 0; ) {
+    const e = opaqueEnd(s, j);
+    if (e >= 0) j = e;
+    else if (s.startsWith("=>", j)) body = j + 2;
+    else if (s[j] === "{") body = j + 1;
+    else if (s[j] === "(" || s[j] === "[") j = closeOf(s, j);
+    else j++;
+  }
+  if (body < 0) return s;
+  let out = s.slice(0, body);
+  for (let j = body; j < s.length; ) {
+    const e = opaqueEnd(s, j);
+    if (e >= 0) {
+      out += s.slice(j, e);
+      j = e;
+      continue;
+    }
+    if (s.startsWith("=>", j)) {
+      let k = j + 2;
+      while (k < s.length && /\s/.test(s[k])) k++;
+      out += "=>0";
+      j = s[k] === "{" ? closeOf(s, k) : expressionEnd(s, k);
+      continue;
+    }
+    if (s.startsWith("function", j) && !/[\w$]/.test(s[j - 1] ?? "") && !/[\w$]/.test(s[j + 8] ?? "")) {
+      const open = s.indexOf("(", j);
+      let k = open < 0 ? s.length : closeOf(s, open);
+      while (k < s.length && /\s/.test(s[k])) k++;
+      if (s[k] === "{") {
+        out += "function(){}";
+        j = closeOf(s, k);
+        continue;
+      }
+    }
+    out += s[j];
+    j++;
+  }
+  return out;
+}
+
 function looksHooked(fn: Function): boolean {
   if (HOOKED.has(fn)) return true;
   let source = "";
   try {
-    source = Function.prototype.toString.call(fn);
+    source = ownSource(Function.prototype.toString.call(fn));
   } catch {
     return true; // can't read it: don't risk running it
   }
@@ -251,7 +477,8 @@ export function registerRoot(given: ComponentType | ReactElement): void {
       ...IMPLICIT,
       durationInFrames: walk.latestEnd > 0 ? Math.ceil(walk.latestEnd) : IMPLICIT.durationInFrames,
       component: Root,
-      defaultProps: {},
+      defaultProps: getInputProps(),
+      controls: {},
     });
   }
   root = Root;

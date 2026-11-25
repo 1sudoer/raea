@@ -4,59 +4,16 @@
 // step since the last frame. Going backwards (a seek, a scrub) starts the root again from frame 0 and steps forward, so
 // a frame's scene is the same whichever frame came before it: a render equals its play (raea's first rule).
 import * as THREE from "three";
-import { advance, createRoot, extend, flushSync, type ReconcilerRoot, type RenderProps, type RootState } from "@react-three/fiber";
-import type { ReactNode } from "react";
-import { renderInto } from "./targets";
+import { advance, createRoot, events, extend, flushSync, type ReconcilerRoot, type RenderProps, type RootState } from "@react-three/fiber";
+import { Component, createElement, type ReactNode } from "react";
+import type { FrameInput } from "@raea/app/clock";
+import { dispatchInput, EventCanvas, eventsBetween } from "./pointer";
+import { standInRenderer } from "./renderer";
+import { nextRandom, seedOf } from "./seed";
+
+export { standInRenderer, warnOnce } from "./renderer";
 
 extend(THREE as unknown as Parameters<typeof extend>[0]);
-
-/** the renderer R3F configures and never draws with: what it sets on it (shadows, tone mapping) is read back */
-export function standInRenderer(): THREE.WebGLRenderer {
-  const noop = () => {};
-  const size = { width: 1, height: 1 };
-  // a WebGL context that answers what a composer asks as it is made (@react-three/postprocessing, three's own), and
-  // takes every other call as it renders (its depth blit: bindFramebuffer, blitFramebuffer) doing nothing, its
-  // constants (READ_FRAMEBUFFER, DEPTH_BUFFER_BIT) 0: raea draws the effect (post.ts)
-  const gl = {
-    getContextAttributes: () => ({ alpha: true, depth: true, stencil: false, antialias: false, premultipliedAlpha: true }),
-    getExtension: () => null, getParameter: () => 0, getSupportedExtensions: () => [], isContextLost: () => false,
-  } as Record<string | symbol, unknown>;
-  const context = new Proxy(gl, { get: (t, k) => (k in t ? t[k] : typeof k !== "string" || k === "then" ? undefined : /^[A-Z0-9_]+$/.test(k) ? 0 : /^[a-z]/.test(k) ? noop : undefined) });
-  // a pass an app draws into a render target itself (drei's <ContactShadows>) is done on the CPU (targets.ts)
-  let target: THREE.RenderTarget | null = null;
-  const clear: [number, number, number, number] = [0, 0, 0, 0];
-  const own = {
-    render: (scene: THREE.Object3D, camera: THREE.Camera) => {
-      if (target) renderInto(target, scene, camera, clear);
-    },
-    setRenderTarget: (t: THREE.RenderTarget | null) => void (target = t),
-    getRenderTarget: () => target,
-    setClearColor: (c: THREE.ColorRepresentation, a?: number) => {
-      const col = new THREE.Color(c);
-      clear[0] = col.r, clear[1] = col.g, clear[2] = col.b;
-      if (a !== undefined) clear[3] = a;
-    },
-    setClearAlpha: (a: number) => void (clear[3] = a),
-    getClearAlpha: () => clear[3], setSize: (w: number, h: number) => void Object.assign(size, { width: w, height: h }), setPixelRatio: noop, getPixelRatio: () => 1,
-    getSize: (v: THREE.Vector2) => v.set(size.width, size.height), getDrawingBufferSize: (v: THREE.Vector2) => v.set(size.width, size.height),
-    getContext: () => context, getClearColor: (c: THREE.Color) => c.setRGB(clear[0], clear[1], clear[2]),
-    dispose: noop, compile: noop, autoClear: true, autoClearColor: true, autoClearDepth: true, autoClearStencil: true,
-    domElement: { style: {}, addEventListener: noop, removeEventListener: noop },
-    xr: { enabled: false, isPresenting: false, addEventListener: noop, removeEventListener: noop, setAnimationLoop: noop },
-    shadowMap: { enabled: false, type: THREE.PCFShadowMap },
-    outputColorSpace: THREE.SRGBColorSpace, toneMapping: THREE.NoToneMapping, toneMappingExposure: 1,
-    capabilities: { isWebGL2: true, maxTextureSize: 16384, maxSamples: 4, logarithmicDepthBuffer: false }, info: { autoReset: true, reset: noop }, properties: { get: () => ({}) },
-  } as Record<string | symbol, unknown>;
-  // any other of WebGLRenderer's methods (setRenderTarget, clear, readRenderTargetPixels ...) does nothing: raea draws
-  // (verbs only: a catch-all would answer `then`, and the renderer would read as a promise)
-  const verb = /^(set|get|clear|read|copy|init|reset|render|dispose|compile|update|bind)[A-Z]?/;
-  return new Proxy(own, { get: (t, k) => (k in t ? t[k] : typeof k === "string" && verb.test(k) ? noop : undefined) }) as unknown as THREE.WebGLRenderer;
-}
-
-function standInCanvas(width: number, height: number): HTMLCanvasElement {
-  const noop = () => {};
-  return { style: {}, width, height, addEventListener: noop, removeEventListener: noop, getBoundingClientRect: () => ({ left: 0, top: 0, width, height, x: 0, y: 0, right: width, bottom: height }) } as unknown as HTMLCanvasElement;
-}
 
 export interface Session {
   root: ReconcilerRoot<HTMLCanvasElement>;
@@ -69,18 +26,17 @@ export interface Session {
   subs: number;
   /** its Math.random's state: seeded as it starts, so a root started again draws the same numbers */
   rand: number;
+  /** the canvas R3F's events and three's controls listen on (pointer.ts) */
+  canvas: EventCanvas;
+  /** the input its events last came from */
+  input?: FrameInput;
 }
 
 /** Math.random as `s`'s own generator (mulberry32) while `fn` runs: drei's <Float> phase, <Sparkles>, three's uuids
  *  come out the same each time the root is stepped from frame 0, so a render after a seek equals its play */
 function seeded<T>(s: Session, fn: () => T): T {
   const was = Math.random;
-  Math.random = () => {
-    let t = (s.rand = (s.rand + 0x6d2b79f5) | 0);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  Math.random = () => nextRandom(s);
   try {
     return fn();
   } finally {
@@ -88,23 +44,41 @@ function seeded<T>(s: Session, fn: () => T): T {
   }
 }
 
-const seedOf = (key: string) => [...key].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261) | 0;
-
 const sessions = new Map<string, Session>();
+
+/** The scene under an error boundary of raea's: what it throws (rendering, in an effect, in a ref) is handed to `on`,
+ *  and it draws nothing after. A promise thrown (a load suspending) isn't an error and passes by it, as before. */
+class Caught extends Component<{ on: (error: unknown) => void; children?: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    this.props.on(error);
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 export type Config = Omit<RenderProps<HTMLCanvasElement>, "gl" | "frameloop" | "size" | "events" | "dpr">;
 
 function start(key: string, width: number, height: number, config: Config, json: string): Session {
-  const root = createRoot(standInCanvas(width, height));
+  const canvas = new EventCanvas(width, height);
+  const root = createRoot(canvas as unknown as HTMLCanvasElement);
   let state: RootState | undefined;
-  void root.configure({ ...config, gl: standInRenderer(), frameloop: "never", dpr: 1, size: { width, height, top: 0, left: 0 }, events: undefined, onCreated: (s) => { state = s; config.onCreated?.(s); } });
-  const s: Session = { root, state: state as unknown as RootState, frame: -1, config: json, subs: 0, rand: seedOf(key) };
+  // the renderer's canvas the same one: drei's controls take gl.domElement before R3F's events connect to the canvas
+  const gl = Object.assign(standInRenderer(), { domElement: canvas as unknown as HTMLCanvasElement });
+  // R3F's own event manager, connected to the canvas as it mounts: the pointer events of a live play (pointer.ts)
+  void root.configure({ ...config, gl, frameloop: "never", dpr: 1, size: { width, height, top: 0, left: 0 }, events, onCreated: (s) => { state = s; config.onCreated?.(s); } });
+  const s: Session = { root, state: state as unknown as RootState, frame: -1, config: json, subs: 0, rand: seedOf(key), canvas };
   sessions.set(key, s);
   return s;
 }
 
-/** The root `key` at local frame `frame` (fps a second), each step rendering `scene(i)` first. */
-export function stepTo(key: string, frame: number, fps: number, width: number, height: number, config: Config, scene: (i: number) => ReactNode): Session {
+/** The root `key` at local frame `frame` (fps a second), each step rendering `scene(i)` first. `input(i)`: the input at
+ *  local frame i, sent to R3F's canvas as the pointer events since the frame before (pointer.ts) */
+export function stepTo(key: string, frame: number, fps: number, width: number, height: number, config: Config, scene: (i: number) => ReactNode, input?: (i: number) => FrameInput | undefined): Session {
   const json = JSON.stringify({ width, height, config }, (_k, v) => (typeof v === "function" ? String(v) : v instanceof THREE.Object3D ? v.uuid : v));
   let s = sessions.get(key);
   if (s && (frame < s.frame || s.config !== json)) {
@@ -115,8 +89,16 @@ export function stepTo(key: string, frame: number, fps: number, width: number, h
   const live = s;
   const render = (i: number) => {
     let store: ReturnType<typeof live.root.render> | undefined;
-    seeded(live, () => flushSync(() => { store = live.root.render(scene(i)); }));
+    let failed: { error: unknown } | undefined;
+    seeded(live, () => flushSync(() => { store = live.root.render(createElement(Caught, { on: (error: unknown) => void (failed ??= { error }) }, scene(i))); }));
     if (store) live.state = store.getState();
+    // thrown out of the <R3F> that's drawing it, so the composition throws as it would outside R3F: the render is
+    // refused, naming the error. R3F's own root only reports it (reportError, else console.error: a stack without its
+    // message) and draws nothing, and the render ended with 0 errors (#131). The root starts again next time
+    if (failed) {
+      end(key);
+      throw failed.error;
+    }
   };
   // the same frame drawn again (a live replay): its children may have changed, its clock hasn't. When parts of it
   // mounted only now (a model, a font: what suspended while the frames were stepped, loaded since), their useFrame
@@ -127,11 +109,23 @@ export function stepTo(key: string, frame: number, fps: number, width: number, h
     if (subsOf(live) > live.subs && !late.has(key)) {
       late.add(key);
       end(key);
-      return stepTo(key, frame, fps, width, height, config, scene);
+      return stepTo(key, frame, fps, width, height, config, scene, input);
     }
   }
+  // the pointer's events since the frame before, as a browser sends them between two frames: what their handlers set
+  // is drawn this step. Before the root first renders there's nothing to hit and nothing listening: after it
+  const send = (i: number) => {
+    const now = input?.(i);
+    const evs = eventsBetween(live.input, now);
+    live.input = now;
+    if (evs.length) seeded(live, () => flushSync(() => dispatchInput(live.canvas, [live.state?.scene, live.state?.camera], evs)));
+  };
   for (let i = s.frame + 1; i <= frame; i++) {
+    // what it draws into targets is this step's (R3F23): the last step's passes go
+    (live.state?.gl as unknown as { __raea?: { step?: () => void } } | undefined)?.__raea?.step?.();
+    if (input && i > 0) send(i);
     render(i);
+    if (input && i === 0) send(i);
     seeded(live, () => advance(i / fps, true, live.state));
     live.frame = i;
     live.subs = subsOf(live);

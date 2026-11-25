@@ -13,6 +13,11 @@ pub struct Scenes {
     pub todo: Vec<Drawn>,
 }
 
+/// How many pages have been drawn since the process started (each one Vello drew, not one skipped as painted the same):
+/// unchanged from one frame to the next, nothing on any page changed (a playing video, a stage or a view draws its page
+/// every frame). What the window reads to rest (raea-page-host's idle.rs).
+pub static DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The one Vello renderer on Bevy's device (not `Sync`: its shader cache holds cells, so it's held in a SyncCell and the
 /// render world can run on a thread of its own, as the engine's pipelined updates run it), made on first use; each page's
 /// storage texture Vello draws into; and the pass that premultiplies it into the page's image.
@@ -152,6 +157,8 @@ pub fn draw(mut scenes: ResMut<Scenes>, mut vello: ResMut<Vello>, device: Res<Re
         if std::env::var("RAEA_PAGE_CG_YMAP").as_deref() != Ok("0") {
             vello::low_level::vello_encoding::set_glyph_tops(raea_sys_fonts::coregraphics_tops);
         }
+        // the image atlas (each filtered element is an image in it) as large as the device can make, not Vello's 8192
+        vello::low_level::vello_encoding::set_max_atlas_size(device.limits().max_texture_dimension_2d);
         vello::Renderer::new(
             device,
             vello::RendererOptions { antialiasing_support: vello::AaSupport::area_only(), num_init_threads: std::num::NonZeroUsize::new(1), ..default() },
@@ -171,6 +178,7 @@ pub fn draw(mut scenes: ResMut<Scenes>, mut vello: ResMut<Vello>, device: Res<Re
             continue;
         }
         prints.insert(handle.id(), print);
+        DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // a bevy_ui page's renders (its layers' and its own) blend in linear light (vendor/vello_shaders fine.wgsl)
         vello::low_level::vello_encoding::set_blend_linear(linear);
         // each filtered layer drawn by Vello, filtered, and handed to Vello as its placeholder's pixels, an inner
@@ -230,7 +238,7 @@ pub fn draw(mut scenes: ResMut<Scenes>, mut vello: ResMut<Vello>, device: Res<Re
         for layer in layers {
             renderer.override_image(&layer.image, None);
         }
-        if std::env::var_os("RAEA_TRACE").is_some() {
+        if raea_io_trace::stat("RAEA_TRACE") {
             eprintln!("trace raea-page: page drawn {}x{}, full bump {}, {}", px.x, px.y, REDRAW_FULL.load(std::sync::atomic::Ordering::Relaxed), drew.as_ref().map_or_else(Clone::clone, |_| "ok".into()));
         }
         if let Err(err) = drew {

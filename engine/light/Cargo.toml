@@ -1,0 +1,15 @@
+[package]
+name = "raea-light"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "raea light check: each scene on each light path against its path-traced reference, in stops (docs/realism.feature LT1)"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+# the CLI's flag reader and result type
+raea-runtime-bundle = { path = "../../runtime/bundle" }
+# the home folder on every OS (HOME, then USERPROFILE)
+raea-io-home = { path = "../../io/home" }

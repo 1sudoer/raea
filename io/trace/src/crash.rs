@@ -163,7 +163,7 @@ pub(crate) fn install_signal_handlers() {
 
 /// Sessions under `base` that ended unclean (no end.json, their process gone) get macOS's crash report for their pid.
 pub(crate) fn adopt_crash_reports(base: &Path) {
-    let reports = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Logs/DiagnosticReports"));
+    let reports = raea_io_home::user_home().map(|h| h.join("Library/Logs/DiagnosticReports"));
     let Ok(entries) = std::fs::read_dir(base) else { return };
     for e in entries.flatten() {
         let d = e.path();

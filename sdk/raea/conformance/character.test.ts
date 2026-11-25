@@ -1,9 +1,10 @@
 // raea/character, clip and matching under plain bun: the skeleton's forward kinematics, the goals landing
 // where they are sent, clips surviving their file format, routes keeping clear, and a performance being a pure
-// function of its inputs. The skeleton is a small stand-in on raea's game_engine joints (stick.ts).
+// function of its inputs. The skeleton is a small stand-in on SOMA's joints (stick.ts); the tests name joints the old
+// game_engine way in places, which `joint` finds on a SOMA body.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { BevyApp } from "raea/bevy";
-import { captured, flatHand, withFingers, len, lookAt, palmAt, plant, pose, qaxis, qrot, reach, rest, softElbows, sub, twoBone, type Skeleton } from "raea/character";
+import { B, captured, joint, oldName, somaName, flatHand, withFingers, len, lookAt, palmAt, plant, pose, qaxis, qrot, reach, rest, softElbows, sub, twoBone, type Skeleton } from "raea/character";
 import { readBvh, readClips, retarget, writeClips } from "raea/clip";
 import { before, libraryPose, libraryTable, mirror, motionLibrary, perform, planFloor, route, stateMix, through, walkPlan } from "raea/matching";
 import { applyEffect, clipMeans, learnEffect, mirrorEffect, mixEffects } from "raea/effects";
@@ -16,10 +17,20 @@ import { defineRoom, type LaidRun, type Plan } from "raea/room";
 import type { Vec3 } from "../src/3d";
 import { mirrorX, names, skel, stickBvh } from "./stick";
 
-const at = (n: string) => names.indexOf(n);
+const at = (n: string) => joint(skel, n);
 const near = (a: Vec3, b: Vec3, tol: number) => expect(len(sub(a, b))).toBeLessThan(tol);
 
 describe("the skeleton", () => {
+  test("a joint is found by its SOMA name or its old one, and the two names turn into each other", () => {
+    expect(names.indexOf(B.thigh("L"))).toBeGreaterThan(0);
+    for (const [old, soma] of [["pelvis", "Hips"], ["spine_03", "Chest"], ["thigh_l", "LeftLeg"], ["calf_r", "RightShin"], ["ball_l", "LeftToeBase"], ["thumb_01_l", "LeftHandThumb1"], ["index_01_r", "RightHandIndex2"], ["pinky_03_l", "LeftHandPinky4"]]) {
+      expect(at(old)).toBe(at(soma));
+      expect(somaName(old)).toBe(soma);
+      expect(oldName(soma)).toBe(old);
+    }
+    expect(names.length).toBe(captured(skel) + 30);
+    expect(() => joint({ ...skel, joints: [{ ...skel.joints[0], name: "LeftUpLeg" }] }, "LeftLeg")).toThrow(/CMU/);
+  });
   test("at rest every joint is at its head", () => {
     const w = withFingers(skel, pose(skel, rest(skel)));
     skel.joints.forEach((j, i) => near(w.pos[i], j.head, 1e-9));

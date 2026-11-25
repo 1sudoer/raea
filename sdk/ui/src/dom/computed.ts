@@ -115,15 +115,21 @@ export function computedOf(el: Element_): Computed {
   return out;
 }
 
+/** What only the host's cascade knows on a React page: colours and custom properties. */
+const HOST_ONLY = /^--|color$|^(fill|stroke)$/;
+
 export function getComputedStyle(el: Element_, _pseudo?: string | null): any {
   if (!(el instanceof Element_)) throw new TypeError("getComputedStyle: not an Element");
   const c = computedOf(el);
   // with the host's cascade on, each value is stylo's for the element as the JS has written it so far; this cascade's
-  // answers where the host has none (an unwired element, a call outside a step)
-  const host = htmlDoc && el._wired && el.__wid !== undefined ? el.__wid : undefined;
+  // answers where the host has none (an unwired element, a call outside a step). A React page (DOM mode) asks the host
+  // only for what this cascade can't know, a colour or a custom property (a class's color, a var()): those read black
+  // and empty here, where the boxes and the classes libraries read are answered without a call
+  const wid = el._wired && el.__wid !== undefined ? el.__wid : undefined;
   const ask = (prop: string): string | undefined => {
-    if (host === undefined) return undefined;
     const name = prop.startsWith("--") ? prop : kebab(prop);
+    const host = htmlDoc || HOST_ONLY.test(name) ? wid : undefined;
+    if (host === undefined) return undefined;
     try {
       const v = wire.callSync<Record<string, string>>("style.computed", { id: host, names: [name] })?.[name];
       return v ? v : undefined;

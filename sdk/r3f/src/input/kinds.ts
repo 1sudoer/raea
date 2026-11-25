@@ -15,7 +15,7 @@ export const CLASSES: Record<string, { status: InputStatus; raea: string; note?:
   // drawn things
   Mesh: { status: "drawn", raea: "Mesh + BufferMesh (its triangles, normals, uvs, vertex colours; a range per geometry group)" },
   SkinnedMesh: { status: "drawn", raea: "Mesh + BufferMesh posed on the CPU each frame (bones and morph targets)" },
-  InstancedMesh: { status: "drawn", raea: "Instances while its copies hold still; a Mesh a copy when they move or have colours" },
+  InstancedMesh: { status: "drawn", raea: "Instances, its copies the frame's matrices and colours (a Mesh a copy under a ShaderMaterial)" },
   BatchedMesh: { status: "drawn", raea: "a Mesh per instance: its geometry's range, matrix and colour" },
   Points: { status: "drawn", raea: "one Mesh of quads facing the camera, three's point size (attenuated or in pixels), vertex colours" },
   Line: { status: "drawn", raea: "Gizmo strip in world space (vertex colours)", note: "lines are drawn 1 pixel wide in WebGL whatever linewidth says; raea draws linewidth" },
@@ -43,8 +43,8 @@ export const CLASSES: Record<string, { status: InputStatus; raea: string; note?:
   Audio: { status: "none", raea: "sound: raea/tone" },
   PositionalAudio: { status: "none", raea: "sound: <Sound3D>" },
   // materials
-  MeshStandardMaterial: { status: "drawn", raea: "MeshStandardMaterial (maps, alpha test and blending, sides, uv placement, samplers)" },
-  MeshPhysicalMaterial: { status: "drawn", raea: "MeshPhysicalMaterial (clearcoat, transmission, ior, thickness, attenuation, anisotropy, specular)", note: "sheen and iridescence are three's" },
+  MeshStandardMaterial: { status: "drawn", raea: "MeshStandardMaterial (maps, alpha test and blending, sides, uv placement, samplers)", note: "patched by onBeforeCompile: three's own program with the patch, its surface lit by raea (patched.ts); a patch past three's lighting is left out" },
+  MeshPhysicalMaterial: { status: "drawn", raea: "MeshPhysicalMaterial (clearcoat, transmission, ior, thickness, attenuation, anisotropy, specular)", note: "sheen and iridescence are three's; patched by onBeforeCompile: three's own program with the patch, lit by raea (sheen, clearcoat and transmission then left out)" },
   MeshBasicMaterial: { status: "drawn", raea: "MeshBasicMaterial" },
   MeshLambertMaterial: { status: "drawn", raea: "MeshStandardMaterial, roughness 1, metalness 0" },
   MeshPhongMaterial: { status: "near", raea: "MeshPhysicalMaterial: its shininess as a roughness, its specular colour as F0 (reflectance and specular tint)", note: "GGX's highlight, not Blinn-Phong's; an F0 above 0.16 (Bevy's highest reflectance) is held there, so a bright specular colour glints less" },
@@ -58,13 +58,13 @@ export const CLASSES: Record<string, { status: InputStatus; raea: string; note?:
   PointsMaterial: { status: "drawn", raea: "MeshBasicMaterial on the points' quads" },
   LineBasicMaterial: { status: "drawn", raea: "the Gizmo's colours" },
   LineDashedMaterial: { status: "drawn", raea: "the Gizmo's colours, the line cut into its dashes by its line distances" },
-  ShaderMaterial: { status: "drawn", raea: "ThreeShaderMaterial: its GLSL translated by naga and run with three's built-ins", note: "at most 4 textures, 254 vec4s of uniforms and 4 attributes of its own; a render target's texture is white; onBeforeCompile isn't read" },
-  RawShaderMaterial: { status: "drawn", raea: "ThreeShaderMaterial: its GLSL translated by naga and run with three's built-ins", note: "at most 4 textures, 254 vec4s of uniforms and 4 attributes of its own; a render target's texture is white; onBeforeCompile isn't read" },
+  ShaderMaterial: { status: "drawn", raea: "ThreeShaderMaterial: its GLSL translated by naga and run with three's built-ins", note: "at most 4 textures, 254 vec4s of uniforms and 4 attributes of its own; a render target's texture is the image raea draws it into on its GPU, a depth texture white; onBeforeCompile isn't read" },
+  RawShaderMaterial: { status: "drawn", raea: "ThreeShaderMaterial: its GLSL translated by naga and run with three's built-ins", note: "at most 4 textures, 254 vec4s of uniforms and 4 attributes of its own; a render target's texture is the image raea draws it into on its GPU, a depth texture white; onBeforeCompile isn't read" },
   Material: { status: "none", raea: "the base class" },
   // three/webgpu's node materials (TSL): one with no node of its own is the classic material it extends, drawn natively;
   // one with a graph (colorNode, positionNode, ...) on a mesh is compiled to WGSL by three's own WGSLNodeBuilder and run
   // by raea's engine (tsl.ts: ThreeShaderMaterial), lit by three's light nodes when it is a lit material
-  ...Object.fromEntries(["NodeMaterial", "MeshBasicNodeMaterial", "MeshLambertNodeMaterial", "MeshPhongNodeMaterial", "MeshStandardNodeMaterial", "MeshPhysicalNodeMaterial", "MeshSSSNodeMaterial", "MeshToonNodeMaterial", "MeshMatcapNodeMaterial", "MeshNormalNodeMaterial", "VolumeNodeMaterial"].map((k) => [k, { status: "drawn" as const, raea: "its classic material, or its graph as WGSL (ThreeShaderMaterial)", note: "a graph needing more than 4 textures, 254 vec4s of uniforms (uniformArrays included) or 4 attributes of the mesh's own, a storage buffer or a render target is named and drawn flat" }])),
+  ...Object.fromEntries(["NodeMaterial", "MeshBasicNodeMaterial", "MeshLambertNodeMaterial", "MeshPhongNodeMaterial", "MeshStandardNodeMaterial", "MeshPhysicalNodeMaterial", "MeshSSSNodeMaterial", "MeshToonNodeMaterial", "MeshMatcapNodeMaterial", "MeshNormalNodeMaterial", "VolumeNodeMaterial"].map((k) => [k, { status: "drawn" as const, raea: "its classic material, or its graph as WGSL (ThreeShaderMaterial): a lit one's surface (colour, normal, roughness, metalness, emission, opacity, positionNode) lit by Bevy's lights and shadows", note: "a graph needing more than 4 textures, 254 vec4s of uniforms (uniformArrays included) or 4 attributes of the mesh's own, a storage buffer or a render target is named and drawn flat" }])),
   ...Object.fromEntries(["LineBasicNodeMaterial", "LineDashedNodeMaterial", "Line2NodeMaterial", "PointsNodeMaterial", "SpriteNodeMaterial", "ShadowNodeMaterial"].map((k) => [k, { status: "near" as const, raea: "its classic material (lines, points, a sprite, a shadow catcher)", note: "a graph of its own on lines, points or a sprite is drawn flat" }])),
   // helpers: lines (and a plane's mesh), drawn as any lines are
   ...Object.fromEntries(["ArrowHelper", "AxesHelper", "Box3Helper", "BoxHelper", "CameraHelper", "DirectionalLightHelper", "GridHelper", "HemisphereLightHelper", "PlaneHelper", "PointLightHelper", "PolarGridHelper", "SkeletonHelper", "SpotLightHelper"].map((k) => [k, { status: "drawn" as const, raea: "its lines as Gizmo lines (an arrow's head and a plane's face as meshes)" }])),
@@ -79,7 +79,7 @@ export const EFFECTS: Record<string, { status: InputStatus; raea: string; note?:
   ChromaticAberrationEffect: { status: "near", raea: "Grade aberration (the offset's length)" },
   HueSaturationEffect: { status: "near", raea: "Grade saturation (1 + saturation)", note: "hue isn't turned" },
   BrightnessContrastEffect: { status: "near", raea: "Grade midtones (contrast, brightness as lift)" },
-  ToneMappingEffect: { status: "drawn", raea: "ToneMapping (its mode; ACES with three's 1/0.6 as exposure)" },
+  ToneMappingEffect: { status: "drawn", raea: "ToneMapping (its mode; ACES's 1/0.6 as a Grade exposure, every pixel before the curve)" },
   DepthOfFieldEffect: { status: "near", raea: "DepthOfField (gaussian, worldFocusDistance as focus, bokehScale as its blur)" },
   BokehEffect: { status: "near", raea: "DepthOfField (bokeh)", note: "postprocessing's legacy bokeh, its focus as raea's" },
   RealisticBokehEffect: { status: "near", raea: "DepthOfField (bokeh)", note: "postprocessing's legacy bokeh, its focus as raea's" },
@@ -90,5 +90,26 @@ export const EFFECTS: Record<string, { status: InputStatus; raea: string; note?:
   N8AOPostPass: { status: "near", raea: "AmbientOcclusion (Bevy's SSAO)" },
   PixelationEffect: { status: "near", raea: "Look pixel (granularity / 5 as the cell)" },
   LensDistortionEffect: { status: "near", raea: "LensDistortion (distortion.x as k1)" },
-  ...Object.fromEntries(["NoiseEffect", "GlitchEffect", "ScanlineEffect", "SepiaEffect", "DotScreenEffect", "ColorAverageEffect", "ColorDepthEffect", "GridEffect", "GodRaysEffect", "ShockWaveEffect", "TiltShiftEffect", "LUT3DEffect", "LUT1DEffect", "LUTEffect", "TextureEffect", "DepthEffect", "OutlineEffect", "ASCIIEffect"].map((k) => [k, { status: "none" as const, raea: "left out, named once", note: "write it as a raea <FramePass> (WESL) outside <R3F>" }])),
+  ...Object.fromEntries(["NoiseEffect", "ScanlineEffect", "SepiaEffect", "DotScreenEffect", "ColorAverageEffect", "ColorDepthEffect", "GridEffect"].map((k) => [k, { status: "drawn" as const, raea: "FramePass: its shader in WGSL, read with its own uniforms, blended as its EffectPass blends it (effects.ts)" }])),
+  ...Object.fromEntries(["GlitchEffect", "ShockWaveEffect", "LUT3DEffect", "LUTEffect", "ASCIIEffect"].map((k) => [k, { status: "drawn" as const, raea: "FramePass: its shader in WGSL, the frame read at its moved uv or its texture (a perturbation map, its characters, its table as a strip of slices) (effects-sampled.ts)" }])),
+  TiltShiftEffect: { status: "near", raea: "FramePass: the frame blurred outside its band", note: "one Gaussian as wide as its Kawase blur passes; <TiltShift2>'s effect (same name) is drawn as it is" },
+  GodRaysEffect: { status: "near", raea: "FramePass: rays streaked from the sun's disc on screen, where the depth prepass has nothing nearer", note: "its light source's own mask and the rays' blur aren't drawn" },
+  ...Object.fromEntries(["LUT1DEffect", "TextureEffect", "DepthEffect", "OutlineEffect"].map((k) => [k, { status: "none" as const, raea: "left out, named once", note: "write it as a raea <FramePass> (WESL) outside <R3F>" }])),
+};
+
+/** three/webgpu's post nodes (three/addons/tsl/display) in a PostProcessing (RenderPipeline), and the raea effect each
+ * becomes (tsl-post.ts). The chain starts from its scene pass, which raea draws; its output's tone mapping is raea's.
+ * The arithmetic joining nodes is taken as the raea effect's own blend; an Fn of the app's own isn't run. */
+export const TSL_POST: Record<string, { status: InputStatus; raea: string; note?: string }> = {
+  PassNode: { status: "drawn", raea: "the frame: its scene seen by its camera" },
+  BloomNode: { status: "near", raea: "Bloom, added on top (additive: strength x 4 as its intensity, its threshold)", note: "Bevy's bloom, not three's mip blur: a glow of its own size" },
+  GTAONode: { status: "near", raea: "AmbientOcclusion (Bevy's SSAO)" },
+  DepthOfFieldNode: { status: "near", raea: "DepthOfField bokeh (focusDistance as focus, bokehScale as its blur)" },
+  FXAANode: { status: "drawn", raea: "AntiAliasing fxaa" },
+  SMAANode: { status: "drawn", raea: "AntiAliasing smaa" },
+  ...Object.fromEntries(["TRAANode", "TAAUNode"].map((k) => [k, { status: "near" as const, raea: "AntiAliasing smaa", note: "temporal anti-aliasing needs the frames before: raea draws a frame from that frame alone" }])),
+  SSAAPassNode: { status: "near", raea: "its scene pass, AntiAliasing msaa" },
+  PixelationPassNode: { status: "near", raea: "its scene pass, Look pixel (pixelSize as the cell)", note: "its normal and depth edges aren't drawn" },
+  ...Object.fromEntries(["FilmNode", "DotScreenNode", "RGBShiftNode", "ChromaticAberrationNode", "Lut3DNode", "sepia", "bleach"].map((k) => [k, { status: "drawn" as const, raea: "FramePass: what its setup() builds, in WGSL (effects-tsl.ts)" }])),
+  ...Object.fromEntries(["AfterImageNode", "AnaglyphPassNode", "BilateralBlurNode", "DenoiseNode", "FSR1Node", "GaussianBlurNode", "GodraysNode", "LensflareNode", "OutlineNode", "ParallaxBarrierPassNode", "RecurrentDenoiseNode", "RetroPassNode", "SharpenNode", "SobelOperatorNode", "SSGINode", "SSRNode", "SSSNode", "StereoCompositePassNode", "StereoPassNode", "TemporalReprojectNode", "TransitionNode"].map((k) => [k, { status: "none" as const, raea: "left out, named once", note: "write it as a raea <FramePass> (WESL) outside <R3F>" }])),
 };

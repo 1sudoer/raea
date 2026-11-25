@@ -1,0 +1,11 @@
+[package]
+name = "raea-sys-runoff"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "Rain's run-off over a model's surfaces: drops walked down faces, dripping, clinging and carrying stains (raea/wear's flow)"
+
+[dependencies]
+parry3d = "0.31"
+rayon = "1"

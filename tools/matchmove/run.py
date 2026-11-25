@@ -22,8 +22,47 @@
 #    points: [[x,y,z]...] (up to 3000), ground: {y: 0, normal: [0,1,0]}, cut: "cut/%04d.png" | null, notes: [...]}
 import argparse, glob, json, math, os, shutil, subprocess, sys, time
 
+import av
 import numpy as np
 from PIL import Image, ImageFilter
+
+# the colour matrices FFmpeg names for a picture's colorspace tag: BT.601 for bt470bg (5) and smpte170m (6), else BT.709
+# (an untagged phone or render clip is BT.709 limited range; FFmpeg alone would assume BT.601)
+MATRIX = {5: "ITU601", 6: "ITU601"}
+
+
+def footage(path):
+    """The clip's width, height, frame rate (ffprobe's r_frame_rate), duration and colour matrix, through PyAV (its
+    wheels carry FFmpeg's own libraries: no FFmpeg need be installed)"""
+    with av.open(path) as c:
+        v = c.streams.video[0]
+        rate = float(v.base_rate or v.average_rate or v.guessed_rate or 30)
+        dur = float(v.duration * v.time_base) if v.duration else (c.duration or 0) / av.time_base
+        return v.codec_context.width, v.codec_context.height, rate, dur, MATRIX.get(int(v.codec_context.colorspace or 2), "ITU709")
+
+
+def decoded(path, start, seconds):
+    """Each frame from `start` for `seconds`, as `ffmpeg -ss START -i PATH -t SECONDS` decodes them"""
+    with av.open(path) as c:
+        v = c.streams.video[0]
+        v.thread_type = "AUTO"
+        t0 = v.start_time or 0
+        if start > 0:
+            c.seek(t0 + int(start / v.time_base), stream=v, backward=True)
+        for f in c.decode(v):
+            if f.pts is None:
+                continue
+            t = float((f.pts - t0) * v.time_base)
+            if t < start - 1e-6:
+                continue
+            if t >= start + seconds - 1e-6:
+                break
+            yield f
+
+
+def rgb(f, matrix, **size):
+    """A frame as RGB from limited-range YUV in `matrix` (FFmpeg's scale=in_color_matrix=M:in_range=tv,format=rgb24)"""
+    return f.reformat(format="rgb24", src_colorspace=matrix, src_color_range="MPEG", **size).to_ndarray()
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--video", required=True)
@@ -49,17 +88,11 @@ shutil.rmtree(work, ignore_errors=True)
 os.makedirs(f"{work}/img")
 notes = []
 
-probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate,duration,color_space", "-of", "json", a.video], capture_output=True, text=True, check=True).stdout)["streams"][0]
-W, H = int(probe["width"]), int(probe["height"])
-num, den = probe["r_frame_rate"].split("/")
-fps = float(num) / float(den)
-dur = float(probe.get("duration") or 0)
+W, H, fps, dur, matrix = footage(a.video)
 seconds = a.seconds if a.seconds > 0 else max(0.0, dur - a.start)
-# the decoders' colour: BT.709 limited range unless the file says otherwise (ffmpeg would assume BT.601 when untagged)
-matrix = {"bt470bg": "bt601", "smpte170m": "bt601"}.get(probe.get("color_space", ""), "bt709")
 sw, sh = W // 2, H // 2
-rng = ["-ss", f"{a.start:.6f}", "-i", a.video, "-t", f"{seconds:.6f}"]
-subprocess.run(["ffmpeg", "-v", "error", "-y", *rng, "-vf", f"scale={sw}:{sh}:flags=area:in_color_matrix={matrix}:in_range=tv,format=rgb24", "-start_number", "1", f"{work}/img/%04d.png"], check=True)
+for i, f in enumerate(decoded(a.video, a.start, seconds), 1):
+    Image.fromarray(rgb(f, matrix, width=sw, height=sh, interpolation="AREA")).save(f"{work}/img/{i:04d}.png", compress_level=1)
 frames = sorted(glob.glob(f"{work}/img/*.png"))
 N = len(frames)
 if N < 2:
@@ -402,14 +435,12 @@ if mattes:
         xn, yn = (u - W / 2) / fF, (v - H / 2) / fF
         d = 1 + k1 * (xn * xn + yn * yn)
         undistort = ((xn * d * fF + W / 2).astype(np.float32), (yn * d * fF + H / 2).astype(np.float32))
-    raw = subprocess.run(["ffmpeg", "-v", "error", *rng, "-vf", f"scale=in_color_matrix={matrix}:in_range=tv,format=rgb24", "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
-    fb = W * H * 3
-    for i in range(min(len(mattes), len(raw) // fb)):
-        rgb = np.frombuffer(raw, np.uint8, fb, i * fb).reshape(H, W, 3)
+    for i, f in zip(range(len(mattes)), decoded(a.video, a.start, seconds)):
+        pic = rgb(f, matrix, interpolation="BICUBIC")
         m = Image.open(mattes[i]).convert("L").resize((W, H), Image.BILINEAR).filter(ImageFilter.GaussianBlur(1.2))
         al = np.asarray(m).copy()
         al[al < 12] = 0  # the blur's faint spill (and EdgeTAM's low scores) isn't the subject
-        rgba = np.dstack([rgb * (al[..., None] > 0), al]).astype(np.uint8)
+        rgba = np.dstack([pic * (al[..., None] > 0), al]).astype(np.uint8)
         if undistort is not None:  # the plate is drawn undistorted (k1): the cut-out is too, so they stay aligned
             rgba = cv2.remap(rgba, undistort[0], undistort[1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         Image.fromarray(rgba, "RGBA").save(f"{out}/cut/{i + 1:04d}.png", compress_level=4)

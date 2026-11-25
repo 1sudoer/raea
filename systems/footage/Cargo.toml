@@ -10,6 +10,8 @@ description = "raea's perception of footage (perception.feature): a clip read on
 denoise = ["raea-sys-song/denoise"]
 
 [dependencies]
+dunce = "1"
+raea-io-home = { path = "../../io/home" }
 # frames come from the media plane (VideoToolbox on Apple, ffmpeg or the software decoders elsewhere)
 raea-io-media = { path = "../../io/media", default-features = false, features = ["apple"] }
 raea-sys-layout = { path = "../layout" }

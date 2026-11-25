@@ -4,29 +4,15 @@
 // Chrome by the parity cases (sdk/ui/parity/cases/p18-dom); this is the fast check.
 import { beforeAll, describe, expect, test } from "bun:test";
 import { useEffect, useRef, useState } from "react";
-import { install, layout } from "../src/dom";
+import { getComputedStyle, install, layout } from "../src/dom";
 import { createPortal, flushSync, mount } from "../src/react";
-import { restart } from "../src/wire";
-import { Host } from "./host";
+import { flush } from "../src/wire";
+import { fresh, snap } from "./host";
+import "./dom-dashboard"; // its tests run here, after parity.test.tsx, which wants no DOM installed
 
 beforeAll(() => install());
 const g = globalThis as any;
 
-/** A snapshot with these boxes (by data-testid): [x, y, w, h] and optional scroll [sl, st, sw, sh]. */
-function snap(host: Host, boxes: Record<string, number[]>) {
-  const n: number[] = [];
-  for (const [t, b] of Object.entries(boxes)) {
-    const id = host.tid(t);
-    const [x, y, w, h, sl = 0, st = 0, sw = w, sh = h] = b;
-    n.push(id, x, y, w, h, sl, st, sw, sh, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-  }
-  layout(JSON.stringify({ vw: 800, vh: 600, dpr: 2, n }));
-}
-function fresh() {
-  restart();
-  const host = new Host();
-  return host;
-}
 const press = (x: number, y: number, detail = 1) => ({ x: 0, y: 0, clientX: x, clientY: y, button: 0, detail });
 
 describe("P18 DOM surface", () => {
@@ -72,31 +58,36 @@ describe("P18 DOM surface", () => {
     g.__flushTest?.();
   });
 
-  test("geometry from the snapshot; scroll writes to the host", async () => {
+  test("a box with its own z-index stays under the overflow clip of the box it's in; a fixed one doesn't", () => {
     const host = fresh();
-    let el: any;
-    mount(
-      <div data-testid="root">
-        <div data-testid="box" className="overflow-y-auto" ref={(e: any) => (el = e)}>
-          <div data-testid="inner" />
+    function App() {
+      return (
+        <div data-testid="root">
+          <button data-testid="side" />
+          <div data-testid="stage" style={{ overflow: "hidden" }}>
+            <div data-testid="view" style={{ zIndex: 2 }}>
+              <div data-testid="card" style={{ zIndex: 3, overflow: "hidden" }}>
+                <img data-testid="pic" />
+              </div>
+            </div>
+            <div data-testid="menu" style={{ position: "fixed", zIndex: 5 }} />
+          </div>
         </div>
-      </div>,
-      0,
-      { dom: true },
-    );
-    snap(host, { root: [0, 0, 800, 600], box: [10, 20, 200, 100, 0, 0, 200, 500], inner: [10, 20, 200, 500] });
-    const r = el.getBoundingClientRect();
-    expect([r.x, r.y, r.width, r.height, r.right, r.bottom]).toEqual([10, 20, 200, 100, 210, 120]);
-    expect(el.clientHeight).toBe(100);
-    expect(el.scrollHeight).toBe(500);
-    expect(g.innerWidth).toBe(800);
-    expect(g.devicePixelRatio).toBe(2);
-    const from = host.batches.length;
-    el.scrollTop = 1000;
-    expect(el.scrollTop).toBe(400);
-    await Promise.resolve();
-    const ops = host.since(from);
-    expect(ops.some((o: any) => o.op === "update" && o.set?.scrollTop === 400)).toBe(true);
+      );
+    }
+    mount(<App />, 0, { dom: true });
+    // the card is zoomed past the stage's edge, over the button beside the stage; the menu is placed there on purpose
+    const z = (n: number) => [...Array(12).fill(0), n];
+    const boxes: Record<string, number[]> = { root: [0, 0, 800, 600], side: [0, 0, 200, 600], stage: [200, 0, 600, 600], view: [200, 0, 1600, 1200, ...z(2)], card: [100, 100, 400, 300, ...z(3)], pic: [100, 100, 400, 300, ...z(3)], menu: [20, 500, 100, 40, ...z(5)] };
+    const n: number[] = [];
+    for (const [t, b] of Object.entries(boxes)) n.push(host.tid(t), ...b, ...Array(17 - b.length).fill(0));
+    layout(JSON.stringify({ vw: 800, vh: 600, dpr: 2, n }));
+    const at = (x: number, y: number) => g.document.elementFromPoint(x, y)?.getAttribute("data-testid");
+    expect(at(150, 150)).toBe("side");
+    // nor do the card's own children, though the card clips too: its clip is cut to the stage's, not put in its place
+    expect(at(300, 150)).toBe("pic");
+    expect(at(700, 500)).toBe("view");
+    expect(at(50, 510)).toBe("menu");
   });
 
   test("a press goes where the host's cascade says: a child a stylesheet gives pointer events back, under a pointer-events-none layer", () => {
@@ -318,5 +309,161 @@ describe("dangerouslySetInnerHTML", () => {
     const svg2 = host.nodes.get(host.nodes.get(host.tid("mark"))!.children[0])!;
     expect(svg2.children.map((c) => host.nodes.get(c)!).find((n) => n.kind === "path")!.props.fill).toBe("#1783FF");
     expect(host.nodes.get(host.tid("mark"))!.children.length).toBe(1);
+  });
+});
+
+describe("video and audio play on the host's player (runtime/dom media.rs, raea-runtime-js media_play.rs)", () => {
+  test("play() and pause() ask the host and fire play and pause; its news keeps currentTime and fires the rest", () => {
+    const host = fresh();
+    let v: any;
+    const seen: string[] = [];
+    const ev = (e: any) => seen.push(`${e.type}@${e.currentTarget.currentTime.toFixed(1)}`);
+    function App() {
+      const r = useRef<any>(null);
+      useEffect(() => void (v = r.current), []);
+      return <video ref={r} data-testid="v" src="/media/renders/film.mp4" muted loop onPlay={ev} onPause={ev} onPlaying={ev} onTimeUpdate={ev} onEnded={ev} onCanPlay={ev} />;
+    }
+    mount(<App />, 0, { dom: true });
+    const id = host.tid("v");
+    const prop = (k: string) => (flush(), host.nodes.get(id)!.props[k]);
+    const news = (type: string, extra: Record<string, unknown> = {}) => flushSync(() => host.named("media", { id, type, ...extra }));
+    expect(v.paused).toBe(true);
+    expect(v.readyState).toBe(0);
+    news("loadedmetadata", { w: 1920, h: 1080, duration: 120.6 });
+    news("loadeddata", { w: 1920, h: 1080, duration: 120.6 });
+    expect(v.readyState).toBe(2);
+    expect(v.duration).toBe(120.6);
+
+    const played = v.play();
+    expect(played).toBeInstanceOf(Promise);
+    expect(v.paused).toBe(false);
+    expect(prop("__play")).toEqual([true, 0, 1, true]);
+    expect(prop("__muted")).toBe(true);
+    news("playing", { time: 0 });
+    // each frame's time is the element's currentTime, with no event; timeupdate comes on its own
+    news("time", { time: 1.5 });
+    expect(v.currentTime).toBe(1.5);
+    expect(v.readyState).toBe(2);
+    news("timeupdate", { time: 2 });
+    v.muted = false;
+    expect(prop("__muted")).toBe(false);
+    v.muted = true;
+    v.pause();
+    expect(v.paused).toBe(true);
+    expect(prop("__play")).toEqual([false, 2, 2, true]);
+
+    // a new source pauses while it loads, as a browser's does, and its readiness starts again
+    v.play();
+    v.setAttribute("src", "/media/renders/other.mp4");
+    expect(v.paused).toBe(true);
+    expect(v.readyState).toBe(0);
+    expect(prop("__play")).toEqual([false, 2, 4, true]);
+
+    // played to its end (the host sends ended for a source not looping): paused there, then ended
+    v.play();
+    news("ended", { time: 120.6 });
+    expect(v.paused).toBe(true);
+    expect(v.ended).toBe(true);
+    expect(v.currentTime).toBe(120.6);
+    // played again from the end starts at the beginning, and is there from the call on (a pause before the host's first
+    // frame pauses it at the start, as a browser's does, not back at the end)
+    v.play();
+    expect(prop("__play")).toEqual([true, 0, 6, true]);
+    expect(v.currentTime).toBe(0);
+    expect(seen).toEqual(["canplay@0.0", "play@0.0", "playing@0.0", "timeupdate@2.0", "pause@2.0", "play@2.0", "pause@2.0", "play@2.0", "pause@120.6", "ended@120.6", "play@0.0"]);
+
+    // load(): back to the start, paused with no pause event, and the host's decoder opened again
+    v.load();
+    expect(v.paused).toBe(true);
+    expect(v.currentTime).toBe(0);
+    expect(v.readyState).toBe(0);
+    expect(prop("__load")).toBe(1);
+    expect(prop("__play")).toEqual([false, 0, 7, true]);
+    expect(seen.at(-1)).toBe("play@0.0");
+    expect(v.canPlayType("video/mp4")).toBe("maybe");
+    expect(v.canPlayType("video/x-unknown")).toBe("");
+  });
+
+  test("React's muted reaches the host's player when it changes, as React DOM sets the property", () => {
+    const host = fresh();
+    let setMuted: (m: boolean) => void = () => {};
+    function App() {
+      const [muted, set] = useState(true);
+      setMuted = set;
+      return <video data-testid="v" src="/media/renders/film.mp4" muted={muted} />;
+    }
+    mount(<App />, 0, { dom: true });
+    const id = host.tid("v");
+    flush();
+    expect(host.nodes.get(id)!.props.__muted).toBe(true);
+    flushSync(() => setMuted(false));
+    flush();
+    expect(host.nodes.get(id)!.props.__muted).toBe(false);
+  });
+
+  test("volume reaches the host's player as __volume, fires volumechange, and is told again with a play", () => {
+    const host = fresh();
+    let v: any;
+    const seen: string[] = [];
+    function App() {
+      const r = useRef<any>(null);
+      useEffect(() => void (v = r.current), []);
+      return <video ref={r} data-testid="v" src="/media/renders/film.mp4" onVolumeChange={(e: any) => seen.push(`${e.type}:${e.currentTarget.volume}`)} />;
+    }
+    mount(<App />, 0, { dom: true });
+    const id = host.tid("v");
+    const prop = (k: string) => (flush(), host.nodes.get(id)!.props[k]);
+    expect(v.volume).toBe(1);
+    expect(prop("__volume")).toBeUndefined();
+    v.volume = 0.4;
+    expect(v.volume).toBe(0.4);
+    expect(prop("__volume")).toBe(0.4);
+    v.volume = 0.4;
+    expect(() => (v.volume = 1.5)).toThrow(RangeError);
+    expect(v.volume).toBe(0.4);
+    v.play();
+    expect(prop("__volume")).toBe(0.4);
+    expect(seen).toEqual(["volumechange:0.4"]);
+  });
+});
+
+// getComputedStyle on a React page: the boxes and the classes libraries read come from the page's own cascade, with
+// no host call; a colour or a custom property, which that cascade can't know (a class's color, a var()), is the
+// host's (stylo's style.computed), as an HTML page's every value is
+describe("P18 DOM surface: computed style", () => {
+  test("a React page asks the host for a colour and a custom property, never for display or a size", () => {
+    const host = fresh();
+    let el: any;
+    mount(<span data-testid="gold" className="block text-gold" ref={(e: any) => (el = e)} />, 0, { dom: true });
+    snap(host, { gold: [0, 0, 40, 20] });
+    const asked: { name: string; args: any }[] = [];
+    const was = g.__ui_sync;
+    g.__ui_sync = (name: string, args: string) => {
+      const a = JSON.parse(args);
+      asked.push({ name, args: a });
+      const v: Record<string, string> = { color: "rgb(240, 180, 40)", "background-color": "rgba(0, 0, 0, 0)", "--accent": "#5b8cff" };
+      return JSON.stringify({ ok: { [a.names[0]]: v[a.names[0]] ?? "" } });
+    };
+    let got: { display: string; askedForDisplay: number; color: string; accent: string; background: string };
+    try {
+      const c = getComputedStyle(el);
+      const display = c.display;
+      got = { display, askedForDisplay: asked.length, color: c.color, accent: c.getPropertyValue("--accent"), background: c.backgroundColor };
+    } finally {
+      g.__ui_sync = was;
+    }
+    expect(got).toEqual({ display: "block", askedForDisplay: 0, color: "rgb(240, 180, 40)", accent: "#5b8cff", background: "rgba(0, 0, 0, 0)" });
+    expect(asked.map((a) => [a.name, a.args.id === el.__wid, a.args.names[0]])).toEqual([
+      ["style.computed", true, "color"],
+      ["style.computed", true, "--accent"],
+      ["style.computed", true, "background-color"],
+    ]);
+  });
+
+  test("with no host to ask, a colour is the page cascade's, as before", () => {
+    fresh();
+    let el: any;
+    mount(<span style={{ color: "red" }} ref={(e: any) => (el = e)} />, 0, { dom: true });
+    expect(getComputedStyle(el).color).toBe("red");
   });
 });

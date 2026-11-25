@@ -31,6 +31,124 @@ Feature: Lightspeed: raea as fast as anything could be, with the best quality, m
       And it updates the row here (value, date, commit) and appends a line to the log at the bottom
       And when an experiment doesn't pay, it records the numbers and reverts the change. A measured no is a result
 
+  Rule: 0.1.4, the performance release (set 2026-11-13: "the v0.1.4 update will be completely performance based")
+    # Seven areas, each with a measured baseline before anything changes. Measured on a clone of a real workspace (9
+    # projects, 21,713 files, a 19 GB media library), the built app headless, a Mac with 64 GB.
+    Scenario: PF1. App start and data loading: seconds if not milliseconds
+      Then the baseline, warm, headless: projects listed 0.61 to 0.67 s after the app is spawned (its host up at
+        0.45 to 0.5 s); a project's feed shown 136 ms after the click with 6 cards, 260 to 282 ms with 41 (about 6 ms
+        a card)
+      And the largest real project's feed (93 cards): its first card 215 ms after the click, settled at 320 ms
+      And the first launch after a new binary: 3.7 s to the projects listed (0.6 s warm)
+      And open: a cold start after a reboot, the window on screen, and a feed of several hundred cards
+
+    Scenario: PF2. Thumbnails: feed items, the library, a project's Source
+      Then a composition's still is `raea play FILE --offscreen --seek N` in a process of its own, two at a time:
+        1.4 s, 1.9 s and 5.0 s for three real compositions (a ray-traced set is the 5 s one)
+      And fixed (raea #141): beside a tsconfig.json, which raea writes into every new project, that play threw before
+        its first frame, so every still there was a failed play and then a render (as slow, and the app's stage and
+        `raea play` did not work at all in such a folder)
+      And faster with PF4's start (raea #147): the same three stills 0.5 s, 1.2 s and 1.2 s warm, and one of the
+        largest project that took 4.05 s as a one-frame render 0.63 s played
+      And open: stills drawn in one long-lived process instead of one each (each pays the engine's start), and the
+        library's tiles on a real library (the test copy has none)
+
+    Scenario: PF3. Video takes the space it needs, no more
+      Then the baseline: 38 GB of video in 1,010 files on this Mac, most at 90 to 100 Mbit/s for 1080p, because every
+        review version and every shot to be joined was rendered at `--quality master`
+      And measured on 1080p24 film footage: default 16 Mbit/s, high 30, master 87; against the master encode the
+        default scores VMAF 99.5 (worst frame 95.8) and high 99.7
+      And fixed in the guides and the skill (raea #143, raea-skills #59, pinned 16ed215): a version made for notes
+        takes no --quality flag, a film delivers at high, master is for delivered motion graphics and type, a
+        replaced version is deleted
+      And open: the app saying what renders take and offering to make old versions smaller; whether the library's
+        copy of a render posted from a project is a clone of it or a second file
+
+    Scenario: PF4. Renders two to three times faster
+      Then the baseline on a real ray-traced film at 1080p: a 61-frame shot is 5.2 to 5.8 s, of which the frames are
+        about 2.2 s (25 to 30 a second: 18 to 20 ms waiting on the GPU and 14 to 22 ms making the frame's rows in
+        JavaScript, one after the other) and the rest is the process starting; the whole 1,666-frame film is 53 s
+      And the two levers that follow from it: a frame's rows made while the GPU draws the one before (they are
+        independent: about 1.5 to 2 times on the frames), and every composition of a file rendered in one process (a
+        film made a shot at a time pays about 3.3 s a shot for nothing: 33 shots, 110 s)
+      And fixed (raea #144): a ray-traced camera's MSAA was turned on again every frame and off again by Bevy with a
+        warning, a line a frame in the render's log
+      And fixed (raea #147), the start: before its first frame a render read the first and last MiB of every picture,
+        sound and video under the edit's folder (to ask for an optimized copy only a video has) and walked the whole
+        folder, .git and node_modules included, for imports from outside it. Time to the first frame of an .mp4, bundle
+        cached: 2.0 s to 0.35 s in a project of 1,234 files, 7.4 s to 0.62 s in one of 10,226; a 60-frame shot 4.7 s
+        to 3.0 s end to end
+      And measured since, what the frames themselves are: flat 2D at 1080p is 254 frames a second with no wait on the
+        GPU; a ray-traced 1080p frame is 18 to 20 ms of GPU and about 5 ms of the scene's sync, so a long ray-traced
+        render is the GPU's. Four ray-traced shots side by side take 7.4 s where in turn they take 11.3 (1.5 times),
+        each frame two to three times slower: the GPU is one, and the window and every other render wait on it, so
+        it is not a default. Two to three times on ray-traced frames is a cheaper trace (fewer pixels or samples
+        traced, then upscaled), which changes the picture and is a rendering decision, not plumbing
+      And measured 11-13 for drafts, where a smaller picture would change nothing that ships: `raea render` has no
+        way to draw a composition smaller than it says it is (--w and --h only fill in a size a composition leaves
+        out: the same 61-frame ray-traced shot with --w 960 --h 540 came out 1920 by 1080 in 4.1 s, against 4.7 s),
+        so a draft (the composition editor's, a 3D scene's kept frames in docs/timeline.feature TL10f) pays for
+        every pixel of the final. A render asked for again with nothing changed is the export cache's: 0.3 s
+      And done 11-13 for drafts, in the SDK and not the engine: `<Composition edit={{ scale }}>` lays the composition
+        out at its own size (useVideoConfig still says it) in a box drawn at that fraction, and registers the smaller
+        size, so a 3D view, a whole-frame camera's or one in a page element's box, traces fewer pixels and a 2D layout
+        written in px keeps every place (a title, a caption bar, a badge and a boxed 3D view drawn at 0.5 match the
+        full-size frame but for softer type). The same 61-frame ray-traced 1080p shot, warm, three passes each: 2.75 s
+        at full size, 1.6 to 1.7 s at 0.5 (1.7 times end to end, about twice on the frames once the start is taken
+        out); the shot frames the same. The app's composition drafts and a scene's kept frames write it in their
+        throwaway source (raea-feed host/edit.ts withDraftScale: the long side at 960 px, never larger, never under a
+        quarter; RAEA_DRAFT_SCALE=1 draws them at full size). What ships is never scaled. It pays where the GPU
+        does the work: the feed's sample room, a light scene, redraws two 3 s ranges in a headless raea window in
+        8.9 s scaled against 9.4 s, since there the time is each render's start and its JavaScript, not pixels
+      And open: the full-size render itself. Two to three times there is the cheaper trace upscaled (Solari at a
+        lower main-pass resolution, Bevy's MainPassResolutionOverride, with MetalFX's denoised scaler taking it to
+        full size: its input is the output's size today and it runs before the forward meshes), a rendering decision
+        with its own picture checks
+
+    Scenario: PF5. What agents lose time on
+      Then fixed in the lane check (tools/agents/check, on this Mac): the CLI surface step tests the raea it rebuilds
+        (it tested an older build on PATH, and stayed failing after its own rebuild), and the skills step reads the feed
+        app at raea-feed's main (it read whatever branch the shared checkout had out): a lane's check now passes with
+        no variables set
+      And fixed (raea #141, in 0.1.3): `raea play` beside a tsconfig.json, which every new project has
+      And fixed in the app (raea-feed #13, not merged): a review sent on an item whose author is named over a
+        connection went to an inbox it doesn't have, so its edits waited for good; and an agent whose session isn't
+        open is started again by the send
+      And open, each seen on 2026-11-13: a render with <Audio> that reaches no sound is refused only after every frame
+        is drawn (53 s on a film; what sounds are known only once the frames are made); `-o DIR` writes every frame
+        as a PNG (4.9 GB for a film) with nothing said of its size; `but commit` with a long message commits nothing
+        and says so only in a hint; main can fail its own L1 after a GitHub merge (two stale generated pages blocked
+        every lane for a morning)
+      And a release's builds, about three hours each and run many times, moved to larger runners with a cache volume
+        and a compile cache: a candidate after a small change should take minutes (the release lane's; rc4 and rc5
+        are the first measured)
+
+    Scenario: PF6. Video playback and looking around a scene
+      Then video (raea #137): frames decoded a quarter second ahead and shown when due, a faster pixel conversion, a
+        small-drawn video drawn from a halving made off the page's thread: 4K30's worst wait between frames 76 ms to
+        39, 4K60 on a page drawing 120 times a second 0 of 1,214 frames passed over
+      And the app's player (raea-feed #13, not merged): the detail view's clock is outside React state, so a playing
+        video's ticks render only what shows the time: the seconds of 60 fps play with a wait of 26 ms or more
+        between frames go from nearly all to about half
+      And a scene looked around (11-13, the feed's sample room live in a headless window, its counter read over
+        5 s): 57 frames a second standing still, 58 while an orbit is dragged without pause (the headless window
+        draws 60 at most)
+      And open: frames still go through the CPU; a heavy or ray-traced scene's rate while orbiting is not measured
+
+    Scenario: PF8. Pages and assets from this Mac open at once
+      Then covered so far by PF1 (a feed) and PF2 (stills)
+      And a project's Source view (Stay: 159 rows), first visit with an empty proxy store, by wall-clock marks in
+        the page: its rows committed 0.59 s after the click; 0.29 s with its views loaded ahead (raea-feed #17: a
+        lazily loaded view waited out React's 300 ms hold on every first open). The 2.4 to 3.8 s written here before
+        was the measuring script: the window's `ui` tool hands out its last 240 frames in order, and a slow poller
+        reads frames seconds old
+      And the host found a project's folder by starting git and `raea workspace --json` (0.1 s) on nearly every
+        request (raea-feed #16 keeps both answers while their files stand): with 54 projects, 52 briefs read at page
+        open went from 4,831 ms for the slowest to 68, a library's files from 1,710 ms to 3
+      And a library's tiles have pictures before its files are indexed, and draw in raea's window (raea-feed #15):
+        60 pictures (463 MB) 3.6 s to make the first time, 0.02 s after
+      And open: an asset's preview and a model's; cold start after a reboot
+
   Rule: Lightspeed's goals (set 2026-10-19, after the four multi-day levers; the user: "just focus on lightspeed work")
     Scenario: Who owns what now
       Then lightspeed owns performance and optimization end to end: it builds its levers itself, not only measures them

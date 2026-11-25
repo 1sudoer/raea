@@ -1,7 +1,7 @@
 // Materials: standard, toon and extended (their colours in colors.ts, the extensions in extensions.tsx).
 import { isValidElement, memo, useContext, type ReactElement } from "react";
 import type { TrackSpec } from "@raea/math/animate";
-import { InModel } from "../3d/all";
+import { InModel, sameProps } from "../3d/all";
 import { LinearRgba, MADE_FROM, baseOf, emissiveOf, GridExtension, PaintExtension, WearExtension, ShaderExtension, ToonExtension, wearOf, type Affine2, type Srgba, type Only, type GridExtensionProps, type PaintExtensionProps, type WearExtensionProps, type ShaderExtensionProps, type ToonExtensionProps } from "./all";
 import { samplerSpec, surfaceShader, type SamplerSpec, type SurfaceDrawProps } from "../3d";
 import { MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial, MeshToonMaterial, type MeshStandardMaterialProps } from "../three";
@@ -240,7 +240,7 @@ function uvOf(t: Affine2 | undefined): { repeat?: [number, number]; uvTransform?
  * @bevy bevy_pbr::pbr_material::StandardMaterial */
 export const StandardMaterial = memo(function StandardMaterial<A>(p: StandardMaterialProps & { animate?: Only<A, StandardMaterialAnimate> }) {
   return standard(p, {});
-}) as unknown as <A>(p: StandardMaterialProps & { animate?: Only<A, StandardMaterialAnimate> }) => ReactElement;
+}, sameProps) as unknown as <A>(p: StandardMaterialProps & { animate?: Only<A, StandardMaterialAnimate> }) => ReactElement;
 
 // raea's extensions an ExtendedMaterial puts on its StandardMaterial, as the old material's props
 type Extended = { grid?: GridExtensionProps; paint?: PaintExtensionProps; wear?: MeshStandardMaterialProps["wear"]; procedural?: ReturnType<typeof proceduralOf>; shader?: Record<string, unknown> };
@@ -276,11 +276,13 @@ function maps(p: StandardMaterialProps): { maps: Record<string, string | null>; 
 
 function standard(p: StandardMaterialProps, ext: Extended) {
   const color = baseOf(p.base_color).color;
-  if (p.unlit && (ext.grid || ext.paint || ext.wear || ext.procedural || ext.shader)) throw new TypeError("ExtendedMaterial: an unlit StandardMaterial takes no GridExtension, PaintExtension, WearExtension or ShaderExtension");
+  // (a PaintExtension that only names the mesh's world is fine on an unlit one: the cut is the paint shader's, lit or not)
+  const worldOnly = ext.paint !== undefined && Object.keys(ext.paint).every((k) => k === "world" || k === "children");
+  if (p.unlit && (ext.grid || (ext.paint && !worldOnly) || ext.wear || ext.procedural || ext.shader)) throw new TypeError("ExtendedMaterial: an unlit StandardMaterial takes no GridExtension, PaintExtension, WearExtension or ShaderExtension");
   if (ext.shader && (ext.grid || ext.paint || ext.wear || ext.procedural)) throw new TypeError("ExtendedMaterial: a ShaderExtension goes alone over its StandardMaterial (no other extension with it)");
   const m = maps(p);
   if (p.unlit && p.animate) throw new TypeError("StandardMaterial: an unlit material takes no animate yet");
-  if (p.unlit) return <MeshBasicMaterial color={color} {...(m.maps.map ? { map: m.maps.map } : {})} {...(m.samplers?.map ? { sampler: m.samplers.map } : {})} {...draw(p)} />;
+  if (p.unlit) return <MeshBasicMaterial color={color} {...(m.maps.map ? { map: m.maps.map } : {})} {...(m.samplers?.map ? { sampler: m.samplers.map } : {})} {...draw(p)} {...(p.fog_enabled !== undefined ? { fog: p.fog_enabled } : {})} {...(ext.paint ? { paint: ext.paint } : {})} />;
   // inside a Model only the fields given re-cover its material; on a Mesh3d the rest are Bevy's defaults
   const own = useContext(InModel);
   const anim = animateOf("StandardMaterial", p.animate, STANDARD_ANIMATE, STANDARD_FIELDS);

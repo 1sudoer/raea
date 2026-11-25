@@ -1,6 +1,6 @@
-// A material's overlays, drawn over its standard surface by the engine: graph paper (`grid`, raea-render's grid.rs),
-// a paint look's breakup (`paint`, paint.rs), wear (`wear`, systems/wear) and a procedural surface (`procedural`,
-// systems/procmat). Their props and checks; 3d.tsx's materials take them all, a Model takes `grid`.
+// A material's overlays, drawn over its standard surface: graph paper (`grid`, raea-render's grid.rs), a paint look's
+// breakup (`paint`, paint.rs), wear (`wear`, a surface shader of raea's own, worn.ts) and a procedural surface
+// (`procedural`, systems/procmat). Their props and checks; 3d.tsx's materials take them all, a Model takes `grid`.
 import { toHex } from "./colour";
 
 /** graph paper over the surface (greybox levels): lines every `cell` world units (fixed in the world, so they run on
@@ -13,7 +13,7 @@ export interface GridOverlay { cell: number; major?: number; color?: string; edg
  * uneven paint */
 export interface PaintOverlay { breakup?: number; scale?: number; color?: string; amount?: number }
 
-/** a worn surface (systems/wear), fixed in the part's own space so it rides with a moving part: `amount` 0..1 of
+/** a worn surface (worn.ts), fixed in the part's own space so it rides with a moving part: `amount` 0..1 of
  * wear, its paint chipped back to `chipColor` at edges (`chips`), `grime` low and underneath, `rust` run down in
  * streaks (each 0..1 of the amount), in blotches of `scale` metres (0.08); `seed` moves the pattern */
 export interface WearOverlay { amount: number; scale?: number; chips?: number; grime?: number; rust?: number; seed?: number; chipColor?: string; grimeColor?: string; rustColor?: string }

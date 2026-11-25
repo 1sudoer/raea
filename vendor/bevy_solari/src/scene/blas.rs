@@ -116,6 +116,13 @@ pub fn prepare_raytracing_blas(
                 allocate_blas(&vertex_slice, &index_slice, asset_id, &render_device);
 
             blas_manager.insert(*asset_id, blas);
+            // raea: a mesh rebuilt while its last BLAS still waits in the queue (a mesh that changes every
+            // frame, behind a backlog over MAX_COMPACTION_VERTICES_PER_FRAME) must not be queued
+            // twice: both entries would resolve to this new BLAS and prepare its compaction twice,
+            // which wgpu refuses ("Compaction is already being prepared").
+            blas_manager
+                .compaction_queue
+                .retain(|(queued, _, _)| queued != asset_id);
             blas_manager
                 .compaction_queue
                 .push_back((*asset_id, blas_size.vertex_count, false));
@@ -132,7 +139,8 @@ pub fn prepare_raytracing_blas(
                 size: blas_size,
                 vertex_buffer: vertex_slice.buffer,
                 first_vertex: vertex_slice.range.start,
-                vertex_stride: 48,
+                // raea: position, normal, uv, tangent and the vertex colour (scene/bindings.wesl PackedVertex)
+                vertex_stride: super::types::VERTEX_BYTES,
                 index_buffer: Some(index_slice.buffer),
                 first_index: Some(index_slice.range.start),
                 transform_buffer: None,
@@ -256,6 +264,7 @@ fn is_mesh_raytracing_compatible(mesh: &Mesh) -> bool {
             (Mesh::ATTRIBUTE_NORMAL.id, Mesh::ATTRIBUTE_NORMAL.format),
             (Mesh::ATTRIBUTE_UV_0.id, Mesh::ATTRIBUTE_UV_0.format),
             (Mesh::ATTRIBUTE_TANGENT.id, Mesh::ATTRIBUTE_TANGENT.format),
+            (Mesh::ATTRIBUTE_COLOR.id, Mesh::ATTRIBUTE_COLOR.format),
         ]);
     let indexed_32 = matches!(mesh.indices(), Some(Indices::U32(..)));
     mesh.enable_raytracing && triangle_list && vertex_attributes && indexed_32

@@ -149,11 +149,11 @@ fn tool(name: &str, args: Value) -> Value {
         "input" => brp(&m("input"), args, long),
         // read here, not through the ui method: each frame in turn from the one after the last handed out (src/tree.rs TREES)
         "ui" => {
-            static SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let after = (SEEN.load(Ordering::SeqCst) + 1).max(crate::inject::LAST_INPUT.load(Ordering::SeqCst));
+            let seen = &crate::tree::SEEN;
+            let after = (seen.load(Ordering::SeqCst) + 1).max(crate::inject::LAST_INPUT.load(Ordering::SeqCst));
             match crate::tree::tree_after(after, Duration::from_secs(5)) {
                 Some(t) => {
-                    SEEN.store(t["frame"].as_u64().unwrap_or(0), Ordering::SeqCst);
+                    seen.store(t["frame"].as_u64().unwrap_or(0), Ordering::SeqCst);
                     Ok(t)
                 }
                 None => Err(format!("no frame {after} in 5 s")),
@@ -210,6 +210,8 @@ pub fn serve(port: u16, server: Server) {
     if port == 0 {
         return;
     }
+    // a reader of each frame in turn (the ui tool): the frames' trees are kept for it from now (src/tree.rs TREES)
+    crate::tree::KEEP.store(true, std::sync::atomic::Ordering::Relaxed);
     std::thread::Builder::new()
         .name("page-host-mcp".into())
         .spawn(move || {

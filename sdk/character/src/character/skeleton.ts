@@ -1,16 +1,23 @@
 // The skeleton: joints, rest, posing.
 import { type Vec3 } from "@raea/render/3d";
-import { B, I, Pose, Posed, Quat, Skeleton, add, isFinger, qfromTo, qinv, qmul, qnorm, qrot, sub } from "./all";
+import { B, BODY_JOINTS, I, Pose, Posed, Quat, Skeleton, add, oldName, qfromTo, qinv, qmul, qnorm, qrot, somaName, sub } from "./all";
 
 // ---------------------------------------------------------------- the skeleton
 
 const indexes = new WeakMap<Skeleton, Map<string, number>>();
 
-/** a joint's index by name (throws on a name the skeleton hasn't) */
+/** a joint's index by name (throws on a name the skeleton hasn't). A SOMA name finds the joint on a body that names
+ * it the old way (bones.ts), and an old name finds it on a SOMA body. */
 export function joint(skel: Skeleton, name: string): number {
   let m = indexes.get(skel);
-  if (!m) indexes.set(skel, (m = new Map(skel.joints.map((j, i) => [j.name, i]))));
-  const i = m.get(name);
+  if (!m) {
+    m = new Map(skel.joints.map((j, i) => [j.name, i]));
+    // (CMU's and Mixamo's names share SOMA's words for other joints: their LeftLeg is the shin, SOMA's the thigh. A
+    // body named so would be read wrong without a word, so it is refused: retarget it onto SOMA first)
+    if (m.has("LeftUpLeg")) throw new Error(`character ${skel.name}: its joints are named as CMU's or Mixamo's (LeftUpLeg), which raea doesn't read; raea's bodies are SOMA's (or the old game_engine rig's)`);
+    indexes.set(skel, m);
+  }
+  const i = m.get(name) ?? m.get(oldName(name)) ?? m.get(somaName(name));
   if (i === undefined) throw new Error(`character ${skel.name}: no joint ${name} (it has ${skel.joints.map((j) => j.name).join(", ")})`);
   return i;
 }
@@ -24,14 +31,16 @@ export function bodyScale(skel: Skeleton): number {
   return (d(J(B.thigh("L")), J(B.calf("L"))) + d(J(B.calf("L")), J(B.foot("L")))) / 0.5944;
 }
 
-/** How many of the skeleton's joints a capture turns: the body's (bones.ts BODY_JOINTS), the fingers' coming after
- * them, and a clip's frames have a turn for each of these only. */
+/** How many of the skeleton's joints a capture turns: the body's (bones.ts BODY_JOINTS), the rest (a SOMA body's
+ * head end, jaw and eyes, every body's fingers) coming after them, and a clip's frames have a turn for each of these
+ * only. The body's own count when it gives one; else up to the first joint that isn't one of the body's. */
 const capturedOf = new WeakMap<Skeleton, number>();
+const BODY = new Set(BODY_JOINTS);
 
 export function captured(skel: Skeleton): number {
   let k = capturedOf.get(skel);
   if (k === undefined) {
-    k = skel.joints.findIndex((j) => isFinger(j.name));
+    k = skel.captured ?? skel.joints.findIndex((j) => !BODY.has(somaName(j.name)));
     capturedOf.set(skel, (k = k < 0 ? skel.joints.length : k));
   }
   return k;

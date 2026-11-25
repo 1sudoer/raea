@@ -1,11 +1,14 @@
 // Shapes and meshes: Bevy's primitives, buffer meshes, 3D text's props, and <Mesh> with its shape from its children.
-import { Children, isValidElement, memo, useId, type ReactElement, type ReactNode } from "react";
+import { Children, Fragment, isValidElement, memo, useId, type ReactElement, type ReactNode } from "react";
 import { Solid } from "../solid";
 import { useAnimation3d, type Keys, type Move, type TrackSpec } from "@raea/math/animate";
 import { Place3d, usePlace3d, usePointer3d, type LocalBounds, type PointerHandlers3d } from "../events3d";
-import { Canvas3DProps, Vec3, checkArgs, checkPass, checkVec, node3d, serialisable } from "./all";
+import { Canvas3DProps, Vec3, checkArgs, checkPass, checkVec, node3d, sameProps, serialisable } from "./all";
 import { InCanvas3D } from "./model";
 import type { MeshAttribute } from "./attribute";
+import { firstKey, useSequenceFrames } from "./clock";
+import { Text3D, text3dShape, type Text3DProps } from "./text3d";
+export { Text3D, type Text3DProps };
 
 const FILL = { position: "absolute", left: 0, top: 0, width: "100%", height: "100%" } as const;
 
@@ -36,7 +39,8 @@ export interface BoxProps {
   args?: [number, number, number];
 }
 
-/** Bevy's Cuboid: half its size along each axis ([0.5, 0.5, 0.5], a 1 m cube, as Bevy's default). */
+/** Bevy's Cuboid: half its size along each axis ([0.5, 0.5, 0.5], a 1 m cube, as Bevy's default). Bevy's UVs show a
+ *  picture upside down on its front face (+z) and the right way up on its back (-z): turn a printed label half a turn. */
 export interface CuboidProps {
   /** half its size along x, y and z, metres ([0.5, 0.5, 0.5]) */
   half_size?: [number, number, number];
@@ -97,7 +101,7 @@ function boundsOf(name: string, a: number[]): LocalBounds | undefined {
     case "Plane": return box(a[0] / 2, a[1] / 2, 0);
     case "Cylinder": return box(Math.max(a[0], a[1]), a[2] / 2, Math.max(a[0], a[1]));
     case "Torus": return box(a[0] + a[1], a[0] + a[1], a[1]);
-    case "Cone": return box(a[0], a[1], a[0]);
+    case "Cone": return box(a[0], a[1] / 2, a[0]);
     case "Capsule": return box(a[0], a[1] / 2 + a[0], a[0]);
   }
   return undefined;
@@ -124,7 +128,7 @@ function geometry<P extends { args?: number[] }>(name: string, defaults: number[
   };
   Object.defineProperty(Component, "name", { value: display });
   // memo: a geometry's props seldom change while its Mesh3d moves every frame, so React skips it (FC1b, bloom_3d)
-  const Memo = Object.assign(memo(Component), { displayName: display });
+  const Memo = Object.assign(memo(Component, sameProps), { displayName: display });
   GEOMETRY_SHAPES.set(Memo, toShape);
   GEOMETRY_BOUNDS.set(Memo, (props) => boundsOf(name, argsOf(props as P)));
   return Memo as unknown as typeof Component;
@@ -280,6 +284,11 @@ export interface BufferMeshProps {
   /** a mesh's own attributes beyond those, for a three.js shader that reads them (<ThreeShaderMaterial>): each one's
    * size (1 to 4 numbers a vertex) and values, per vertex */
   attributes?: Record<string, { size: number; values: number[] }>;
+  /** the mesh repeated `count` times as one, for a three.js node material drawn as copies (an InstancedMesh's,
+   * docs/r3f.feature R3F22): each copy's number is its own attribute `tsl_copy`, each of `attributes` (size numbers
+   * a copy) is on every vertex of its copy, and `matrices` (16 numbers a copy, column-major) place the copies (none:
+   * each where the mesh is) */
+  copies?: { count: number; attributes?: Record<string, { size: number; values: number[] }>; matrices?: number[] };
 }
 
 /** Each mesh's shape text, checked and written once: React draws a <BufferMesh> every frame with the same arrays, and
@@ -288,7 +297,7 @@ export interface BufferMeshProps {
 const shaped = new WeakMap<object, { of: unknown[]; text: string }>();
 
 function bufferShape(p: BufferMeshProps): string {
-  const of = [p.indices, p.normals, p.uvs, p.colors, p.attributes];
+  const of = [p.indices, p.normals, p.uvs, p.colors, p.attributes, p.copies];
   const had = Array.isArray(p.positions) ? shaped.get(p.positions) : undefined;
   if (had && had.of.every((a, i) => a === of[i])) return had.text;
   const text = writeBufferShape(p);
@@ -318,7 +327,15 @@ function writeBufferShape(p: BufferMeshProps): string {
   for (const [k, a] of Object.entries(p.attributes ?? {})) {
     if (!(a && Number.isInteger(a.size) && a.size >= 1 && a.size <= 4 && Array.isArray(a.values) && a.values.length === n * a.size)) throw new RangeError(`BufferMesh: attribute ${k} is {size: 1 to 4, values: size numbers for each of the ${n} vertices}`);
   }
-  return "buffer:" + JSON.stringify({ positions: p.positions, indices: p.indices, normals: p.normals, uvs: p.uvs, colors: p.colors, attributes: p.attributes });
+  const c = p.copies;
+  if (c !== undefined) {
+    if (!(Number.isInteger(c.count) && c.count >= 1)) throw new RangeError(`BufferMesh: copies.count is a whole number of copies, 1 or more, got ${c.count}`);
+    for (const [k, a] of Object.entries(c.attributes ?? {})) {
+      if (!(a && Number.isInteger(a.size) && a.size >= 1 && a.size <= 4 && Array.isArray(a.values) && a.values.length === c.count * a.size)) throw new RangeError(`BufferMesh: copies attribute ${k} is {size: 1 to 4, values: size numbers for each of the ${c.count} copies}`);
+    }
+    if (c.matrices !== undefined && !(Array.isArray(c.matrices) && c.matrices.length === c.count * 16)) throw new RangeError(`BufferMesh: copies.matrices are 16 numbers for each of the ${c.count} copies`);
+  }
+  return "buffer:" + JSON.stringify({ positions: p.positions, indices: p.indices, normals: p.normals, uvs: p.uvs, colors: p.colors, attributes: p.attributes, copies: c });
 }
 
 /** A mesh from its own vertex buffers, as the geometry of a <Mesh> (Bevy's Mesh built from attributes): a terrain from
@@ -330,38 +347,12 @@ export function BufferMesh(props: BufferMeshProps) {
   return node3d("BufferMesh", {});
 }
 
-export interface Text3DProps {
-  /** the words, extruded */
-  children?: string;
-  /** the words, when they aren't its child (no quotes or backslashes) */
-  text?: string;
-  /** letter height in scene units (default 0.5) */
-  size?: number;
-  /** extrusion depth (default 0.2) */
-  depth?: number;
-  /** a family (Inter by default, or another of raea's bundled faces) */
-  font?: string;
-  /** 100..900 (800 by default) */
-  weight?: number;
-}
-
-/** Solid 3D letters (Manifold's text3d), as a Mesh's geometry: `<Mesh><Text3D size={0.6}>SALE</Text3D>...</Mesh>`. */
-export function Text3D(props: Text3DProps) {
-  return node3d("Text3D", { ...props, shape: text3dShape(props) });
-}
-
-function text3dShape(p: Text3DProps): string {
-  const text = p.text ?? (typeof p.children === "string" ? p.children : undefined);
-  if (typeof text !== "string" || text === "") throw new TypeError("Text3D: give the words as its child or `text`");
-  if (/["\\]/.test(text)) throw new TypeError(`Text3D: the words can't hold a quote or backslash, got ${JSON.stringify(text)}`);
-  const size = p.size ?? 0.5, depth = p.depth ?? 0.2, weight = p.weight ?? 800, font = p.font ?? "Inter";
-  for (const [k, v] of [["size", size], ["depth", depth]] as const) if (!(v > 0) || !Number.isFinite(v)) throw new RangeError(`Text3D: ${k} must be a positive number, got ${v}`);
-  return `text3d("${text}", ${size}, ${depth}, "${font}", ${weight})`;
-}
-
 export interface MeshProps extends PointerHandlers3d {
   /** what the mesh is called across frames: give one when meshes come and go, so each keeps its own motion */
   name?: string;
+  /** false: its 3D type (a Text3D child) is scenery, not held to raea render's type checks (SG10); a Text3D's own
+   * `read` sets it */
+  read?: boolean;
   /** the composition pass it draws in ("scene" by default): a frame-wide effect told to skip a pass (<Look skip>,
    * <Outline skip>, <Bloom skip>, <Grade skip>) leaves its pixels as drawn, and <Look passes> gives one its own paint;
    * a piece names at most three passes besides "scene"; keyed per frame */
@@ -375,8 +366,7 @@ export interface MeshProps extends PointerHandlers3d {
   /** it may pass through other parts on purpose (a blade into a body, a ghost through a wall): raea's clipping
    * check leaves it out */
   allowOverlap?: boolean;
-  /** set at an angle on purpose (a bowl knocked over, a mug on its side): `raea scene lint` doesn't call it
-   * tilted */
+  /** set at an angle on purpose (a bowl knocked over, a mug on its side): `raea scene lint` doesn't call it tilted */
   posed?: boolean;
   /** a Manifold solid (manifold.box(...).minus(...)) or its expression; wins over the geometry child */
   shape?: string | Solid;
@@ -430,32 +420,36 @@ export function apply3d<T extends object>(props: T, v: Record<string, number | s
   return out as T;
 }
 
+/** a mesh's element children with fragments opened: <><Sphere /><StandardMaterial /></> is the same mesh as its two */
+const flat = (kids: ReactNode): ReactElement[] => Children.toArray(kids).flatMap((c) => (!isValidElement(c) ? [] : c.type === Fragment ? flat((c as ReactElement<{ children?: ReactNode }>).props.children) : [c]));
+
+/** A Text3D child's `read`, when it has one. */
+function text3dRead(children: ReactNode): boolean | undefined {
+  for (const child of flat(children)) if (child.type === Text3D) return (child as ReactElement<Text3DProps>).props.read;
+  return undefined;
+}
+
 export function shapeFromChildren(children: ReactNode): string | undefined {
-  let found: string | undefined;
-  Children.forEach(children, (child) => {
-    if (found !== undefined || !isValidElement(child)) return;
+  for (const child of flat(children)) {
     if (child.type === Text3D) {
-      found = text3dShape((child as ReactElement<Text3DProps>).props);
-      return;
+      return text3dShape((child as ReactElement<Text3DProps>).props);
     }
     if (child.type === BufferMesh) {
-      found = bufferShape((child as ReactElement<BufferMeshProps>).props);
-      return;
+      return bufferShape((child as ReactElement<BufferMeshProps>).props);
     }
-    const toShape = GEOMETRY_SHAPES.get(child.type);
-    if (toShape) found = toShape((child as ReactElement<Record<string, unknown>>).props);
-  });
-  return found;
+    const s = GEOMETRY_SHAPES.get(child.type)?.((child as ReactElement<Record<string, unknown>>).props);
+    if (s !== undefined) return s;
+  }
+  return undefined;
 }
 
 /** The first geometry child's bounds in its own space. */
 function boundsFromChildren(children: ReactNode): LocalBounds | undefined {
-  let found: LocalBounds | undefined;
-  Children.forEach(children, (child) => {
-    if (found !== undefined || !isValidElement(child)) return;
-    found = GEOMETRY_BOUNDS.get(child.type)?.((child as ReactElement<Record<string, unknown>>).props);
-  });
-  return found;
+  for (const child of flat(children)) {
+    const b = GEOMETRY_BOUNDS.get(child.type)?.(child.props as Record<string, unknown>);
+    if (b !== undefined) return b;
+  }
+  return undefined;
 }
 
 /** A drawn object: a geometry child (or `shape`) and a material child, placed by position, rotation and scale. Its
@@ -466,6 +460,7 @@ function boundsFromChildren(children: ReactNode): LocalBounds | undefined {
  * @deprecated <Mesh3d>, raea/mesh (2D: <Mesh2d>, raea/sprite)
  */
 export function Mesh(props: MeshProps) {
+  useSequenceFrames("Mesh3d", props.name, [["animate's first key", firstKey(props.animate)]]);
   const anim = useAnimation3d(props.animate);
   const { position = [0, 0, 0], rotation = [0, 0, 0], scale = 1, shape } = apply3d(props, anim.values);
   checkVec("Mesh", "position", position);
@@ -477,11 +472,13 @@ export function Mesh(props: MeshProps) {
   if (props.material !== undefined && props.material !== false) throw new TypeError(`Mesh: material is false (no material) or left out, got ${JSON.stringify(props.material)}`);
   checkPass("Mesh", props.pass);
   const manifold = shape instanceof Solid ? shape.expr : shape ?? shapeFromChildren(props.children);
+  // a Text3D's read={false} rides on its mesh, which the stage checks read (SG10)
+  const read = props.read ?? text3dRead(props.children);
   const extra: Record<string, string> = {};
   if (manifold !== undefined) extra["data-shape"] = manifold as string;
   if (anim.attr) extra["data-raea-anim"] = anim.attr;
   const id = useId();
   const m = usePlace3d(position, rotation, scale, props.quaternion);
   usePointer3d(props.name ?? id, m, () => (shape === undefined ? boundsFromChildren(props.children) : undefined), props as Record<string, unknown>);
-  return node3d("Mesh", { ...props, animate: undefined, shape: undefined, position, rotation, scale, attributes: props.attributes && JSON.stringify(props.attributes) }, <Place3d.Provider value={m}>{props.children}</Place3d.Provider>, Object.keys(extra).length ? extra : undefined);
+  return node3d("Mesh", { ...props, read, animate: undefined, shape: undefined, position, rotation, scale, attributes: props.attributes && JSON.stringify(props.attributes) }, <Place3d.Provider value={m}>{props.children}</Place3d.Provider>, Object.keys(extra).length ? extra : undefined);
 }

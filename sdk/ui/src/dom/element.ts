@@ -1,4 +1,5 @@
 // Element: attributes, classes, geometry from the layout snapshot, focus and pointer capture.
+import { VOID } from "../html/parse";
 import * as wire from "../wire";
 import { ATTR_PROP, Comment_, DOMRect_, HTML_NS, editableChanged, forceLayout, setInnerHtml, Node_, S, body, computedOf, cssText, doc, geo, html, htmlDoc, installed, kebab, makeStyle, matchesSelector, mutated, nodeList, parseCss, parseSelector, pointerEventsOf, query, tellCapture, wireStyle } from "./all";
 
@@ -19,6 +20,8 @@ export class Element_ extends Node_ {
   _props: Record<string, unknown> = {};
   /** props JS set on it (attributes, scroll offsets, a field's value): React's props are frozen, these sit over them */
   _extra: Record<string, unknown> = {};
+  /** scrollTop and scrollLeft values written to the host and not yet seen back in its scroll event (setScroll) */
+  _ahead?: Record<string, number[]>;
   _attrs = new Map<string, string>();
   _style: Record<string, unknown> = {};
   _styleObj: any;
@@ -251,7 +254,15 @@ export class Element_ extends Node_ {
   }
   get outerHTML(): string {
     const attrs = [...this._attrs].map(([k, v]) => ` ${k}="${escapeHtml(v)}"`).join("");
+    if (VOID.has(this.localName)) return `<${this.localName}${attrs}>`;
     return `<${this.localName}${attrs}>${this.innerHTML}</${this.localName}>`;
+  }
+  /** the element replaced by what the markup makes (nothing, for one that isn't in a tree) */
+  set outerHTML(v: string) {
+    if (!this.parentNode) return;
+    const box = this.ownerDocument.createElement("div") as unknown as Element_;
+    box.innerHTML = String(v ?? "");
+    this.replaceWith(...([...box.childNodes] as any[]));
   }
   querySelector(s: string): Element_ | null {
     return query(this, s, true)[0] ?? null;
@@ -425,7 +436,11 @@ function escapeHtml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function setScroll(el: Element_, box: number[], prop: string, at: number, v: number) {
+function setScroll(el: Element_, box: number[], prop: string, at: number, wrote: number) {
+  // held to a hundredth, as the host's geometry gives it back each frame (systems/page snapshot.rs), as Chrome snaps
+  // a written offset to its pixels at once: read back finer, a write looked like a move the next frame took back, and a
+  // spring that keeps what hasn't moved yet (use-stick-to-bottom's) threw its steps away and wrote every frame for good
+  const v = Math.round(wrote * 100) / 100;
   // what it holds moves at once (Chrome lays out again on the next read): its descendants' boxes by the change
   const d = v - box[at];
   if (d) {
@@ -443,6 +458,10 @@ function setScroll(el: Element_, box: number[], prop: string, at: number, v: num
   const last = el._extra[prop];
   const send = last === v ? v + 1e-4 : v;
   el._extra[prop] = send;
+  // what the host hasn't told back yet (its scroll event, input.ts): an event that carries an older one is stale
+  const q = ((el._ahead ??= {})[prop] ??= []);
+  q.push(send);
+  if (q.length > 64) q.shift();
   wire.set(el.__wid!, prop, send);
 }
 

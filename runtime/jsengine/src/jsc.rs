@@ -20,6 +20,14 @@ unsafe extern "C" {
 }
 const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
 
+/// A call JavaScriptCore exports without declaring it (not in the SDK's headers, or newer than it), looked up by name:
+/// None where this system has none. `F` is its `unsafe extern "C" fn` type.
+fn spi<F: Copy>(name: &std::ffi::CStr) -> Option<F> {
+    let p = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr()) };
+    // SAFETY: a symbol of that name is that function, and F is a function pointer, the size of p
+    (!p.is_null()).then(|| unsafe { std::mem::transmute_copy::<*mut c_void, F>(&p) })
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     static kCFRunLoopDefaultMode: *const c_void;
@@ -71,6 +79,7 @@ unsafe extern "C" {
     fn JSValueMakeUndefined(ctx: Ctx) -> Val;
     fn JSObjectMakeError(ctx: Ctx, argc: usize, argv: *const Val, exception: *mut Val) -> Obj;
     fn JSGarbageCollect(ctx: Ctx);
+    fn JSValueCreateJSONString(ctx: Ctx, value: Val, indent: u32, exception: *mut Val) -> Str;
     fn JSContextGetGroup(ctx: Ctx) -> *const c_void;
     fn JSValueUnprotect(ctx: Ctx, v: Val);
     fn JSClassCreate(definition: *const ClassDefinition) -> *mut c_void;
@@ -182,10 +191,7 @@ pub fn options() {
 pub fn release_free_memory() -> Option<f64> {
     type Release = unsafe extern "C" fn();
     static RELEASE: std::sync::OnceLock<Option<Release>> = std::sync::OnceLock::new();
-    let f = RELEASE.get_or_init(|| unsafe {
-        let p = dlsym(RTLD_DEFAULT, c"_ZN3WTF27releaseFastMallocFreeMemoryEv".as_ptr());
-        (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Release>(p))
-    });
+    let f = RELEASE.get_or_init(|| spi(c"_ZN3WTF27releaseFastMallocFreeMemoryEv"));
     let f = (*f)?;
     let t = std::time::Instant::now();
     unsafe { f() };
@@ -285,7 +291,11 @@ impl Default for Context {
 impl Context {
     pub fn new() -> Context {
         options();
-        Context { ctx: unsafe { JSGlobalContextCreate(null_mut()) } }
+        let ctx = unsafe { JSGlobalContextCreate(null_mut()) };
+        if crate::inspect() {
+            inspect::inspectable(ctx);
+        }
+        Context { ctx }
     }
 
     fn c(&self) -> Ctx {
@@ -376,12 +386,8 @@ impl Context {
         unsafe extern "C" fn stop(_: Ctx, _: *mut c_void) -> bool {
             true
         }
-        unsafe {
-            let p = dlsym(RTLD_DEFAULT, c"JSContextGroupSetExecutionTimeLimit".as_ptr());
-            if !p.is_null() {
-                let f = std::mem::transmute::<*mut c_void, SetLimit>(p);
-                f(JSContextGetGroup(self.c()), limit.as_secs_f64(), Some(stop), null_mut());
-            }
+        if let Some(f) = spi::<SetLimit>(c"JSContextGroupSetExecutionTimeLimit") {
+            unsafe { f(JSContextGetGroup(self.c()), limit.as_secs_f64(), Some(stop), null_mut()) };
         }
     }
 
@@ -402,10 +408,7 @@ impl Context {
     pub fn collect_young(&self) -> bool {
         type Eden = unsafe extern "C" fn(Ctx);
         static EDEN: std::sync::OnceLock<Option<Eden>> = std::sync::OnceLock::new();
-        let f = EDEN.get_or_init(|| unsafe {
-            let p = dlsym(RTLD_DEFAULT, c"JSSynchronousEdenCollectForDebugging".as_ptr());
-            (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Eden>(p))
-        });
+        let f = EDEN.get_or_init(|| spi(c"JSSynchronousEdenCollectForDebugging"));
         match f {
             Some(f) => {
                 unsafe { f(self.c()) };
@@ -437,10 +440,7 @@ impl Context {
     pub fn collect(&self) {
         type Sync = unsafe extern "C" fn(Ctx);
         static SYNC: std::sync::OnceLock<Option<Sync>> = std::sync::OnceLock::new();
-        let f = SYNC.get_or_init(|| unsafe {
-            let p = dlsym(RTLD_DEFAULT, c"JSSynchronousGarbageCollectForDebugging".as_ptr());
-            (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Sync>(p))
-        });
+        let f = SYNC.get_or_init(|| spi(c"JSSynchronousGarbageCollectForDebugging"));
         unsafe {
             match f {
                 Some(f) => f(self.c()),
@@ -464,4 +464,5 @@ impl Drop for Context {
 pub mod modules;
 
 mod host;
+mod inspect;
 pub use host::Jsc;

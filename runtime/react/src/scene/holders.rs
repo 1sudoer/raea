@@ -4,23 +4,25 @@ use super::*;
 
 /// The frame's 3D (each data-3d root in the page's order, its 3D children under it): what a render turns into rows.
 pub fn scene_of(world: &mut World) -> Vec<Node3> {
-    let now = SCENE3D.with(|g| {
-        g.set(g.get() + 1);
-        g.get()
-    });
+    let now = SCENE3D.with(|g| { g.set(g.get() + 1); g.get() });
     if now % 120 == 0 {
         PROPS3D.with(|c| c.borrow_mut().retain(|_, v| v.2 + 2 >= now));
+        AT3D.with_borrow_mut(|a| PROPS3D.with_borrow(|p| a.retain(|e, _| p.contains_key(e))));
         if world.contains_resource::<Kept3d>() {
             world.resource_scope(|w, mut k: Mut<Kept3d>| k.of.retain(|e, _| w.get_entity(*e).is_ok()));
         }
     }
-    let mut q = world.query::<(Entity, &ReactKind, Option<&ReactProps>)>();
-    let Some(surf) = q.iter(world).find(|(_, k, p)| k.0 == "surface" && p.and_then(|p| p.0.get("id")).and_then(|v| v.as_str()) == Some("motion")).map(|(e, _, _)| e) else { return Vec::new() };
+    let Some(surf) = surface(world) else { return Vec::new() };
     // the 3D roots under the surface (a data-3d element stops the walk; its 3D is read3d's), each subtree no commit
     // touched since the last scene handed on as it was (read.rs Kept3d); the surface's own straight into the scene, not
     // kept and copied out (10 000 cubes beside a turning camera were copied three times a frame; FC1b)
     let dirty = dirty3d(world);
     world.resource_scope(|world, mut kept: Mut<Kept3d>| { let mut v = Vec::new(); kids3d(world, surf, &mut kept, &dirty, &mut v); v })
+}
+
+/// The composition's surface (`<surface id="motion">`): the element its page and its 3D hang from.
+pub fn surface(world: &mut World) -> Option<Entity> {
+    world.query::<(Entity, &ReactKind, Option<&ReactProps>)>().iter(world).find(|(_, k, p)| k.0 == "surface" && p.and_then(|p| p.0.get("id")).and_then(|v| v.as_str()) == Some("motion")).map(|(e, _, _)| e)
 }
 
 /// The elements holding the 3D (holders_of's), into `out` (ZeroHeap: live play's present asks each frame)
@@ -52,9 +54,7 @@ fn holders_walk(world: &mut World, out: &mut Vec<Entity>) {
         }
         path.push(e);
         if let Some(kids) = world.get::<Children>(e) {
-            for k in kids.iter().rev() {
-                stack.push((k, depth + 1));
-            }
+            stack.extend(kids.iter().rev().map(|k| (k, depth + 1)));
         }
     }
 }
@@ -110,9 +110,16 @@ fn fresh_holders(world: &mut World) -> (Vec<Entity>, Option<Entity>) {
 
 /// The 3D's clear colour for a render or play: a layered Canvas3D's `clearColor` (its slot's data-clear, which its parts
 /// blend over in linear light as Bevy's over its ClearColor), else transparent, the page under it; else the nearest
-/// holder's background.
+/// holder's background. A camera in a box of the page clears to nothing as well: its view is that box's picture, in the
+/// page's paint order, so what the page paints under the box shows where the 3D has nothing (a sibling layer under an
+/// <R3F> was cut out to the nearest ancestor's colour, #235).
 pub fn scene_clear(world: &mut World) -> Option<String> {
-    let Some(s) = fresh_holders(world).1 else { return clear_of(&holders_of(world)) };
+    let Some(s) = fresh_holders(world).1 else {
+        if crate::VIEW_BOX.lock().unwrap().is_some() {
+            return Some("#00000000".into());
+        }
+        return clear_of(&holders_of(world));
+    };
     Some(world.get::<ReactProps>(s).and_then(|p| p.0.get("data-clear")?.as_str().map(str::to_string)).unwrap_or_else(|| "#00000000".into()))
 }
 

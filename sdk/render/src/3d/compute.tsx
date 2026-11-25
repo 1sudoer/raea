@@ -74,9 +74,35 @@ function written(props: ComputeProps) {
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** three.js's compute nodes as <R3F> runs them (sdk/r3f's tsl-compute.ts, docs/r3f.feature R3F22): each kernel three's
+ * own WGSL, its storage buffers shared by key with the node materials that read them, and this frame's dispatches,
+ * each run once in the order given before the cameras draw. */
+export interface ThreeComputeProps {
+  /** each kernel by its id: three's WGSL (its `@group(0)` bindings as written, entry `main`) and each storage
+   * buffer's key, by the name it declares */
+  kernels: Record<string, { wgsl: string; buffers: Record<string, string> }>;
+  /** each shared storage buffer by key: its size in bytes and first contents (zeros when none) */
+  shared: Record<string, { size: number; f32?: number[]; u32?: number[]; i32?: number[] }>;
+  /** this frame's dispatches: [kernel id, workgroups [x, y, z], uniforms {NAME: {field: value}}], in order; `epoch`
+   * and `seq` name them (run once each), `fresh` resets the buffers to their first contents first */
+  runs: { epoch: number; seq: number; fresh: boolean; runs: [number, number[], Record<string, Record<string, number | number[]>>][] };
+}
+
+function threeCompute(props: ThreeComputeProps) {
+  const { kernels, shared, runs } = props;
+  if (typeof kernels !== "object" || kernels === null || Object.values(kernels).some((k) => typeof k?.wgsl !== "string")) throw new TypeError("Compute: kernels are {id: {wgsl, buffers}}");
+  if (typeof shared !== "object" || shared === null || Object.values(shared).some((b) => !Number.isInteger(b?.size) || b.size < 4)) throw new TypeError("Compute: shared buffers are {key: {size (bytes), f32 | u32 | i32}}");
+  if (!Array.isArray(runs?.runs) || runs.runs.some((r) => !(String(r[0]) in kernels))) throw new TypeError("Compute: runs are [kernel id, workgroups, uniforms], each a kernel it has");
+  for (const r of runs.runs) checkWorkgroups(r[1]);
+  // each a keyed column: the kernels and buffers change when a new one is dispatched, the runs every frame
+  return node3d("Compute", { shader: { three: true }, kernels: JSON.stringify(kernels), shared: JSON.stringify(shared), runs: JSON.stringify(runs) });
+}
+
 /** A compute over the frame, in the 3D beside the camera; several run in the order written, before the cameras draw.
  * @bevy raea_sys_compute::Computes */
-export function Compute(props: ComputeProps) {
+export function Compute(props: ComputeProps | ThreeComputeProps) {
+  if ("kernels" in props && props.kernels !== undefined) return threeCompute(props);
+  props = props as ComputeProps;
   const { wesl, wgsl, workgroups, uniforms = {}, buffers = {}, images = {}, defs } = props;
   if (props.file !== undefined) return written(props);
   if ((wesl === undefined) === (wgsl === undefined)) throw new TypeError("Compute: give its source as wesl (or wgsl), one of them");

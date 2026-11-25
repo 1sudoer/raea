@@ -28,8 +28,12 @@ pub fn inserted_of(p: &Program) -> Vec<Tup> {
     out
 }
 
+// a path-traced camera's accumulation started again on the next draw (RAEA_LIGHT_SPP's frames, docs/realism.feature LT1)
+#[cfg(feature = "raytracing")]
+pub use raea_render_raytrace::restart_pathtracer;
+
 pub fn dir_of(path: &str) -> PathBuf {
-    std::fs::canonicalize(Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))).unwrap_or_else(|_| PathBuf::from("."))
+    dunce::canonicalize(Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))).unwrap_or_else(|_| PathBuf::from("."))
 }
 
 pub fn save_png(path: &Path, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {

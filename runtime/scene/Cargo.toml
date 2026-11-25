@@ -13,9 +13,11 @@ raea-runtime-look = { path = "../look" }
 raea-runtime-scene2d = { path = "../scene2d" }
 bevy = { version = "=0.20.0", default-features = false, features = ["std"] }
 serde_json = "1"
-# a material's `wear` prop as its row's columns
-raea-sys-wear = { path = "../../systems/wear" }
 # a material's `procedural` prop as its row's columns
 raea-sys-procmat = { path = "../../systems/procmat" }
 # a review's fixed camera (RAEA_CAMERA) in place of the scene's own
 raea-core-review = { path = "../../core/review" }
+# a part's layer key from its source stamp (docs/review.feature R2a)
+raea-sys-frame = { path = "../../systems/frame" }
+# which of an export's layers draw the 3D (RAEA_LAYER, docs/layers.feature LA2a)
+raea-sys-layers = { path = "../../systems/layers" }

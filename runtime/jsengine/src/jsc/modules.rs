@@ -49,8 +49,33 @@ fn rs(o: &AnyObject) -> String {
     }
 }
 
+/// `source` with its import.meta.url set when it reads it: macOS 15's JavaScriptCore leaves it undefined for a module
+/// from this loader (macOS 27's sets the module's URL), and `new URL("./x.png", import.meta.url)` then threw. `??=`
+/// leaves a URL the engine gave alone. On line 1 before the module's own first line (imports are hoisted), so every
+/// other line keeps its number; a #! line has to stay first, so it's left as it is.
+fn with_meta_url(url: &str, source: &str) -> String {
+    if !source.contains("import.meta") || source.starts_with("#!") {
+        return source.to_string();
+    }
+    let mut lit = String::with_capacity(url.len() + 2);
+    lit.push('"');
+    for c in url.chars() {
+        match c {
+            '"' | '\\' => {
+                lit.push('\\');
+                lit.push(c);
+            }
+            c if (c as u32) < 0x20 || c == '\u{2028}' || c == '\u{2029}' => lit.push_str(&format!("\\u{:04x}", c as u32)),
+            c => lit.push(c),
+        }
+    }
+    lit.push('"');
+    format!("import.meta.url ??= {lit};{source}")
+}
+
 /// A module script for `url`, or JavaScriptCore's reason it isn't one (a syntax error).
 fn script(vm: &AnyObject, url: &str, source: &str) -> Result<Retained<AnyObject>, String> {
+    let source = &with_meta_url(url, source);
     unsafe {
         let u: Option<Retained<AnyObject>> = msg_send![objc2::class!(NSURL), URLWithString: &*ns(url)];
         let Some(u) = u else { return Err(format!("{url}: not a URL")) };
@@ -145,4 +170,17 @@ impl Modules {
 #[link(name = "JavaScriptCore", kind = "framework")]
 unsafe extern "C" {
     fn JSValueProtect(ctx: *const c_void, v: *const c_void);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_meta_url;
+
+    #[test]
+    fn a_module_that_reads_import_meta_gets_its_url_on_line_one() {
+        assert_eq!(with_meta_url("file:///m/a.mjs", "export const x = 1;\n"), "export const x = 1;\n");
+        assert_eq!(with_meta_url("file:///m/a.mjs", "f(import.meta.url);\ng();"), "import.meta.url ??= \"file:///m/a.mjs\";f(import.meta.url);\ng();");
+        assert_eq!(with_meta_url("file:///C:/a \"b\"\\c.mjs", "import.meta"), "import.meta.url ??= \"file:///C:/a \\\"b\\\"\\\\c.mjs\";import.meta");
+        assert_eq!(with_meta_url("file:///m/a.mjs", "#!/usr/bin/env raea\nimport.meta.url"), "#!/usr/bin/env raea\nimport.meta.url");
+    }
 }

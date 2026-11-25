@@ -1,8 +1,14 @@
 //! raea's desktop window around a page (raea-page-host --window, the window raea.app runs): its chrome (chrome.rs) and
 //! the native calls a page makes through host calls (native.rs).
 
+pub mod badge;
 pub mod chrome;
+#[cfg(feature = "window")]
+pub mod idle;
 pub mod native;
+pub mod scheme;
+#[cfg(all(windows, feature = "window"))]
+mod win;
 
 use bevy::prelude::*;
 

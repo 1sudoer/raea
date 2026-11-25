@@ -84,6 +84,17 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
         };
 
         if let Some(input_data) = element_data.text_input_data_mut() {
+            // raea: Cmd+Z and Cmd+Shift+Z (Ctrl+Z and Ctrl+Y elsewhere) step the field's history (node/undo.rs)
+            if let Some(redo) = history_step(&event) {
+                let generated =
+                    input_data.step_history(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx, redo);
+                if let Some(generated) = generated {
+                    doc.apply_generated_text_input_event(node_id, generated, dispatch_event);
+                }
+                return;
+            }
+            let before = input_data.snap();
+            let run = run_of(&event);
             let generated_event = match event {
                 KeyboardOrTextInputEvent::KeyPress(blitz_key_event) => input_data
                     .apply_keypress_event(
@@ -100,11 +111,41 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
                         &command,
                     ),
             };
+            input_data.note_change(before, run);
 
             if let Some(generated_event) = generated_event {
                 doc.apply_generated_text_input_event(node_id, generated_event, dispatch_event);
             }
         }
+    }
+}
+
+/// raea: Some(redo?) for the keys that step a field's history: Cmd+Z, Cmd+Shift+Z and Cmd+Y (Ctrl elsewhere), and
+/// the Mac's undo: and redo: commands
+fn history_step(event: &KeyboardOrTextInputEvent) -> Option<bool> {
+    match event {
+        KeyboardOrTextInputEvent::KeyPress(e) if e.state.is_pressed() && e.modifiers.contains(ACTION_MOD) => match &e.key {
+            Key::Character(c) if c.eq_ignore_ascii_case("z") => Some(e.modifiers.contains(Modifiers::SHIFT)),
+            Key::Character(c) if c.eq_ignore_ascii_case("y") => Some(true),
+            _ => None,
+        },
+        KeyboardOrTextInputEvent::AppleStandardKeyBinding(c) if c.as_str() == "undo:" => Some(false),
+        KeyboardOrTextInputEvent::AppleStandardKeyBinding(c) if c.as_str() == "redo:" => Some(true),
+        _ => None,
+    }
+}
+
+/// raea: what a key does to the words, for grouping steps: typing or deleting runs join; anything else stands alone
+fn run_of(event: &KeyboardOrTextInputEvent) -> Option<crate::node::undo::Run> {
+    use crate::node::undo::Run;
+    match event {
+        KeyboardOrTextInputEvent::KeyPress(e) if !e.modifiers.contains(ACTION_MOD) => match &e.key {
+            Key::Character(c) if c.as_str() != "\n" => Some(Run::Typing),
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) => Some(Run::Deleting),
+            _ => None,
+        },
+        KeyboardOrTextInputEvent::AppleStandardKeyBinding(c) if c.as_str().starts_with("delete") => Some(Run::Deleting),
+        _ => None,
     }
 }
 

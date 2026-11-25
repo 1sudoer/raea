@@ -193,7 +193,8 @@ const GROUP: &str = "constants::MATERIAL_BIND_GROUP";
 pub fn prelude(uniforms: &[Uniform], textures: Option<&[String]>, attributes: usize) -> String {
     let mut m = String::from(
         "import bevy_pbr::render::mesh_functions::get_world_from_local;\n\
-         import bevy_pbr::render::mesh_view_bindings::{view, globals};\n\n",
+         import bevy_pbr::render::mesh_view_bindings::{view, globals};\n\
+         @if(TONEMAP_IN_SHADER) import bevy_core_pipeline::tonemapping::tone_mapping;\n\n",
     );
     m += &format!("struct ThreeSlots {{ s: array<vec4<f32>, {SLOTS}> }};\n@group({GROUP}) @binding(0) var<uniform> three_slots: ThreeSlots;\n");
     if let Some(ts) = textures {
@@ -240,7 +241,7 @@ pub fn vertex_entry(attributes: usize) -> String {
 pub fn fragment_entry() -> String {
     let mut m = String::from(TONE);
     m = m.replace("GROUP", GROUP).replace("DISPLAY_SLOT", &DISPLAY_SLOT.to_string());
-    m + "\n@fragment\nfn fragment(in: ThreeVaryings, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {\n    return three_untone(three_fragment(in, front));\n}\n"
+    m + "\n@fragment\nfn fragment(in: ThreeVaryings, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {\n    return three_blend(three_untone(three_fragment(in, front)));\n}\n"
 }
 
 const TONE: &str = include_str!("tone.wesl");
@@ -317,6 +318,15 @@ pub fn flip_samples(src: &str, names: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_light_is_tone_mapped_by_bevy_with_the_cameras_grading() {
+        // an unlit node material's linear colour, where the camera tone-maps in its materials' shaders, goes through
+        // Bevy's tone_mapping and the camera's colour grading (a Grade's exposure: three's ACES 1/0.6), as a standard
+        // material's does (docs/r3f.feature R3F22)
+        assert!(prelude(&[], None, 0).contains("@if(TONEMAP_IN_SHADER) import bevy_core_pipeline::tonemapping::tone_mapping;"));
+        assert!(fragment_entry().contains("return tone_mapping(vec4(c.rgb * three_exposure(), c.a), view.color_grading);"));
+    }
 
     #[test]
     fn flipped_textures_are_read_upside_down() {

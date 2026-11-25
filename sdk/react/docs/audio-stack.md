@@ -258,7 +258,7 @@ A Sampler's `urls` and a Player's `url` take a media path, or a generated asset:
 - `Tone.tokensynth(timbre, notes, {seconds, velocity, seed, precision})`: one asset per root note, by TokenSynth,
   local CPU. The Sampler pitches between the roots. This is how raea makes music.
 - `Tone.sao(prompt, {seconds})`: foley, by Stable Audio Open Small on Core ML, local.
-- `Tone.lyria(prompt)`: a music bed, by Lyria, paid. Still wired; the guides no longer use it.
+- `Tone.lyria(prompt)`: retired. A take an older edit made still plays; a new one is refused.
 - A file from an open sample library in the media folder: `raea sounds get PACK/INSTRUMENT` (below).
 
 How a source is made and played:

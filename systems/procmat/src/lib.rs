@@ -53,6 +53,12 @@ impl MaterialExtension for Procedural {
     fn fragment_shader() -> ShaderRef {
         "embedded://raea_sys_procmat/procmat.wesl".into()
     }
+    /// The same shader in the deferred pass (its PREPASS_PIPELINE branch writes the G-buffer): without it a deferred
+    /// material drew StandardMaterial's own, the base colour flat. Solari makes every opaque material deferred, so under
+    /// <SolariLighting> a procedural surface (an oilcloth's checks, a plastered wall) lost its pattern (FP-LAB, 11-17).
+    fn deferred_fragment_shader() -> ShaderRef {
+        "embedded://raea_sys_procmat/procmat.wesl".into()
+    }
 }
 
 const NUMS: [(&str, &str); 9] = [("scale", "proc_scale"), ("bump", "proc_bump"), ("seed", "proc_seed"), ("gap", "proc_gap"), ("dust", "proc_dust"), ("dirt", "proc_dirt"), ("edges", "proc_edges"), ("roughA", "proc_rough_a"), ("roughB", "proc_rough_b")];

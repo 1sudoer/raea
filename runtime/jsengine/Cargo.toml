@@ -11,10 +11,15 @@ name = "raea_runtime_jsengine"
 
 [features]
 # QuickJS on Apple too, beside JavaScriptCore: how the portable path is tested on a Mac
-portable = ["dep:rquickjs"]
+portable = ["dep:rquickjs", "dep:miniz_oxide", "dep:iana-time-zone"]
 
 [dependencies]
+raea-io-trace = { path = "../../io/trace" }
+raea-io-home = { path = "../../io/home" }
 rquickjs = { version = "0.14", optional = true, features = ["loader"] }
+# QuickJS's Intl (js/intl): its pack's chunks are raw deflate, and the date polyfill's default zone is the system's
+miniz_oxide = { version = "0.8", optional = true }
+iana-time-zone = { version = "0.1", optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 # JavaScriptCore's Objective-C module loader (JSScript, JSModuleLoaderDelegate): ES modules on the system engine
@@ -22,3 +27,5 @@ objc2 = "0.6"
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 rquickjs = { version = "0.14", features = ["loader"] }
+miniz_oxide = "0.8"
+iana-time-zone = "0.1"

@@ -27,6 +27,12 @@ pub(crate) fn pct(v: &[f64], q: f64) -> f64 {
 /// a bed that stops under a voice shows in the band the voice doesn't fill (a projector's clatter in the highs). A band's
 /// level is its share of the step's mean square (Parseval, undoing the Hann window's power), so a tone reads the same in
 /// its band as in the mix
+/// A stretch of sound's level in dB (its RMS)
+pub(crate) fn db(f: &[f32]) -> f64 {
+    let ms = f.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / f.len().max(1) as f64;
+    20.0 * (ms.sqrt() + 1e-9).log10()
+}
+
 pub(crate) fn levels(x: &[f32]) -> (Vec<f64>, [Vec<f64>; 3]) {
     use std::f64::consts::PI;
     let n = x.len() / HOP;
@@ -44,8 +50,7 @@ pub(crate) fn levels(x: &[f32]) -> (Vec<f64>, [Vec<f64>; 3]) {
     let scale = 2.0 / (HOP * HOP) as f64 / (hann.iter().map(|h| h * h).sum::<f64>() / HOP as f64);
     let (mut rms, mut bands) = (Vec::with_capacity(n), [Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n)]);
     for f in x.chunks_exact(HOP) {
-        let ms = f.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / HOP as f64;
-        rms.push(20.0 * (ms.sqrt() + 1e-9).log10());
+        rms.push(db(f));
         let w: Vec<f64> = f.iter().zip(&hann).map(|(&v, h)| v as f64 * h).collect();
         let mut e = [0.0; 3];
         for (b, tw) in &bins {
@@ -157,13 +162,10 @@ pub(crate) fn bed_up(rms: &[f64], speak: &[bool]) -> Vec<(f64, String)> {
 /// The sound's rules on an export: dead stops always; with the voice's words, a stretch with no voice over it and a bed
 /// too close under it
 pub(crate) fn sound(video: &str, words: Option<&[Word]>, issues: &mut Vec<Issue>, passed: &mut Vec<String>) -> R<()> {
-    let out = Command::new("ffmpeg").args(["-v", "error", "-i", video, "-vn", "-ac", "1", "-ar", &SR.to_string(), "-f", "f32le", "-"]).output().map_err(|e| format!("ffmpeg: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("ffmpeg couldn't read the sound of {video}: {}", String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    let x: Vec<f32> = out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let x = crate::read::mono(video, SR as u32)?;
     let (rms, bands) = levels(&x);
-    let found = |list: Vec<(f64, String)>, p: u8| list.into_iter().map(move |(at, says)| Issue { rule: "sound", p, at: Some(at), says });
+    sound_defects(&x, &crate::read::channels(video, SR as u32)?, issues, passed);
+    let found = |list: Vec<(f64, String)>, p: u8| crate::defects::moments("sound", p, list);
     let stops = dead_stops(&rms, &bands);
     if stops.is_empty() {
         passed.push("sound: no steady sound stops dead".into());
@@ -172,19 +174,7 @@ pub(crate) fn sound(video: &str, words: Option<&[Word]>, issues: &mut Vec<Issue>
     let Some(words) = words.filter(|w| !w.is_empty()) else { return Ok(()) };
     let speak = speaking(words, rms.len());
     // momentary loudness (EBU R128, 400 ms) every 100 ms, from ffmpeg's meter
-    let meter = Command::new("ffmpeg")
-        .args(["-nostats", "-hide_banner", "-i", video, "-vn", "-af", "ebur128=metadata=1,ametadata=print:key=lavfi.r128.M:file=-", "-f", "null", "-"])
-        .output()
-        .map_err(|e| format!("ffmpeg: {e}"))?;
-    let (mut mt, mut mv) = (Vec::new(), Vec::new());
-    for line in String::from_utf8_lossy(&meter.stdout).lines() {
-        if let Some(t) = line.split("pts_time:").nth(1).filter(|_| line.starts_with("frame:")) {
-            mt.push(t.trim().parse::<f64>().unwrap_or(0.0));
-        } else if let Some(v) = line.strip_prefix("lavfi.r128.M=") {
-            mv.push(v.trim().parse::<f64>().unwrap_or(-120.0));
-        }
-    }
-    mt.truncate(mv.len());
+    let (mt, mv) = if crate::read::native() { crate::read::meter(video)? } else { ffmpeg_meter(video)? };
     if let Some((voice, over)) = over_voice(&mt, &mv, &speak) {
         if over.is_empty() {
             passed.push(format!("sound: nothing without the voice is louder than it ({voice:.1} LUFS momentary)"));
@@ -199,6 +189,24 @@ pub(crate) fn sound(video: &str, words: Option<&[Word]>, issues: &mut Vec<Issue>
     Ok(())
 }
 
+/// `ffmpeg ... -af ebur128=metadata=1,ametadata=print:key=lavfi.r128.M:file=-`: each meter reading's time and LUFS
+fn ffmpeg_meter(video: &str) -> R<(Vec<f64>, Vec<f64>)> {
+    let meter = Command::new("ffmpeg")
+        .args(["-nostats", "-hide_banner", "-i", video, "-vn", "-af", "ebur128=metadata=1,ametadata=print:key=lavfi.r128.M:file=-", "-f", "null", "-"])
+        .output()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    let (mut mt, mut mv) = (Vec::new(), Vec::new());
+    for line in String::from_utf8_lossy(&meter.stdout).lines() {
+        if let Some(t) = line.split("pts_time:").nth(1).filter(|_| line.starts_with("frame:")) {
+            mt.push(t.trim().parse::<f64>().unwrap_or(0.0));
+        } else if let Some(v) = line.strip_prefix("lavfi.r128.M=") {
+            mv.push(v.trim().parse::<f64>().unwrap_or(-120.0));
+        }
+    }
+    mt.truncate(mv.len());
+    Ok((mt, mv))
+}
+
 pub(crate) fn ffmpeg_stderr(args: &[&str]) -> R<String> {
     let out = Command::new("ffmpeg").args(args).output().map_err(|e| format!("ffmpeg: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stderr).into_owned())
@@ -206,17 +214,16 @@ pub(crate) fn ffmpeg_stderr(args: &[&str]) -> R<String> {
 
 /// -14 LUFS integrated (±1) and a true peak at or below -1 dBTP (the floor's mix line)
 pub(crate) fn loudness(video: &str, taste: Option<&Taste>, issues: &mut Vec<Issue>, passed: &mut Vec<String>) -> R<()> {
-    let err = ffmpeg_stderr(&["-hide_banner", "-nostats", "-i", video, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"])?;
-    let summary = err.rsplit("Summary:").next().unwrap_or("");
-    let num = |key: &str| summary.lines().find(|l| l.trim_start().starts_with(key)).and_then(|l| l.split_whitespace().nth(1)).and_then(|x| x.parse::<f64>().ok());
-    let (Some(i), peak) = (num("I:"), num("Peak:")) else { return Ok(()) };
+    // the same measure `raea world` joins to a render as its Mix (raea-sys-measure, DR2), or raea's own without FFmpeg
+    let measured = if crate::read::native() { crate::read::loudness(video) } else { raea_sys_measure::loudness(std::path::Path::new(video)) };
+    let Some((i, peak)) = measured else { return Ok(()) };
     let mut ok = true;
     let target = taste.map_or(-14.0, |t| t.value);
     if (i - target).abs() > 1.0 {
         ok = false;
         let says = format!("{i:.1} LUFS integrated; master at {target} (±1) with <Mix lufs={{{target}}} />");
         issues.push(match taste {
-            Some(t) => Issue { rule: "taste", p: 1, at: None, says: format!("{says} (\"{}\")", t.line) },
+            Some(t) => Issue { rule: t.form, p: 1, at: None, says: format!("{says} (\"{}\")", t.line) },
             None => Issue { rule: "loudness", p: 1, at: None, says },
         });
     }
@@ -253,17 +260,27 @@ pub(crate) fn frozen_stretches(log: &str, duration: f64) -> Vec<(f64, f64)> {
 
 pub(crate) fn freezes(video: &str, probe: &Probe, taste: Option<&Taste>, issues: &mut Vec<Issue>, passed: &mut Vec<String>) -> R<()> {
     let most = taste.map_or(3.0, |t| t.value);
-    let err = ffmpeg_stderr(&["-hide_banner", "-nostats", "-i", video, "-an", "-vf", &format!("freezedetect=n=-60dB:d={most}"), "-f", "null", "-"])?;
-    let stretches = frozen_stretches(&err, probe.picture);
+    let err = if crate::read::native() {
+        crate::read::freezes(video, -60.0, most)?
+    } else {
+        ffmpeg_stderr(&["-hide_banner", "-nostats", "-i", video, "-an", "-vf", &format!("freezedetect=n=-60dB:d={most}"), "-f", "null", "-"])?
+    };
+    freezes_from(&err, probe, taste, issues, passed);
+    Ok(())
+}
+
+/// The freezes freezedetect's lines found (`taste`'s still-max when the person set one, else 3 s)
+pub(crate) fn freezes_from(err: &str, probe: &Probe, taste: Option<&Taste>, issues: &mut Vec<Issue>, passed: &mut Vec<String>) {
+    let most = taste.map_or(3.0, |t| t.value);
+    let stretches = frozen_stretches(err, probe.picture);
     for &(s, d) in &stretches {
         let says = format!("nothing changes for {d:.1} s; give it a reason to hold, or cut it shorter");
         issues.push(match taste {
-            Some(t) => Issue { rule: "taste", p: 1, at: Some(s), says: format!("{says} (\"{}\")", t.line) },
+            Some(t) => Issue { rule: t.form, p: 1, at: Some(s), says: format!("{says} (\"{}\")", t.line) },
             None => Issue { rule: "frozen", p: if d >= 6.0 || d >= probe.duration * 0.5 { 1 } else { 2 }, at: Some(s), says },
         });
     }
     if stretches.is_empty() {
         passed.push(format!("frozen: nothing holds still for {most} s"));
     }
-    Ok(())
 }

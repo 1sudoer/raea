@@ -8,6 +8,7 @@ export * from "./fingers";
 export * from "./captured";
 export * from "./solve";
 export * from "./face";
+export * from "./eyes";
 export * from "./hair";
 export * from "./skin";
 export * from "./drawing";

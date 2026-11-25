@@ -15,6 +15,7 @@ name = "ui-parity"
 path = "src/main.rs"
 
 [dependencies]
+dunce = "1"
 # Chrome's side and the comparison
 ui-parity-compare = { path = "compare" }
 serde_json = "1"

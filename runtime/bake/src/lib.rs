@@ -168,7 +168,7 @@ pub fn bake(js: &Path) -> R<Baked> {
     for t in later {
         add(t.join().map_err(|_| "a bake worker panicked".to_string())??);
     }
-    if std::env::var_os("RAEA_BAKE_TRACE").is_some() {
+    if raea_io_trace::stat("RAEA_BAKE_TRACE") {
         eprintln!("raea bake: settings in {t_conf:.0} ms, {frames} frames in {:.0} ms on {} runtimes, {} flush waits timed out",
             t0.elapsed().as_secs_f64() * 1e3 - t_conf, ranges.len(), raea_runtime_react::FLUSH_TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) - timeouts0);
     }
@@ -191,10 +191,27 @@ fn runtime(js: &Path) -> App {
     app
 }
 
+/// Sorted frames as runs of neighbours, each to step as one range (`step_frames`): 3, 4, 5, 9 are 3..6 and 9..10.
+pub fn runs<'a>(frames: impl IntoIterator<Item = &'a i64>) -> Vec<(i64, i64)> {
+    frames.into_iter().fold(Vec::new(), |mut rs: Vec<(i64, i64)>, &f| {
+        match rs.last_mut() {
+            Some(r) if r.1 == f => r.1 = f + 1,
+            _ => rs.push((f, f + 1)),
+        }
+        rs
+    })
+}
+
 /// Frames `a..b` stepped as one range (lightspeed T3): React renders them back to back (raea-frames), with no round
 /// trip to Rust between frames, and each frame's commit is applied on its own (OneBatch), `each` reading the world
 /// after it. Stepped one event a frame, each frame waited on the JS thread and back: most of an incremental bake.
-pub fn step_frames(app: &mut App, a: i64, b: i64, mut each: impl FnMut(&mut App, i64) -> R<()>) -> R<()> {
+pub fn step_frames(app: &mut App, a: i64, b: i64, each: impl FnMut(&mut App, i64) -> R<()>) -> R<()> {
+    step_frames_with(app, a, b, &mut raea_runtime_react::layout::nothing_drawn(), each)
+}
+
+/// [`step_frames`], a layout read the composition makes answered by `answer` (`page.layout`, docs/layout-reads.feature
+/// LR2): a host that lays a page out answers from it, a pass that draws none with no boxes.
+pub fn step_frames_with(app: &mut App, a: i64, b: i64, answer: &mut raea_runtime_react::layout::Answer, mut each: impl FnMut(&mut App, i64) -> R<()>) -> R<()> {
     if b <= a {
         return Ok(());
     }
@@ -202,13 +219,18 @@ pub fn step_frames(app: &mut App, a: i64, b: i64, mut each: impl FnMut(&mut App,
     let (t0, w0, a0, j0) = (std::time::Instant::now(), ld(&raea_runtime_react::FLUSH_WAIT_NS), ld(&raea_runtime_react::APPLY_NS), ld(&raea_runtime_react::JS_NS));
     let mut t_each = std::time::Duration::ZERO;
     app.world().resource::<ReactOutbox>().send(json!({"t": "event", "name": "raea-frames", "value": {"from": a, "to": b}}));
-    for g in a..b {
-        raea_runtime_react::scene::settle(app, Some(g), 20.0)?;
+    // the range's end, for a settle that finds a frame lost to ask for the rest again (#158)
+    app.world_mut().insert_resource(raea_runtime_react::Stepping { to: b });
+    let stepped = (a..b).try_for_each(|g| {
+        raea_runtime_react::scene::settle_with(app, Some(g), 20.0, answer)?;
         let te = std::time::Instant::now();
         each(app, g)?;
         t_each += te.elapsed();
-    }
-    if std::env::var_os("RAEA_BAKE_TRACE").is_some() {
+        Ok::<(), String>(())
+    });
+    app.world_mut().remove_resource::<raea_runtime_react::Stepping>();
+    stepped?;
+    if raea_io_trace::stat("RAEA_BAKE_TRACE") {
         let ms = |a: &std::sync::atomic::AtomicU64, z: u64| (ld(a) - z) as f64 / 1e6;
         eprintln!(
             "raea bake: frames {a}..{b} in {:.1} ms: waited on React {:.1} ms, applying {:.1} ms, JS {:.1} ms (those three across every runtime), recording {:.1} ms",
@@ -230,8 +252,10 @@ fn take_ops(app: &mut App) -> Vec<String> {
 /// runtime's node ids don't follow on from the range before).
 fn step_range(app: &mut App, a: i64, b: i64, reset: bool) -> R<Range> {
     let mut r = Range { frame_ops: Vec::with_capacity((b - a) as usize), comps: Vec::with_capacity((b - a) as usize), keys: Vec::new(), has_3d: false };
-    // the render's own steps: frame numbers (not live play's {frame, input}), so the commits are a render's
-    step_frames(app, a, b, |app, f| {
+    // the render's own steps: frame numbers (not live play's {frame, input}), so the commits are a render's. A bake lays
+    // no page out, so a layout read is refused, plainly, rather than baked as 0 (docs/layout-reads.feature LR2)
+    let mut answer = raea_runtime_react::layout::no_page("a baked timeline (raea play --baked; play it without --baked)");
+    step_frames_with(app, a, b, &mut answer, |app, f| {
         r.comps.push(comps_of(app.world_mut()));
         let ops = take_ops(app);
         r.has_3d |= ops.iter().any(|j| j.contains("data-3d"));
@@ -324,7 +348,7 @@ fn from_json(mut v: Value) -> R<Baked> {
 pub fn bake_incremental(old: &Baked, js: &Path) -> R<(Baked, i64)> {
     let code = code_of(js)?;
     let full = |why: &str| -> R<(Baked, i64)> {
-        if std::env::var_os("RAEA_BAKE_TRACE").is_some() {
+        if raea_io_trace::stat("RAEA_BAKE_TRACE") {
             eprintln!("raea bake: every frame again ({why})");
         }
         let b = bake(js)?;
@@ -347,7 +371,7 @@ pub fn bake_incremental(old: &Baked, js: &Path) -> R<(Baked, i64)> {
             continue;
         }
         if !hit.contains(whole) && !old.code.funcs.get(whole).is_some_and(|c| c.iter().any(|p| hit.contains(p))) {
-            if std::env::var_os("RAEA_BAKE_TRACE").is_some() {
+            if raea_io_trace::stat("RAEA_BAKE_TRACE") {
                 eprintln!("raea bake: function {whole:x} (inside {:x?}) changed; components changed {:x?}", old.code.funcs.get(whole), hit);
             }
             return full("a changed function isn't a component any frame rendered");
@@ -448,8 +472,29 @@ pub fn bake_incremental(old: &Baked, js: &Path) -> R<(Baked, i64)> {
             b.frame_ops[k as usize].push(Value::Array(key.1.clone()).to_string());
         }
     }
-    if std::env::var_os("RAEA_BAKE_TRACE").is_some() {
+    if raea_io_trace::stat("RAEA_BAKE_TRACE") {
         eprintln!("raea bake: {} runs, {stepped} frames on {} runtimes", runs.len(), pieces.len());
     }
     Ok((b, stepped))
+}
+
+// raea-runtime-bundle's cache key, tested here: that crate is at its size limit
+#[cfg(test)]
+mod bundle_key {
+    #[test]
+    fn a_dot_named_edit_rewritten_gets_another_bundle() {
+        // the app's preview wrapper (.raea-view-NAME.tsx) is rewritten at one path, and the folder walk passes dot files over
+        let t = std::env::temp_dir().join(format!("raea-bundle-dot-{}", std::process::id()));
+        std::fs::create_dir_all(&t).unwrap();
+        let o = raea_runtime_bundle::comp_opts(&[]).unwrap();
+        let (hidden, plain) = (t.join(".raea-view-body.tsx"), t.join("body.tsx"));
+        std::fs::write(&hidden, "export const a = 1\n").unwrap();
+        std::fs::write(&plain, "export const a = 1\n").unwrap();
+        let (first, other) = (raea_runtime_bundle::bundle_cache(&hidden, &o).unwrap(), raea_runtime_bundle::bundle_cache(&plain, &o).unwrap());
+        std::fs::write(&hidden, "export const a = 22\n").unwrap();
+        assert_ne!(raea_runtime_bundle::bundle_cache(&hidden, &o).unwrap(), first);
+        // a file the walk sees is counted once, as before
+        assert_eq!(raea_runtime_bundle::bundle_cache(&plain, &o).unwrap(), other);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
 }

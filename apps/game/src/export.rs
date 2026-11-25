@@ -14,7 +14,7 @@ pub(crate) fn keep_dsym(player: &Path) {
     let Ok(o) = std::process::Command::new("dwarfdump").arg("--uuid").arg(&dsym).output() else { return };
     let text = String::from_utf8_lossy(&o.stdout);
     let Some(uuid) = text.split_whitespace().nth(1).filter(|u| u.len() == 36) else { return };
-    let Some(home) = std::env::var_os("HOME") else { return };
+    let Some(home) = raea_io_home::user_home() else { return };
     let to = Path::new(&home).join("Library/Caches/raea/dsym").join(uuid).join("raea-game.dSYM");
     if to.exists() {
         return;
@@ -32,9 +32,14 @@ pub const USAGE: &str = "raea export-game EDIT.tsx -o OUT [--target mac-app|mac-
 
 /// `raea export-game EDIT.tsx -o OUT ...`
 pub fn export(args: &[String]) -> R<String> {
+    // its targets are a Mac's, signed with codesign, and raea's Windows and Linux releases carry no game player: there
+    // it said "no player ... (build it: cargo build ...)", which a person can't act on
+    if !cfg!(target_os = "macos") {
+        return Err("raea export-game makes a Mac game (an .app or a command) and runs on a Mac; Windows and Linux games aren't there yet (sdk/react/docs/game-export.md)".into());
+    }
     let usage = USAGE;
     let tsx = PathBuf::from(args.get(1).filter(|a| !a.starts_with("--")).ok_or(usage)?);
-    let tsx = tsx.canonicalize().map_err(|e| format!("{}: {e}", tsx.display()))?;
+    let tsx = dunce::canonicalize(&tsx).map_err(|e| format!("{}: {e}", tsx.display()))?;
     let dir = tsx.parent().unwrap().to_path_buf();
     let out = PathBuf::from(flag(args, "-o").ok_or(usage)?);
     let target = flag(args, "--target").unwrap_or_else(|| if out.extension().is_some_and(|x| x == "app") { "mac-app".into() } else { "mac-cli".into() });
@@ -69,11 +74,11 @@ pub fn export(args: &[String]) -> R<String> {
         }
     };
     if !player.exists() {
-        return Err(format!("no player at {} (build it: cargo build --profile game -p raea-app-game --bin raea-game --features player)", player.display()));
+        return Err(format!("no game player at {}: this raea ships without raea-game, which a game's export is made from; `raea bug \"export-game: no player\"` asks for it (docs/nobuild.feature NB3a)", player.display()));
     }
     // the release build's player is ~128 MB stripped, the game profile's ~74 MB (fat LTO, one codegen unit; lightspeed
-    // R7): say so when the bigger one ships because it's the newer
-    if !player.to_string_lossy().contains("/game/") && flag(args, "--player").is_none() {
+    // R7): say so when the bigger one ships because it's the newer, to a checkout's build (an installed raea has only its own)
+    if !player.to_string_lossy().contains("/game/") && player.to_string_lossy().contains("/target/") && flag(args, "--player").is_none() {
         let mb = std::fs::metadata(&player).map(|m| m.len() as f64 / 1048576.0).unwrap_or(0.0);
         eprintln!("raea export-game: shipping the release build's player ({mb:.0} MB before stripping): `cargo build --profile game -p raea-app-game --bin raea-game --features player` makes the ~74 MB one, which ships when it's the newer");
     }
@@ -88,7 +93,10 @@ pub fn export(args: &[String]) -> R<String> {
             opts.push(p.display().to_string());
         }
     }
-    opts.push("--lite".into());
+    // on live play's runtime, or React for an edit drawing R3F (raea_runtime_live::needs_react)
+    if !raea_runtime_live::needs_react(&dir) {
+        opts.push("--lite".into());
+    }
     let js = game.join("bundle.js");
     raea_runtime_react::scene::bundle_composition(&tsx, &js, &raea_runtime_react::scene::comp_opts(&opts)?, Some(&game))?;
 
@@ -98,10 +106,7 @@ pub fn export(args: &[String]) -> R<String> {
     gather(&mut bundle, &dir, &game, &mut got)?;
     std::fs::write(&js, &bundle).map_err(|e| e.to_string())?;
 
-    // an app screen needs a player with the surface runtime (the `surfaces` feature), which the size-built one leaves out
-    if got.files.iter().any(|(rel, _)| rel.ends_with(raea_runtime_page::screen::BUNDLED)) && !player_has_surfaces(&player)? {
-        return Err(format!("this game has an app screen (<Screen app>), and the player {} can't run one: build it with them (cargo build --profile game -p raea-app-game --bin raea-game --features player,surfaces) and export again", player.display()));
-    }
+    // an app screen (<Screen app>) draws on the player's own Blitz page (raea-runtime-appscreen): every player has one
 
     // 3. what play works out at open, worked out now from the package itself (so the package is known to load)
     let src = std::fs::read_to_string(&tsx).unwrap_or_default();
@@ -250,12 +255,6 @@ pub(crate) fn imported(dir: &Path, file: &Path) -> bool {
         }
     }
     false
-}
-
-/// Whether the player at `bin` was built with the surface runtime (app screens): its shim's text is in it.
-pub(crate) fn player_has_surfaces(bin: &Path) -> R<bool> {
-    let bytes = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    Ok(bytes.windows(14).any(|w| w == b"__surfaceFrame"))
 }
 
 pub(crate) fn default_name(tsx: &Path) -> String {

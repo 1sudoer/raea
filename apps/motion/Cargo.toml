@@ -1,0 +1,16 @@
+[package]
+name = "raea-app-motion"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "`raea motion` and `raea setup motion`: body motion made by Kimodo on this machine, on MLX on a Mac, on PyTorch elsewhere"
+
+[dependencies]
+# raea's models folder, where the models and the PyTorch environment go
+raea-io-home = { path = "../../io/home" }
+serde_json = "1"
+# the verbs' flags read as a render reads its own
+raea-runtime-bundle = { path = "../../runtime/bundle" }
+# Kimodo on MLX on a Mac, on PyTorch elsewhere (raea-sys-kimodo's torch.rs, plain Rust that runs the environment it makes)
+raea-sys-kimodo = { path = "../../systems/kimodo" }

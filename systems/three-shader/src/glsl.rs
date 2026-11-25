@@ -51,6 +51,9 @@ pub struct Source<'a> {
     pub vertex_colors: bool,
     /// it draws three.js Points: each point a quad whose corners come as `uv` (0..1), sized by gl_PointSize
     pub points: bool,
+    /// its fragment stage writes a surface Bevy lights (surface.rs), not a colour: four outputs in turn, base, normal,
+    /// emissive and world (a patched built-in material's program, R3F24)
+    pub lit: bool,
 }
 
 /// Both stages translated: each the WGSL that goes after module.rs's prelude, the uniforms they declare (laid out by
@@ -157,8 +160,8 @@ fn naga_wgsl(glsl: &str, vertex: bool) -> Result<(String, BTreeMap<String, Strin
 }
 
 /// The struct both stages read their varyings through: clip position, then each varying the vertex stage writes, in
-/// its order (location i).
-fn varyings_struct(vs: &[Var], points: bool) -> Result<String, String> {
+/// its order (location i); a lit stage's carry the instance after them (surface.rs).
+fn varyings_struct(vs: &[Var], points: bool, lit: bool) -> Result<String, String> {
     let mut m = String::from("struct ThreeVaryings {\n    @builtin(position) clip: vec4<f32>,\n");
     if points {
         m += &format!("    @location({}) corner: vec2<f32>,\n", vs.len());
@@ -173,6 +176,9 @@ fn varyings_struct(vs: &[Var], points: bool) -> Result<String, String> {
             return Err(format!("varying {}: a {} can't be a varying here", v.name, v.glsl));
         }
         m += &format!("    @location({i}){} v{i}: {},\n", if flat { " @interpolate(flat)" } else { "" }, ty.wgsl());
+    }
+    if lit {
+        m += &format!("    @location({}) @interpolate(flat) three_instance: u32,\n", vs.len() + usize::from(points));
     }
     Ok(m + "};\n")
 }
@@ -211,6 +217,9 @@ fn set_builtins(names: &BTreeMap<String, String>, model: bool) -> String {
 }
 
 const NORMAL_MATRIX: &str = "fn three_normal_matrix(mv: mat4x4<f32>) -> mat3x3<f32> {\n    let a = mat3x3<f32>(mv[0].xyz, mv[1].xyz, mv[2].xyz);\n    let c0 = cross(a[1], a[2]);\n    let c1 = cross(a[2], a[0]);\n    let c2 = cross(a[0], a[1]);\n    return mat3x3<f32>(c0, c1, c2) * (1.0 / dot(a[0], c0));\n}\n";
+
+/// A lit stage's surface (surface.rs) and the entry that returns it
+const SURFACE: &str = "struct ThreeSurface { base: vec4<f32>, normal: vec4<f32>, emissive: vec4<f32>, world: vec4<f32> }\n\nfn three_surface(in: ThreeVaryings, front: bool) -> ThreeSurface {\n";
 
 /// A ShaderMaterial's two stages as a three shader's (module.rs's contract).
 pub fn translate(src: &Source, textures: &[String]) -> Result<Translated, String> {
@@ -279,7 +288,7 @@ pub fn translate(src: &Source, textures: &[String]) -> Result<Translated, String
             }
         }
     }
-    let vstruct = varyings_struct(&vary, src.points)?;
+    let vstruct = varyings_struct(&vary, src.points, src.lit)?;
     // vertex: built-ins, attributes, uniforms, main, the varyings out
     let mut v = String::new();
     v += &vw;
@@ -315,7 +324,7 @@ pub fn translate(src: &Source, textures: &[String]) -> Result<Translated, String
     f += "\n";
     f += &vstruct;
     f += NORMAL_MATRIX;
-    f += "\nfn three_fragment(in: ThreeVaryings, front: bool) -> vec4<f32> {\n";
+    f += if src.lit { SURFACE } else { "\nfn three_fragment(in: ThreeVaryings, front: bool) -> vec4<f32> {\n" };
     f += &set_builtins(&fn_, false);
     f += &set_uniforms(&user_uniforms, &fn_);
     for (i, x) in vary.iter().enumerate() {
@@ -335,6 +344,14 @@ pub fn translate(src: &Source, textures: &[String]) -> Result<Translated, String
         f += &format!("    {g} = front;\n");
     }
     f += "    rg_main();\n";
+    if src.lit {
+        let outs: Vec<String> = fs.outputs.iter().filter_map(|o| fn_.get(&o.name).cloned()).collect();
+        if outs.len() != 4 {
+            return Err(format!("fragment: a lit shader writes 4 outputs (base, normal, emissive, world), got {}", outs.len()));
+        }
+        f += &format!("    return ThreeSurface({});\n}}\n", outs.join(", "));
+        return Ok(Translated { vertex: v, fragment: f, uniforms, samplers, attributes });
+    }
     let colour = match fs.outputs.first() {
         Some(o) => fn_.get(&o.name).cloned(),
         None if src.fragment.contains("gl_FragData") => fn_.get("rg_fragdata").map(|g| format!("{g}[0]")),
@@ -367,7 +384,7 @@ mod tests {
 
     #[test]
     fn a_shader_material_translates_to_the_contract() {
-        let t = translate(&Source { vertex: VERT, fragment: FRAG, raw: false, vertex_colors: false, points: false }, &["map".into()]).unwrap();
+        let t = translate(&Source { vertex: VERT, fragment: FRAG, raw: false, vertex_colors: false, points: false, lit: false }, &["map".into()]).unwrap();
         assert_eq!(t.uniforms.iter().map(|u| u.0.as_str()).collect::<Vec<_>>(), vec!["uTime", "uColor"]);
         assert_eq!(t.samplers, vec!["map".to_string()]);
         assert_eq!(t.attributes, vec![("aRandom".to_string(), 1)]);
@@ -384,15 +401,27 @@ mod tests {
     fn a_raw_shader_material_declares_its_own_built_ins() {
         let vert = "#version 300 es\nprecision highp float;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nin vec3 position;\nin vec4 color;\nout vec4 vColor;\nvoid main(){ vColor = color; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }";
         let frag = "#version 300 es\nprecision highp float;\nin vec4 vColor;\nout vec4 fragColor;\nvoid main(){ fragColor = vColor; }";
-        let t = translate(&Source { vertex: vert, fragment: frag, raw: true, vertex_colors: false, points: false }, &[]).unwrap();
+        let t = translate(&Source { vertex: vert, fragment: frag, raw: true, vertex_colors: false, points: false, lit: false }, &[]).unwrap();
         assert!(t.uniforms.is_empty());
         assert!(t.attributes.is_empty());
         assert!(t.vertex.contains("= v.color;"), "{}", t.vertex);
     }
 
     #[test]
+    fn a_lit_stage_returns_its_surface() {
+        let frag = "varying vec3 vViewPosition;\nlayout(location = 0) out highp vec4 raeaBase;\nlayout(location = 1) out highp vec4 raeaNormal;\nlayout(location = 2) out highp vec4 raeaEmissive;\nlayout(location = 3) out highp vec4 raeaWorld;\nvoid main(){ raeaBase = vec4(1.0); raeaNormal = vec4(0.0, 0.0, 1.0, 0.5); raeaEmissive = vec4(0.0); raeaWorld = vec4(-vViewPosition, 1.0); }";
+        let vert = "varying vec3 vViewPosition;\nvoid main(){ vec4 p = modelViewMatrix * vec4(position, 1.0); vViewPosition = -p.xyz; gl_Position = projectionMatrix * p; }";
+        let t = translate(&Source { vertex: vert, fragment: frag, raw: false, vertex_colors: false, points: false, lit: true }, &[]).unwrap();
+        assert!(t.fragment.contains("fn three_surface(in: ThreeVaryings, front: bool) -> ThreeSurface {"), "{}", t.fragment);
+        assert!(t.fragment.contains("return ThreeSurface("), "{}", t.fragment);
+        assert!(t.vertex.contains("@location(1) @interpolate(flat) three_instance: u32,"), "{}", t.vertex);
+        let e = translate(&Source { vertex: vert, fragment: "void main(){ gl_FragColor = vec4(1.0); }", raw: false, vertex_colors: false, points: false, lit: true }, &[]).unwrap_err();
+        assert!(e.contains("4 outputs"), "{e}");
+    }
+
+    #[test]
     fn errors_name_the_stage() {
-        let e = translate(&Source { vertex: VERT, fragment: "void main(){ gl_FragColor = nope; }", raw: false, vertex_colors: false, points: false }, &["map".into()]).unwrap_err();
+        let e = translate(&Source { vertex: VERT, fragment: "void main(){ gl_FragColor = nope; }", raw: false, vertex_colors: false, points: false, lit: false }, &["map".into()]).unwrap_err();
         assert!(e.contains("fragment"), "{e}");
     }
 }

@@ -75,4 +75,8 @@ impl JsEngine for Jsc {
     fn idle(&mut self) {
         pump();
     }
+
+    fn heap(&mut self) -> Option<String> {
+        self.ctx.heap()
+    }
 }

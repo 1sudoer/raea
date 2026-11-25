@@ -133,7 +133,7 @@ fn cache_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("RAEA_SPEECH_CACHE") {
         return PathBuf::from(p);
     }
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join(".cache/raea-speech")
+    raea_io_home::user_home().unwrap_or_else(|| PathBuf::from(".")).join(".cache/raea-speech")
 }
 
 impl Service {

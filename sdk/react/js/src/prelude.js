@@ -38,7 +38,18 @@
     const m = json === null ? null : JSON.parse(json);
     // the World's shared values that changed (B3 H4): to @raea/app's hooks.ts store, not the bridge
     if (m && m.t === "event" && m.name === "raea-world") { if (g.__raea_world) g.__raea_world(m.value); return; }
-    if (waiter) { const w = waiter; waiter = null; w(m); } else inbox.push(m);
+    // 1: handed to the bridge's waiting loop; 0: queued with no one waiting. Between the host's calls the loop always
+    // waits on op_next_event, so a 0 means it has stopped, and the host says so if a frame then never comes (#158)
+    if (waiter) { const w = waiter; waiter = null; w(m); return 1; }
+    inbox.push(m);
+    return 0;
+  };
+  // the bridge's event loop ended by a throw (an error out of an event handler's flushSync, which nothing caught): put
+  // where Rust reads a composition's error, so the render fails naming it, not waiting on a loop that stopped (#158)
+  g.__raea_loop_died = (e) => {
+    const msg = "the composition's event loop stopped: " + (e && e.message ? (e.name || "Error") + ": " + e.message + (e.stack ? "\n" + e.stack : "") : String(e));
+    console.error("[js] " + msg);
+    __raea_flush(JSON.stringify([{ op: "create", id: 2 ** 52 - 1, kind: "div", props: { "data-raea-error": msg.slice(0, 4000) } }]));
   };
   // Number's toLocaleString through one Intl.NumberFormat per locale and options, kept: the spec's toLocaleString(l, o)
   // is new Intl.NumberFormat(l, o).format(n), and JavaScriptCore made that formatter at every call. A counter a

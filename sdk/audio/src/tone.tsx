@@ -15,4 +15,5 @@
 import { fish, lyria, sao } from "@raea/asset/assets";
 export { getContext, context, setContext, start, loaded, now, immediate, version, mtof, ftom, dbToGain, gainToDb, intervalToFrequencyRatio, Frequency, Midi, Time, TransportTime, Ticks, Param, Signal, ToneAudioNode, getDestination, Destination, Master, Instrument, Synth, MonoSynth, FMSynth, AMSynth, DuoSynth, MembraneSynth, NoiseSynth, MetalSynth, PluckSynth, PolySynth, Sampler, Player, GrainPlayer, Players, Oscillator, OmniOscillator, FatOscillator, PulseOscillator, Noise, Effect, Reverb, Freeverb, JCReverb, FeedbackDelay, PingPongDelay, Filter, AutoFilter, Compressor, Limiter, EQ3, Distortion, Chorus, BitCrusher, Tremolo, Vibrato, Phaser, AutoPanner, Gain, Volume, Panner, Channel, PanVol, Solo, Meter, FFT, Waveform, Analyser, LFO, Convolver, PitchShift, Offline, bus, buses, tokensynth, getTransport, Transport, Draw, Loop, Part, Sequence, Pattern, ToneOut, Sfx, vary, snapshot, reset } from "./tone/all";
 
+export { fire } from "./tone/fire";
 export { sao, lyria, fish };

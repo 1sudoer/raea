@@ -44,9 +44,9 @@ pub use render::*;
 mod review;
 mod run;
 pub use run::*;
-pub use raea_sys_page::not_applied;
+pub use raea_sys_page::{not_applied, render_said};
 mod scene;
-pub use scene::{USAGE as SCENE_USAGE, cli as scene_cli};
+pub use scene::{all_items, frame_of, items};
 
 /// One <Audio> (or sounding <Video>) on a frame.
 #[derive(Clone, Debug)]
@@ -67,11 +67,18 @@ pub(crate) struct Sound {
 /// `render --manifest PATH` (the CLI's; render_bundle keeps its signature for the iPhone): where render.json goes.
 static MANIFEST: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
-/// With --manifest, its file: the frames' boxes as drawn (Ctx.manifest), the 3D's clipping and the sounds heard.
-fn write_manifest(cx: &mut Ctx, (w, h, fps): (u32, u32, f64), clipping: Vec<Value>, heard: impl FnOnce(&Ctx) -> Value) -> R<()> {
+/// The manifest, its folder made first (2D stills write it before their frames): the composition's length in frames
+/// (whatever was rendered of it; raea check --quick samples by it, #86), boxes as drawn, findings, sounds, and whether
+/// it drew 3D (an export in layers draws the 3D in the layer under the page, docs/layers.feature LA2a).
+fn write_manifest(cx: &mut Ctx, (w, h, fps, length): (u32, u32, f64, i64), found: Vec<raea_core_facts::Finding>, heard: impl FnOnce(&Ctx) -> Value) -> R<()> {
     let (Some(path), Some(frames)) = (MANIFEST.lock().unwrap().clone(), cx.manifest.take()) else { return Ok(()) };
-    let m = json!({"width": w, "height": h, "fps": fps, "frames": frames, "clipping": clipping, "sounds": heard(cx), "not_applied": not_applied::seen()});
-    std::fs::write(&path, m.to_string()).map_err(|e| format!("{}: {e}", path.display()))
+    path.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut v = json!({"width": w, "height": h, "fps": fps, "length": length, "frames": frames, "findings": raea_core_facts::finding::ranked(found), "sounds": heard(cx), "not_applied": not_applied::seen(), "layers": raea_sys_layers::finish(fps), "has3d": cx.scene3d.is_some() || cx.live3d.is_some()});
+    // the parts SG9 needs (scene.rs's SEEN: stills' parts on screen, a longer render's remounts), and --props and --scale
+    for more in [scene::SEEN.lock().unwrap().take(), GIVEN.lock().unwrap().clone()] {
+        v.as_object_mut().into_iter().zip(more.and_then(|m| m.as_object().cloned())).for_each(|(m, more)| m.extend(more));
+    }
+    std::fs::write(&path, v.to_string()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// `render --stage WxH`: a responsive composition (one that lays out from useVideoConfig) laid out at a stage's size, as
@@ -105,7 +112,7 @@ fn render_opts() -> raea_runtime_encode::RenderOpts {
 }
 
 /// What one frame of the composition is.
-pub(crate) struct Frame {
+pub struct Frame {
     /// a <Mix>: the master's loudness target and true-peak ceiling (the master row)
     mix: Option<(f64, f64)>,
     /// the page's picture as an asset (its hash; the PNG written already), None where nothing is painted: frames keep
@@ -113,7 +120,7 @@ pub(crate) struct Frame {
     /// what an iPhone lets an app keep)
     page: Option<String>,
     sounds: Vec<Sound>,
-    scene: Vec<Node3>,
+    pub scene: Vec<Node3>,
     clear: Option<String>,
     /// the page is the frame before's (nothing changed, nothing painted)
     same: bool,
@@ -184,8 +191,10 @@ fn push_sound(cx: &mut Ctx, props: &Map<String, Value>, skey: &str) {
     if let (Some(src), Some(at)) = (props.get("src").and_then(|v| v.as_str()), num(props, "data-source-time")) {
         let Some(file) = raea_io_net::cache::remote(src).map_or_else(|| Some(media_path(cx.dir, src)), Result::ok) else { return }; // http(s): raea's URL cache (#57)
         // a sound track with samples: a short window says so (decoding the whole take for it held a long take whole)
-        let audible = *cx.audible.entry(file.clone()).or_insert_with(|| raea_io_media::decode_audio_window(&file, 0.0, 0.05).is_ok_and(|a| a.len() > 0));
+        let audible = *cx.audible.entry(file.clone()).or_insert_with(|| raea_runtime_sound::there(&file, src) && raea_io_media::decode_audio_window(&file, 0.0, 0.05).is_ok_and(|a| a.len() > 0)); // a file that isn't there is named, once (sound's there)
         if !muted && volume > 0.0 && audible {
+            // raea's mix: dialogue at one level, gainDb an offset on it (raea-sys-mix level.rs), as live play has it
+            let volume = volume * raea_sys_mix::level::gain(&file, num(props, "data-clip-from").unwrap_or(0.0), num(props, "data-clip-to"), props.get("data-bus").and_then(|v| v.as_str())) as f64;
             cx.sounds.push(Sound { src: file.display().to_string(), at, volume, rate: num(props, "data-playback-rate").unwrap_or(1.0), key: skey.to_string(), fade_in: num(props, "data-fade-in"), fade_out: num(props, "data-fade-out"), bus: props.get("data-bus").and_then(|v| v.as_str()).map(str::to_string) });
         }
     }
@@ -209,6 +218,11 @@ fn heard(frames: &[(i64, Frame)], tones: &[raea_sys_mix::ToneCue], cx: &Ctx, fps
             let mut c = json!({"key": s.key, "from": f, "to": f + 1, "src": s.src, "at": (s.at * 1000.0).round() / 1000.0, "gainDb": ((20.0 * s.volume.max(1e-6).log10()) * 10.0).round() / 10.0});
             if let Some(b) = &s.bus {
                 c["bus"] = json!(b);
+            }
+            // its playback rate and fades, when it has them (the CapCut export's audio clips take them)
+            let extras = [("rate", Some(s.rate).filter(|r| *r != 1.0)), ("fadeIn", s.fade_in.filter(|v| *v > 0.0)), ("fadeOut", s.fade_out.filter(|v| *v > 0.0))];
+            for (k, v) in extras.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))) {
+                c[k] = json!(v);
             }
             // a generated sound's key is model|prompt|seconds
             if let Some(k) = made.get(&s.src) {

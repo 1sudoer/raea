@@ -7,10 +7,11 @@ pub mod audio;
 pub mod mezz;
 #[cfg(feature = "mux")]
 pub mod remux;
+pub mod samples;
 mod resample;
 pub mod yuv;
 
-pub use resample::soft_resample;
+pub use resample::{soft_resample, soft_resample_blocks};
 
 /// A decoded frame still in VideoToolbox's buffer: NV12 (video range), IOSurface-backed and Metal-compatible, retained
 /// (frame_surface_at). Nothing was copied; a GPU can sample its two planes as textures.
@@ -205,6 +206,22 @@ pub trait Backend {
     fn encoder_10bit(&self, _out: &Path, _opts: &EncodeOpts) -> R<Box<dyn VideoEncoder>> {
         Err(format!("the {} backend has no 10-bit encoder", self.name()))
     }
+    /// `a` encoded as this backend's encoders lay sound under their video (VideoEncoder::finish), for a video put
+    /// together from parts encoded apart (raea-runtime-segments' join).
+    fn sound(&self, _a: &Audio) -> R<SoundTrack> {
+        Err(format!("the {} backend lays no sound under a joined video", self.name()))
+    }
+}
+
+/// A sound encoded for a muxer, as a backend lays it under its video: AAC (each packet an ADTS frame, after `priming`
+/// samples of the encoder's own silence) or Opus, each packet with its time in seconds.
+#[derive(Debug, Clone, Default)]
+pub struct SoundTrack {
+    pub aac: bool,
+    pub rate: u32,
+    pub channels: u16,
+    pub priming: u32,
+    pub packets: Vec<(f64, Vec<u8>)>,
 }
 
 

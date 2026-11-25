@@ -6,6 +6,7 @@ license = "FSL-1.1-ALv2"
 description = "An app's target, web (Blitz on Bevy) or native (Rune), read from its file, and raea app run|check|bundle on either (docs/targets.feature)"
 
 [dependencies]
+dunce = "1"
 serde_json = "1"
 # the page host's frames over BRP
 base64 = "0.22"

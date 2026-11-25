@@ -27,6 +27,11 @@ export interface Skeleton {
   /** samples of the skin's surface: each a rest vertex of body.glb, its offset `o` from joint j[0]'s head, its normal
    * `n` at rest, and its joints `j` and weights `w` as the glb skins it */
   surface?: { part: string; side: Side | ""; j: number[]; w: number[]; o: Vec3; n: Vec3 }[];
+  /** how many of the joints (from the first) a capture turns, when the body says: a SOMA body's 23 */
+  captured?: number;
+  /** a SOMA body's rig, and each joint's turn from bind to SOMA's T-pose (what a motion's turns are from) */
+  rig?: string;
+  tpose?: Record<string, Quat>;
 }
 
 /** The joints at a pose as the skin follows them (each body.glb bone is the joint of its name): each's place and

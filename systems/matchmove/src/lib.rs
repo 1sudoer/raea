@@ -8,6 +8,8 @@
 //!   camera view_w view_h view_x view_y: the frame is the window at (view_x, view_y), the frame's size, of a view
 //!          view_w x view_h frame pixels whose vertical field is `fov` (an off-axis projection, `OffAxis`). A 9:16
 //!          crop of 16:9 footage keeps the lens's centre where the footage had it, so the 3D stays locked to it.
+//!   camera aspect: the view's own width over height, drawn into its image whatever that image's shape (a camera into a
+//!          render image drawing three's projection: drei's reflector draws the screen's 16:9 into a square target).
 //!
 //! The plate is drawn as the scene's own picture, so it goes through tone mapping like everything else: <Matchmove>
 //! puts `<ToneMapping mode="none">` in its scene, which leaves an unlit texture's colours as they are.
@@ -103,11 +105,16 @@ fn off_axis_matrix(l: f32, r: f32, b: f32, t: f32, n: f32) -> Mat4 {
 
 /// The camera's projection for a frame's row: an OffAxis window when it has view_* columns.
 fn off_axis(v: &BTreeMap<String, V>, frame: Vec2, near: f32, far: f32) -> Option<OffAxis> {
+    let fov = num(v, "fov", 45.0).to_radians();
+    if let Some(a) = v.get("aspect").map(V::num).filter(|a| *a > 0.0) {
+        let full = Vec2::new(a as f32, 1.0);
+        return Some(OffAxis { persp: PerspectiveProjection { fov, near, far, ..default() }, full, offset: Vec2::ZERO, size: full });
+    }
     let (w, h) = (num(v, "view_w", 0.0), num(v, "view_h", 0.0));
     if !(w > 0.0 && h > 0.0) {
         return None;
     }
-    let persp = PerspectiveProjection { fov: num(v, "fov", 45.0).to_radians(), near, far, aspect_ratio: frame.x / frame.y, ..default() };
+    let persp = PerspectiveProjection { fov, near, far, aspect_ratio: frame.x / frame.y, ..default() };
     Some(OffAxis { persp, full: Vec2::new(w, h), offset: Vec2::new(num(v, "view_x", 0.0), num(v, "view_y", 0.0)), size: frame })
 }
 
@@ -154,7 +161,10 @@ pub fn sync_view(frame: Res<FrameRows>, edit: Res<Edit>, mut q: Query<(Entity, &
         if new.persp.fov != old.persp.fov || new.full != old.full || new.offset != old.offset {
             *p = Projection::custom(new.clone());
         }
-        window = Some(new);
+        // a look's camera copies the screen's window, never an image's own aspect
+        if !v.contains_key("aspect") {
+            window = Some(new);
+        }
     }
     let Some(w) = window else { return };
     for (e, mut p, _) in &mut q {

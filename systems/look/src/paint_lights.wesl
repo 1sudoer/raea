@@ -7,7 +7,9 @@
 // the surface's own colour, as the sun lights it; a coloured one as bright, its hue; at most 3 a channel). The band
 // takes the place of a shade (`mid`, `shadow`); on a surface a sun lights it adds only what's above the sun's band. At
 // `k.z` times the band's lux it steps once more, times `k.w` (brighter with intensity). Lights that didn't ask, and
-// every light while none did (`k.x` = 0), change nothing.
+// every light while none did (`k.x` = 0), change nothing. With the look's `soft` above 0 a light is a gradient
+// instead: each asking light weighs in by its lux over the band's (0 at none, half at the band's lux, all of it at
+// 1 + soft times that), times its filtered shadow, and the surface's tint goes that far to the lights' colours.
 import bevy_pbr::render::mesh_view_bindings as view_bindings;
 import bevy_pbr::render::mesh_view_types;
 import bevy_pbr::render::clustered_forward as clustering;
@@ -36,10 +38,14 @@ fn asked(p: vec3<f32>) -> bool {
 }
 
 /// the tint a surface's bands give it (`tint`), raised by each asking light that reaches it to that light's band
-fn light_bands(tint: vec3<f32>, sunlit: bool, P: vec4<f32>, N: vec3<f32>, world_normal: vec3<f32>, frag_coord: vec4<f32>, view_z: f32, is_orthographic: bool, mesh_flags: u32, wobble: f32, edge: f32) -> vec3<f32> {
+fn light_bands(tint: vec3<f32>, sunlit: bool, P: vec4<f32>, N: vec3<f32>, world_normal: vec3<f32>, frag_coord: vec4<f32>, view_z: f32, is_orthographic: bool, mesh_flags: u32, wobble: f32, edge: f32, soft: f32) -> vec3<f32> {
     if paint_lights.k.x < 0.5 {
         return tint;
     }
+    // soft: the lights' colours summed by weight, the weights' sum, and how much of the surface no light reaches
+    var sum = vec3<f32>(0.0);
+    var wsum = 0.0;
+    var dark = 1.0;
     // the brightest band of the lights that reach it (none: -1)
     var best = vec3<f32>(-1.0);
     let receives = (mesh_flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
@@ -79,6 +85,23 @@ fn light_bands(tint: vec3<f32>, sunlit: bool, P: vec4<f32>, N: vec3<f32>, world_
         }
         // the light on it, the band's cut wandering by the edge noise
         let lux = cd * window * window / max(d2, 1e-4) * min(facing, 1.0) * cone * (1.0 + 2.0 * edge);
+        if soft > 0.0 {
+            let a = lux / max(paint_lights.k.y, 1e-6);
+            var w = smoothstep(1.0 - soft, 1.0 + soft, a);
+            if w > 0.0 && receives && ((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
+                if i >= ranges.first_spot_light_index_offset {
+                    w = w * shadows::fetch_spot_shadow(id, P, world_normal, (*light).shadow_map_near_z, frag_coord.xy);
+                } else {
+                    w = w * shadows::fetch_point_shadow(id, P, world_normal, frag_coord.xy);
+                }
+            }
+            let hot = smoothstep(paint_lights.k.z * (1.0 - 0.7 * soft), paint_lights.k.z * (1.0 + soft), a);
+            let b = min(rgb / max(dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 1e-6), vec3<f32>(3.0)) * mix(1.0, paint_lights.k.w, hot);
+            sum = sum + b * w;
+            wsum = wsum + w;
+            dark = dark * (1.0 - w);
+            continue;
+        }
         if lux < paint_lights.k.y {
             continue;
         }
@@ -99,6 +122,15 @@ fn light_bands(tint: vec3<f32>, sunlit: bool, P: vec4<f32>, N: vec3<f32>, world_
             band = band * paint_lights.k.w;
         }
         best = max(best, band);
+    }
+    if soft > 0.0 {
+        if wsum <= 0.0 {
+            return tint;
+        }
+        // in the sun's light a light adds only what's above the sun's; in shade it takes the shade's place
+        let b = sum / wsum;
+        let sun = saturate(dot(tint, vec3<f32>(0.2126, 0.7152, 0.0722)));
+        return mix(tint, mix(b, max(tint, b), sun), 1.0 - dark);
     }
     if best.x < 0.0 {
         return tint;

@@ -61,7 +61,7 @@ fn here() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 fn repo() -> PathBuf {
-    here().join("../../..").canonicalize().unwrap_or(here().join("../../.."))
+    dunce::canonicalize(&here().join("../../..")).unwrap_or(here().join("../../.."))
 }
 
 struct Opts {

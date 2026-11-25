@@ -11,5 +11,15 @@ plugin({
       contents: readFileSync(a.path.replace(/\.cjs\.js$/, ".esm.js"), "utf8"),
       loader: "js",
     }));
+    // drei and three-stdlib the same: their CommonJS builds require three's (OrbitControls' instanceof
+    // PerspectiveCamera failed, so the wheel's dolly was off)
+    b.onLoad({ filter: /@react-three\/drei\/index\.cjs\.js$/ }, (a) => ({
+      contents: readFileSync(a.path.replace(/\.cjs\.js$/, ".js"), "utf8"),
+      loader: "js",
+    }));
+    b.onLoad({ filter: /three-stdlib\/.+\.cjs$/ }, (a) => ({
+      contents: readFileSync(a.path.replace(/\.cjs$/, ".js"), "utf8"),
+      loader: "js",
+    }));
   },
 });

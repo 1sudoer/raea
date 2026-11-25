@@ -41,7 +41,7 @@ fn inside(root: &Path, base: &Path, rel: &Path) -> Option<PathBuf> {
 }
 
 fn run(v: &Value) -> R<Value> {
-    let root = PathBuf::from(s(v, "root")?).canonicalize().map_err(|e| e.to_string())?;
+    let root = dunce::canonicalize(&PathBuf::from(s(v, "root")?)).map_err(|e| e.to_string())?;
     let cwd = PathBuf::from(s(v, "cwd")?);
     let file = inside(&root, &cwd, Path::new(s(v, "file")?)).ok_or("tar: the archive is outside the project")?;
     let gz = v.get("gzip").and_then(Value::as_bool).unwrap_or(false) || s(v, "file").map(|f| f.ends_with(".tgz") || f.ends_with(".gz")).unwrap_or(false);

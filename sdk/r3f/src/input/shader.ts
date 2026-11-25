@@ -6,9 +6,11 @@
 // What three puts on screen is what raea's engine shows: a ShaderMaterial's colour is the canvas's value unless it
 // includes three's tone mapping, so it goes as "display" (the engine takes it back through Bevy's tone mapping); one
 // that includes <tonemapping_fragment> on a tone-mapped material goes as "linear", those includes dropped, and Bevy's
-// tone mapping maps it as three's would.
+// tone mapping maps it as three's would. Drawn through a composer, every one goes as "linear": three draws it into the
+// composer's float buffer, its colour scene light, and the composer tone-maps and encodes the frame.
 import * as THREE from "three";
-import { srcOf } from "./texture";
+import { onGpu } from "./targets";
+import { flipsY, srcOf } from "./texture";
 import type { Part, Props } from "./material";
 
 const hex = (c: THREE.Color) => "#" + c.getHexString();
@@ -118,6 +120,25 @@ export function decideIfdefs(src: string, defines: Set<string> | Map<string, str
 
 /** three's sRGB encoding, which <colorspace_fragment> calls (three declares it in front of every fragment shader) */
 const OUTPUT_TEXEL = "vec4 linearToOutputTexel(vec4 v) { return vec4(mix(pow(v.rgb, vec3(0.41666)) * 1.055 - vec3(0.055), v.rgb * 12.92, vec3(lessThanEqual(v.rgb, vec3(0.0031308)))), v.a); }\n";
+// into a composer's float buffer, three's output colour space is the target's (linear): the colour as it is
+const LINEAR_TEXEL = "vec4 linearToOutputTexel(vec4 v) { return v; }\n";
+
+// whether the scene being converted is drawn through a composer (an <EffectComposer>, three's EffectComposer, a
+// PostProcessing: post.ts composerEffects). three draws it into the composer's float buffer, where it tone-maps and
+// encodes nothing, so a ShaderMaterial's colour there is scene light, which the composer's own tone mapping (or none)
+// and encoding make the frame
+let composed = false;
+
+/** `f` run with the scene drawn through a composer (`on`) or not, as convert walks it */
+export function composing<T>(on: boolean, f: () => T): T {
+  const was = composed;
+  composed = on;
+  try {
+    return f();
+  } finally {
+    composed = was;
+  }
+}
 
 /** a uniform's value as numbers (a texture is listed apart); undefined for one with nothing raea can send */
 function valueOf(v: unknown): number | boolean | number[] | undefined {
@@ -141,7 +162,9 @@ function valueOf(v: unknown): number | boolean | number[] | undefined {
 }
 
 /** a picture three has no file for (a render target's): one white pixel, so the shader still runs */
-const WHITE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+export const WHITE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP4DwQACfsD/Wj6HMwAAAAASUVORK5CYII=";
+// a 1x1 opaque black PNG: what WebGL reads from a sampler with no texture bound
+export const BLACK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI12NgYGD4DwABBAEApOCsMQAAAABJRU5ErkJggg==";
 
 const warned = new Set<string>();
 function warnOnce(k: string, why: string) {
@@ -157,8 +180,9 @@ export function shaderPart(m: THREE.ShaderMaterial, points = false): Part {
   const defines = Object.entries(m.defines ?? {}).filter(([, v]) => v !== false).map(([k, v]) => `#define ${k} ${v === true ? "" : v}`).join("\n");
   let vertex = expandIncludes(m.vertexShader);
   let fragment = expandIncludes(m.fragmentShader);
-  // three's tone mapping, when the shader asks for it, is Bevy's here: the shader's colour is then scene light
-  const tones = /#include +<tonemapping_fragment>/.test(m.fragmentShader) && m.toneMapped;
+  // three's tone mapping, when the shader asks for it, is Bevy's here: the shader's colour is then scene light, as it
+  // is in a composer's buffer, where three's tone mapping and colour space includes do nothing
+  const tones = composed || (/#include +<tonemapping_fragment>/.test(m.fragmentShader) && m.toneMapped);
   if (tones) fragment = expandIncludes(m.fragmentShader.replace(/^[ \t]*#include +<(tonemapping_fragment|colorspace_fragment)>/gm, ""));
   else if (/#include +<tonemapping_fragment>/.test(m.fragmentShader)) fragment = expandIncludes(m.fragmentShader.replace(/^[ \t]*#include +<tonemapping_fragment>/gm, ""));
   // three's prefix in front of a ShaderMaterial (not a raw one): no clipping planes (raea cuts the mesh, clip.ts)
@@ -167,7 +191,7 @@ export function shaderPart(m: THREE.ShaderMaterial, points = false): Part {
   // naga's GLSL reads a parameter's `in` but not `const in` (three's <common> declares its helpers so)
   const params = (src: string) => src.replace(/([(,]\s*)const\s+in\s+/g, "$1in ");
   vertex = params(decideIfdefs(front + vertex, on));
-  fragment = params(decideIfdefs(front + (raw ? "" : OUTPUT_TEXEL) + fragment, on));
+  fragment = params(decideIfdefs(front + (raw ? "" : composed ? LINEAR_TEXEL : OUTPUT_TEXEL) + fragment, on));
   const uniforms: Record<string, number | boolean | number[]> = {};
   const textures: Record<string, string | { src: string; colorSpace: "linear" }> = {};
   const flipY: string[] = [];
@@ -178,9 +202,11 @@ export function shaderPart(m: THREE.ShaderMaterial, points = false): Part {
       const t = v as THREE.Texture;
       const src = srcOf(t);
       if (!src) warnOnce(`${m.type} texture ${name}`, "has no picture raea can load (a render target's?): drawn as white");
-      // three samples a picture without a colour space raw, an sRGB one decoded (as Bevy's sRGB image is)
-      textures[name] = src && t.colorSpace !== THREE.SRGBColorSpace ? { src, colorSpace: "linear" } : src ?? WHITE;
-      if (t.flipY && src) flipY.push(name);
+      // three samples a picture without a colour space raw, an sRGB one decoded (as Bevy's sRGB image is); a target
+      // raea's engine draws is read as drawn (R3F23: a float image has no sRGB view, and an 8-bit one decodes to the
+      // linear numbers three's target holds), never a raw copy, which would be taken once, before any pass filled it
+      textures[name] = src && t.colorSpace !== THREE.SRGBColorSpace && !onGpu(t) ? { src, colorSpace: "linear" } : src ?? WHITE;
+      if (flipsY(t) && src) flipY.push(name);
       continue;
     }
     if (v instanceof THREE.Color && !color && /^(u?[cC]olou?r|diffuse)$/.test(name)) color = hex(v);
@@ -191,6 +217,12 @@ export function shaderPart(m: THREE.ShaderMaterial, points = false): Part {
     }
     uniforms[name] = n;
   }
+  // a sampler the shader declares and the material never gives (drei's <Stars> declares pointTexture): three binds no
+  // texture there, and WebGL reads an unbound one as opaque black (R3F16)
+  for (const [, name] of `${vertex}\n${fragment}`.matchAll(/^\s*uniform\s+(?:(?:lowp|mediump|highp)\s+)?sampler2D\s+(\w+)\s*;/gm)) {
+    if (!(name in textures)) textures[name] = BLACK;
+  }
+  vertex = farPlane(vertex);
   const props: Props = {
     glsl: { vertex, fragment, raw, vertexColors: m.vertexColors === true, ...(points ? { points: true } : {}) },
     ...(flipY.length ? { flipY } : {}),
@@ -202,11 +234,26 @@ export function shaderPart(m: THREE.ShaderMaterial, points = false): Part {
     depthTest: m.depthTest,
     color: color ?? "#ffffff",
   };
-  if (m.transparent) props.transparent = true;
+  // what draws without the depth test (a face's decals on its shell, an outline) three draws over what it drew before,
+  // by renderOrder; raea's opaque pass has no order, so it goes with the transparent ones, after everything opaque
+  // (docs/img2raea.feature IR5). Its depthWrite stays the material's
+  if (m.transparent || !m.depthTest) props.transparent = true;
   if (m.blending === THREE.AdditiveBlending) props.blending = "additive";
   else if (m.blending === THREE.MultiplyBlending) props.blending = "multiply";
   if (m.alphaTest > 0) props.alphaTest = m.alphaTest;
   return { type: "ThreeShaderMaterial", props };
+}
+
+/**
+ * A vertex put on three's far plane as three puts it, `p.z = p.w` (three's <Sky>, its cube and backgroundCube
+ * programs, a TSL SkyMesh's `position.z.assign(position.w)` in WGSL), on reverse-Z's far plane instead: Bevy's
+ * projection maps the far plane (at infinity) to z = 0, so z = w there is the NEAR plane and the sky would cover the
+ * scene (docs/r3f.feature R3F17). `gl_Position = p.xyww` is the same trick written whole.
+ */
+export function farPlane(src: string): string {
+  return src
+    .replace(/(\b[A-Za-z_][\w.]*)\.z\s*=\s*\1\.w\s*;/g, "$1.z = 0.0;")
+    .replace(/\bgl_Position\s*=\s*([A-Za-z_][\w.]*)\.xyww\s*;/g, "gl_Position = vec4($1.xy, 0.0, $1.w);");
 }
 
 /** whether a material is a ShaderMaterial (or Raw), which shaderPart draws */
@@ -227,19 +274,20 @@ export function ownAttributes(g: THREE.BufferGeometry): Record<string, { size: n
 }
 
 /**
- * A built-in material three draws with a program of its own that needs no lights (matcap, normal) as raea's
- * <ThreeShaderMaterial> of that same program: three's ShaderLib source, the defines its WebGLProgram would set for
- * this material (map, matcap, flat shading, sides) and its uniforms, so it looks as three draws it.
+ * A built-in material three draws with a program of its own that needs no lights (matcap, normal; a basic one drawn
+ * without the depth test, which raea's MeshBasicMaterial can't be) as raea's <ThreeShaderMaterial> of that same
+ * program: three's ShaderLib source, the defines its WebGLProgram would set for this material (map, matcap, flat
+ * shading, sides) and its uniforms, its depth test and write, so it looks as three draws it.
  */
-export function builtinPart(m: THREE.MeshMatcapMaterial | THREE.MeshNormalMaterial): Part {
-  const lib = m.type === "MeshMatcapMaterial" ? THREE.ShaderLib.matcap : THREE.ShaderLib.normal;
+export function builtinPart(m: THREE.MeshMatcapMaterial | THREE.MeshNormalMaterial | THREE.MeshBasicMaterial): Part {
+  const lib = m.type === "MeshMatcapMaterial" ? THREE.ShaderLib.matcap : m.type === "MeshBasicMaterial" ? THREE.ShaderLib.basic : THREE.ShaderLib.normal;
   const uniforms = THREE.UniformsUtils.clone(lib.uniforms) as Record<string, THREE.IUniform>;
   const defines: Record<string, string | boolean> = {};
-  if (m.flatShading) defines.FLAT_SHADED = true;
+  if ((m as { flatShading?: boolean }).flatShading) defines.FLAT_SHADED = true;
   if (m.side === THREE.DoubleSide) defines.DOUBLE_SIDED = true;
   if (m.side === THREE.BackSide) defines.FLIP_SIDED = true;
   uniforms.opacity.value = m.opacity;
-  if (m.type === "MeshMatcapMaterial") {
+  if (m.type === "MeshMatcapMaterial" || m.type === "MeshBasicMaterial") {
     const mc = m as THREE.MeshMatcapMaterial;
     uniforms.diffuse.value = mc.color.clone();
     if (mc.matcap) {
@@ -254,7 +302,7 @@ export function builtinPart(m: THREE.MeshMatcapMaterial | THREE.MeshNormalMateri
       uniforms.mapTransform.value = mc.map.matrix.clone();
     }
   }
-  const sm = new THREE.ShaderMaterial({ uniforms, vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines, transparent: m.transparent, side: m.side, toneMapped: m.toneMapped });
+  const sm = new THREE.ShaderMaterial({ uniforms, vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines, transparent: m.transparent, side: m.side, toneMapped: m.toneMapped, depthTest: m.depthTest, depthWrite: m.depthWrite, vertexColors: m.vertexColors });
   sm.opacity = m.opacity;
   return shaderPart(sm);
 }

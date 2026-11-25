@@ -1,0 +1,24 @@
+[package]
+name = "raea-sys-fingerprint-use"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "Using a fingerprint (docs/fingerprint.feature FP3, FP6e, FP8b, FP12a, FP14c): a piece scored per moment and drawn as a sheet, patch heads that say where, which fingerprint judges a piece, where two differ, and profiles of admired work"
+
+[dependencies]
+dunce = "1"
+# the fingerprint: its taxonomy, folder, evidence, heads and words
+raea-sys-fingerprint = { path = "../fingerprint" }
+# the H.264 encoder this machine's ffmpeg has, for a clip a person plays (raea_io_ffmpeg::h264)
+raea-io-ffmpeg = { path = "../../io/ffmpeg" }
+# a piece's columns, and the frames and sound the sheet draws
+raea-sys-columns = { path = "../columns" }
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+# a postmortem's asks kept beside the fingerprint, and the answers read from the inbox (postmortem.rs)
+serde_json = "1"
+# the sheet (sheet.rs) is a PNG; a mark grown by EdgeTAM writes its frames and reads its mattes (grow.rs)
+image = { version = "0.25", default-features = false, features = ["png"] }
+# a patch head's held-out folds pick their frames, seeded (patch.rs)
+fastrand = "2"

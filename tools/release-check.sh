@@ -1,7 +1,7 @@
 #!/bin/bash
 # The check every release archive passes (tools/release.sh runs it on the archive it just made; release.yml's
 # windows-verify job runs it again on a fresh Windows runner, from the archive alone): unpacked into a fresh folder,
-# with RAEA_NO_TREE=1 so it can't be reading a checkout, its raea renders a frame, has the plugin catalog, prints a
+# with RAEA_NO_TREE=1 so it can't be reading a checkout, its raea renders a frame (and a 3D one), has the plugin catalog, prints a
 # craft guide, writes styles.gen.ts and maps a song; its binaries name none of raea's API, nothing in it looks like a
 # key, and a Windows archive holds no Microsoft file (the CRT comes from the VC++ redistributable;
 # docs/handoff/ports.md).
@@ -35,6 +35,45 @@ TSX
 # hello.tsx draws white text on black, so a frame raea finds all black lost its page (Windows' c:\ paths read as a URL
 # scheme drew nothing but the black behind it, 11-05)
 ! grep -q "is all black" "$check/p/render.log" || { grep "all black" "$check/p/render.log" >&2; fail "the unpacked raea rendered a black frame"; }
+# a 3D frame too, Bevy's camera, lights and a mesh: on Linux every 3D render panicked in a build whose Engines each made
+# an event loop (#182), while the page above rendered. On black, so a 3D pass that drew nothing is all black; on Linux
+# once more with no display at all, as a render needs none. Not on Windows, whose runners have only WARP
+mkdir -p "$check/3d"
+cat > "$check/3d/cube.tsx" <<'TSX'
+import { AbsoluteFill, Composition, registerRoot } from "raea";
+import { Camera3d } from "raea/camera";
+import { AmbientLight, DirectionalLight } from "raea/light";
+import { Cuboid, Mesh3d } from "raea/mesh";
+import { StandardMaterial } from "raea/pbr";
+import { Transform } from "raea/transform";
+function Cube() {
+  return (
+    <AbsoluteFill style={{ background: "#000" }}>
+      <>
+        <Camera3d transform={Transform.fromXyz(0, 2, 5).lookingAt([0, 0, 0])} />
+        <AmbientLight brightness={200} />
+        <DirectionalLight transform={Transform.fromXyz(3, 6, 4).lookingAt([0, 0, 0])} illuminance={10000} />
+        <Mesh3d>
+          <Cuboid half_size={[1, 1, 1]} />
+          <StandardMaterial base_color="#e76f51" />
+        </Mesh3d>
+      </>
+    </AbsoluteFill>
+  );
+}
+registerRoot(() => <Composition id="cube" component={Cube} width={320} height={180} fps={30} durationInFrames={10} />);
+TSX
+cube() { # FRAME [ENV ARGS]: cube.tsx's frame FRAME, rendered under `env ENV ARGS`
+  local f=$1; shift
+  (cd "$check/3d" && env "$@" RAEA_NO_TREE=1 RUST_BACKTRACE=1 "$raea" render cube.tsx --frame "$f" -o "cube-$f.png" > "render-$f.log" 2>&1) \
+    || { local s=$?; tail -40 "$check/3d/render-$f.log" >&2; fail "the unpacked raea didn't render a 3D frame${1:+ ($*)} (exit $s)"; }
+  [ -s "$check/3d/cube-$f.png" ] || fail "no 3D frame written${1:+ ($*)}"
+  ! grep -q "is all black" "$check/3d/render-$f.log" || fail "the unpacked raea's 3D frame is all black${1:+ ($*)}"
+}
+case $(uname -s) in
+  Linux) cube 3; cube 7 -u DISPLAY -u WAYLAND_DISPLAY ;;
+  Darwin) cube 3 ;;
+esac
 # the plugin catalog is in it (track 3, raea/plugins): a headless App with avian and Bevy's input, raea/input's virtual
 # gamepad pressed and read back. A raea built without --features "bevy-plugins,..." says "no plugin "avian" in this
 # build" here
@@ -111,9 +150,27 @@ api=$(cat "$check"/raea/bin/* | grep -aoE '(api|sign)\.raea\.io|RAEA_(SIGN|GEN)_
 [ -z "$api" ] || fail "the binaries name raea's API ($api): build raea-cli with --no-default-features"
 keys=$(grep -rlE 'sk-or-v1-[0-9a-f]{20}|sk-ant-[A-Za-z0-9_-]{20}|(^|[^A-Za-z0-9+/])AKIA[0-9A-Z]{16}([^A-Za-z0-9+/=]|$)|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' "$check/raea" 2>/dev/null | head -5 || true)
 [ -z "$keys" ] || fail "key-shaped text in: $keys"
-# Windows: our binaries only. Any other DLL, or a file named like the CRT, the SDK or DirectX's redistributables, is
-# Microsoft's and isn't ours to ship
-ms=$(cd "$check/raea" && find . -type f \( -iname '*.dll' ! -path './bin/raea_bundle.dll' -o -iname 'vcruntime*' -o -iname 'msvcp*' -o -iname 'ucrtbase*' -o -iname 'api-ms-win*' -o -iname 'concrt*' -o -iname 'vccorlib*' -o -iname '*.lib' -o -iname '*.pdb' -o -iname 'd3dcompiler*' -o -iname 'dxcompiler*' -o -iname 'dxil*' \) | head -5)
+# Windows: our binaries, and Microsoft's only where raea ships them on purpose, with their licences: ONNX Runtime's
+# onnxruntime.dll (MIT, #110), the VC++ runtime's four DLLs and DXC's two (#215; tools/release/win-bundle.sh). Any other DLL, or a file
+# named like the CRT, the SDK or DirectX's redistributables, isn't ours to ship.
+bundle=$(tr -d '\r' < "$(dirname "$0")/release/win-bundle.files")
+allowed=$(printf './bin/%s\n' raea_bundle.dll onnxruntime.dll $bundle)
+ms=$(cd "$check/raea" && find . -type f \( -iname '*.dll' -o -iname 'vcruntime*' -o -iname 'msvcp*' -o -iname 'ucrtbase*' -o -iname 'api-ms-win*' -o -iname 'concrt*' -o -iname 'vccorlib*' -o -iname '*.lib' -o -iname '*.pdb' -o -iname 'd3dcompiler*' -o -iname 'dxcompiler*' -o -iname 'dxil*' \) | grep -ivxF "$allowed" | head -5 || true)
 [ -z "$ms" ] || fail "files that aren't ours: $ms"
+if [ -f "$check/raea/bin/raea.exe" ]; then
+  for f in onnxruntime.dll onnxruntime-LICENSE.txt onnxruntime-ThirdPartyNotices.txt; do
+    [ -f "$check/raea/bin/$f" ] || fail "bin/$f is missing: raea.exe loads ONNX Runtime from it, and its licence goes with it (#110)"
+  done
+  # what a PC with nothing installed and no downloads needs, each with its licence
+  for f in $bundle; do
+    [ -f "$check/raea/bin/$f" ] || fail "bin/$f is missing (tools/release/win-bundle.sh): a PC without it can't start raea, read a phone's video or set up a model"
+  done
+  "$check/raea/bin/ffmpeg.exe" -hide_banner -L 2>&1 | grep -q "Lesser General Public" || fail "bin/ffmpeg.exe isn't raea's LGPL build"
+  # alpha WebM decodes with libvpx (#113), and a clip a person plays is cut to H.264 with Windows' own encoder
+  for c in libvpx-vp9 h264_mf; do
+    "$check/raea/bin/ffmpeg.exe" -hide_banner -codecs 2>&1 | grep -q "$c" || fail "bin/ffmpeg.exe has no $c"
+  done
+  "$check/raea/bin/uv.exe" --version 2>&1 | grep -q '^uv ' || fail "bin/uv.exe doesn't run"
+fi
 echo "release: $archive checked: an unpacked copy rendered a frame and checked an app on both targets with RAEA_NO_TREE=1"
 rm -rf "$check"

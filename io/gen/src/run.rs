@@ -73,7 +73,7 @@ impl<'a> Run<'a> {
     pub fn plan(&self, flow: &Flow) -> Result<J, String> {
         let made = Made::from_settings().ok();
         let cached = self.index();
-        let keys = flow.keys()?;
+        let keys = flow.keys_in(Some(&self.base))?;
         let (mut rows, mut total) = (Vec::new(), 0u64);
         // a text step's words aren't written yet: a stand-in prices the prompts that take them
         let words = |r: &str| flow.steps.get(r).filter(|t| t.op == "text.generate").map(|_| format!("(the words of step {r})"));
@@ -90,7 +90,12 @@ impl<'a> Run<'a> {
                 let model = made.model(m)?;
                 // a quote reads the media's count, not its bytes: a stand-in URL prices it
                 let (body, fit) = made_body(s, &model, &|_| Ok("https://www.made.app/favicon.ico".into()))?;
-                match made.cost(&body) {
+                let by_length = model["inputSecondsPricing"]["usdPerSecondByResolution"].as_object().map(|r| {
+                    let res = s.inputs.get("resolution").and_then(|v| v.as_str()).or(model["defaultResolution"].as_str()).unwrap_or("");
+                    let per = r.get(res).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    format!("priced by the input's length ({res}: ${per:.4} a second); made reads it when the run uploads it, so the run quotes it exactly before sending")
+                });
+                match by_length.map_or_else(|| made.cost(&body), Err) {
                     Ok((c, p)) if p < c && crate::direct::possible(&model) && crate::setting("FAL_KEY").is_some() && crate::setting("RAEA_GEN_VIA").as_deref() != Some("made") => {
                         total += p;
                         row["cents"] = json!(p);
@@ -138,7 +143,7 @@ impl<'a> Run<'a> {
     /// The flow made: each output step's files.
     pub fn run(&self, flow: &Flow) -> Result<J, String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
-        let keys = flow.keys()?;
+        let keys = flow.keys_in(Some(&self.base))?;
         let cached = self.index();
         let mut done: BTreeMap<String, Made1> = BTreeMap::new();
         let (mut spent, mut rows) = (0u64, Vec::new());
@@ -255,8 +260,28 @@ impl<'a> Run<'a> {
 
     fn made(&self, made: &Made, m: &str, s: &Step, key: &str, done: &BTreeMap<String, Made1>, spent: &mut u64) -> Result<(Made1, u64), String> {
         let model = made.model(m)?;
-        // priced first with a stand-in for each media (a quote reads their count, not their bytes)
-        let (probe, notes) = made_body(s, &model, &|_| Ok("https://www.made.app/favicon.ico".into()))?;
+        // each media as made reads it (a job, a URL, or an upload), uploaded once: the quote and the job share it
+        let sent = std::cell::RefCell::new(BTreeMap::<String, String>::new());
+        let media = |v: &J| -> Result<String, String> {
+            if let Some(m) = sent.borrow().get(&v.to_string()) {
+                return Ok(m.clone());
+            }
+            let r = reference(v).ok_or("not a reference")?;
+            let up = done.get(r).ok_or(format!("@{r} isn't made yet"))?;
+            // a job or URL stands for the whole output; one picture of a batch goes up as its file
+            let m = match up.job.as_ref().or(up.url.as_ref()).filter(|_| index(v).is_none()) {
+                Some(j) => j.clone(),
+                None => made.upload(file_of(done, v).ok_or(format!("{v} names no file of @{r}"))?)?,
+            };
+            sent.borrow_mut().insert(v.to_string(), m.clone());
+            Ok(m)
+        };
+        // priced first. A quote reads most media's count, not their bytes, so a stand-in prices them; a model priced
+        // by its input's length (Seedance's video edit: per second of the source) is quoted with the real input,
+        // which made has to read (a stand-in answers "couldn't read the source video")
+        let by_length = model["inputSecondsPricing"].is_object();
+        let stand_in = |_: &J| -> Result<String, String> { Ok("https://www.made.app/favicon.ico".into()) };
+        let (probe, notes) = if by_length { made_body(s, &model, &media)? } else { made_body(s, &model, &stand_in)? };
         for n in notes {
             eprintln!("raea gen:   {n}");
         }
@@ -292,15 +317,6 @@ impl<'a> Run<'a> {
             *spent += provider;
             return Ok((Made1 { files, job: Some(format!("fal:{endpoint}")), url: urls.first().cloned() }, provider));
         }
-        let media = |v: &J| -> Result<String, String> {
-            let r = reference(v).ok_or("not a reference")?;
-            let up = done.get(r).ok_or(format!("@{r} isn't made yet"))?;
-            // a job or URL stands for the whole output; one picture of a batch goes up as its file
-            if let Some(j) = up.job.as_ref().or(up.url.as_ref()).filter(|_| index(v).is_none()) {
-                return Ok(j.clone());
-            }
-            made.upload(file_of(done, v).ok_or(format!("{v} names no file of @{r}"))?)
-        };
         let (mut body, _) = made_body(s, &model, &media)?;
         body["request_id"] = json!(format!("raea-{key}"));
         body["max_cost_cents"] = json!(cents);
@@ -398,7 +414,7 @@ fn name_output(dir: &Path, name: &str, files: &[PathBuf]) -> Result<Vec<PathBuf>
     let copy = |from: &Path, to: &Path| {
         // a name that already is the file (a link to it, or the file itself) is left alone: copying a file onto itself
         // truncates it to nothing (11-05: four Tripo models lost their step files so). A link elsewhere is replaced.
-        if let (Ok(a), Ok(b)) = (std::fs::canonicalize(from), std::fs::canonicalize(to)) {
+        if let (Ok(a), Ok(b)) = (dunce::canonicalize(from), dunce::canonicalize(to)) {
             if a == b {
                 return Ok(to.to_path_buf());
             }

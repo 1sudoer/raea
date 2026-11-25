@@ -25,7 +25,7 @@ const MOBILENET: (&str, &str, &str) = (
 );
 
 pub fn fetch((dir, name, url): (&str, &str, &str)) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/raea").join(dir);
+    let dir = raea_io_home::user_home().unwrap_or_default().join(".cache/raea").join(dir);
     let p = dir.join(name);
     if !p.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

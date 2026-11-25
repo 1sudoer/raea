@@ -1,0 +1,10 @@
+{
+  "name": "@raea/wear",
+  "license": "FSL-1.1-ALv2",
+  "private": true,
+  "version": "0.1.0",
+  "description": "raea's weathering (docs/wear.feature WR5): a model's causes baked once, and a recipe per material class that draws them as wear over the season's weather. Authors import it as raea/wear.",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" }
+}

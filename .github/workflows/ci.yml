@@ -61,7 +61,9 @@ jobs:
         run: |
           rustup show active-toolchain
           sudo apt-get update && sudo apt-get install -y ripgrep
-          cargo install --locked cargo-shear cargo-dupes
+          # the versions L0 runs on the Mac, so a new release can't change the verdict (cargo-shear 1.14.1 calls
+          # engine/cli's feature-only ignores redundant, which 1.14.0 needs; both ran red on main 11-13)
+          cargo install --locked cargo-shear@1.14.0 cargo-dupes@0.2.1
       - name: layers
         run: bash tools/layers.sh
       - name: names
@@ -113,4 +115,19 @@ jobs:
       - name: cargo check
         run: cargo check --locked -p raea-cli --tests
       - name: unit tests (the crates with no GPU or media device)
-        run: cargo test --locked -p raea-io-media -p raea-core-fonts -p raea-native
+        # debug info off: with it the test binaries of the app crates filled 27 GB of a runner's disk (#90)
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: cargo test --locked -p raea-runtime-plugins -p raea-io-media -p raea-core-fonts -p raea-native -p raea-core-brief -p raea-core-k -p raea-bundle -p raea-app-check -p raea-app-check-flash -p raea-io-ffmpeg -p raea-app-workspace -p raea-app-tools -p raea-app-targets
+      - name: Windows' and Linux's own (#169)
+        # what a Windows or Linux user meets that no other step ran: QuickJS's Intl (raea-runtime-jsengine's
+        # quickjs_formats_as_javascriptcore_does, on Linux), openh264 at --quality master (raea-io-soft), git found or
+        # fetched (raea-io-assets), and raea's Node core under the agent shell (raea-native's tests/node.rs: Node's names
+        # for the system, Windows' paths); tests/node.rs needs raea-native's modules feature and tests/quality.rs
+        # raea-io-soft's h264
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          cargo test --locked -p raea-native --features modules --test node
+          cargo test --locked -p raea-io-soft --features h264
+          cargo test --locked -p raea-runtime-jsengine -p raea-io-assets

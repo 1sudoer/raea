@@ -1,4 +1,4 @@
-//! `raea check VIDEO.mp4 [--manifest render.json] [--words W.json] [--perception P.json] [--shape 9:16]
+//! `raea check VIDEO.mp4 [--manifest render.json] [--words W.json] [--perception P.json] [--things T.json] [--shape 9:16]
 //! [--platform tiktok|reels|shorts] [-o check.json]`: the floor's measurable lines on an export (docs/craft-system.md, I; sdk/guides/craft/floor.md).
 //! Each issue is ranked P0 (breaks the piece) to P3 (polish), with where it is and what to do. Rules on the file alone:
 //! loudness and true peak, a steady sound that stops dead (a source run out, a cut with no fade), stretches where nothing
@@ -11,7 +11,7 @@
 //! rules in their taste.ts files that carry a check (`{ text: "Captions sit clear of the bottom.", check: { form:
 //! "text-above", value: 62 } }`), each a P1 when broken, since the person's rule beats the floor's default (docs/craft-system.md, J). Exits 1 when a P0 or P1 is found.
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use raea_core_facts::{Finding, Level, finding};
 use std::process::Command;
 
 mod sound;
@@ -20,54 +20,66 @@ mod picture;
 use picture::*;
 mod flash;
 use flash::*;
-mod text;
-use text::*;
+mod defects;
+use defects::*;
+/// what a render's text breaks, from its manifest (split out: a render holds its own text to it)
+use raea_app_check_text::*;
+/// who can fix what it finds: the encode's or the picture's own, carried from an earlier export, a source
+use raea_app_check_cause as cause;
+/// a video read through FFmpeg, or raea's own decoders where it isn't installed
+use raea_app_check_read::{self as read, Probe};
 pub mod quick;
+pub mod hook;
+pub use raea_app_check_inbox as inbox;
 #[cfg(test)]
 mod tests;
 
-type R<T> = Result<T, String>;
-
-#[derive(Clone)]
-struct Issue {
-    rule: &'static str,
-    p: u8,
-    at: Option<f64>,
-    says: String,
-}
 
 /// `raea check …` with the person's taste, none or more (taste.ts and the kinds beside it, which the raea CLI evaluates: it owns the engine):
 /// its rules' checks hold the export to the person's own lines.
 pub fn cli_with(args: &[String], tastes: Vec<raea_core_brief::Taste>) -> i32 {
-    match run(args, tastes) {
+    said(run(args, tastes), "REFUSED  ")
+}
+
+/// A check's report printed, and its exit code: 1 when it found an error, 2 when it couldn't check (said after
+/// `refused`). `raea check EDIT.tsx` (apps/direction) ends the same way.
+pub fn said(ran: R<(String, bool)>, refused: &str) -> i32 {
+    match ran {
         Ok((report, bad)) => {
             println!("{report}");
             i32::from(bad)
         }
         Err(e) => {
-            eprintln!("REFUSED  {e}");
+            eprintln!("{refused}{e}");
             2
         }
     }
+}
+
+/// A command's words: its arguments that are neither flags nor a flag's value (`takes`: the flags that take one).
+/// What `raea check` checks is its first; `raea workspace` and `raea project` read theirs the same way.
+pub fn words<'a>(args: &'a [String], takes: &[&str]) -> Vec<&'a str> {
+    args.iter().enumerate().filter(|(i, a)| !a.starts_with('-') && !(*i > 0 && takes.contains(&args[i - 1].as_str()))).map(|(_, a)| a.as_str()).collect()
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
 }
 
-pub const USAGE: &str = "raea check VIDEO.mp4 [--manifest render.json] [--words W.json] [--perception P.json] [--shape 16:9|9:16|4:5|1:1] [--platform tiktok|reels|shorts] [--taste taste.ts|DIR] [-o check.json]   (an export against the floor: clipped text, contrast, safe areas, freezes, flashing, cues, loudness, blotching, a placeholder brand kit; P0-P3)";
+pub const USAGE: &str = "raea check VIDEO.mp4 [--manifest render.json] [--words W.json] [--perception P.json] [--things T.json] [--shape 16:9|9:16|4:5|1:1] [--platform tiktok|reels|shorts] [--taste taste.ts|DIR] [-o check.json]   (an export against the floor: clipped text, contrast, safe areas, freezes, flashing, cues, loudness, blotching, a placeholder brand kit, and with --things what `raea fingerprint things --json` found: a thing floating or passing through another, the camera lurching mid-move, an empty frame; its findings errors, warns and notes)";
 
 /// A rule from the person's taste: a form raea can measure, its value, and the taste line it stands for.
 #[derive(Clone, Debug, PartialEq)]
 struct Taste {
-    form: String,
+    form: &'static str,
     value: f64,
     line: String,
 }
 
-/// The checks among a person's taste rules (taste.ts and its kinds), each with the line it stands for.
+/// The checks among a person's taste rules (taste.ts and its kinds) that a video alone shows (the six forms), each
+/// with the line it stands for.
 fn taste_rules(tastes: &[raea_core_brief::Taste]) -> Vec<Taste> {
-    tastes.iter().flat_map(|t| &t.sections).flat_map(|s| &s.rules).filter_map(|r| r.check.map(|c| Taste { form: c.form().to_string(), value: c.value(), line: r.text.clone() })).collect()
+    tastes.iter().flat_map(|t| t.checks()).map(|(line, c)| Taste { form: c.form(), value: c.value(), line: line.to_string() }).collect()
 }
 
 fn taste_of<'a>(rules: &'a [Taste], form: &str) -> Option<&'a Taste> {
@@ -82,7 +94,7 @@ fn taste_text(rules: &[Taste], runs: &[Run], w: f64, h: f64, issues: &mut Vec<Is
         for t in runs {
             let [x, y, bw, bh] = t.box_;
             let q = quote(&t.text);
-            let why = match r.form.as_str() {
+            let why = match r.form {
                 "text-hold" if t.to - t.from + 0.05 < r.value => Some(format!("{q} is on for {:.1} s, under your {:.1} s", t.to - t.from, r.value)),
                 "text-above" if y + bh > h * r.value / 100.0 + 1.0 => Some(format!("{q} reaches {:.0}% down the frame, below your {:.0}%", (y + bh) / h * 100.0, r.value)),
                 "text-below" if y < h * r.value / 100.0 - 1.0 => Some(format!("{q} starts {:.0}% down the frame, above your {:.0}%", y / h * 100.0, r.value)),
@@ -94,7 +106,7 @@ fn taste_text(rules: &[Taste], runs: &[Run], w: f64, h: f64, issues: &mut Vec<Is
             };
             if let Some(why) = why {
                 broke += 1;
-                issues.push(Issue { rule: "taste", p: 1, at: Some(t.from), says: format!("{why} (\"{}\")", r.line) });
+                issues.push(Issue { rule: r.form, p: 1, at: Some(t.from), says: format!("{why} (\"{}\")", r.line) });
             }
         }
         if broke == 0 && r.form.starts_with("text-") {
@@ -104,17 +116,33 @@ fn taste_text(rules: &[Taste], runs: &[Run], w: f64, h: f64, issues: &mut Vec<Is
 }
 
 /// the flags `raea check` takes, each with a value
-const TAKES: [&str; 7] = ["--manifest", "--words", "--perception", "--shape", "--platform", "--taste", "-o"];
+const TAKES: [&str; 8] = ["--manifest", "--words", "--perception", "--things", "--shape", "--platform", "--taste", "-o"];
 
 fn run(args: &[String], tastes: Vec<raea_core_brief::Taste>) -> R<(String, bool)> {
-    let video = args.iter().enumerate().find(|(i, a)| !a.starts_with('-') && !(*i > 0 && TAKES.contains(&args[i - 1].as_str()))).map(|(_, a)| a.clone()).ok_or(USAGE)?;
+    let (video, issues, passed, fps) = measured(args, taste_rules(&tastes))?;
+    report(&video, issues, Vec::new(), passed, flag(args, "-o"), fps)
+}
+
+/// raea's floor on a video (`args` as raea check takes them) as Findings, printed and kept nowhere: `raea check
+/// EDIT.tsx` runs it on the composition's newest render beside its other checks (apps/direction, DR4). `held`: the
+/// rules of the named checks it measures on the video itself (loudness, still-max), each its form, value and line.
+/// `without`: its own rules that a named check holds there instead (`reading`, which text-read holds against when
+/// a text can be read, not when it's on: DR28).
+pub fn floor(args: &[String], held: &[(&'static str, f64, String)], without: &[&str]) -> R<Vec<Finding>> {
+    let held = held.iter().map(|(form, value, line)| Taste { form: *form, value: *value, line: line.clone() }).collect();
+    let (_, mut issues, _, fps) = measured(args, held)?;
+    issues.retain(|i| without.iter().all(|w| *w != i.rule));
+    Ok(findings_of(issues, Vec::new(), fps))
+}
+
+/// The video's issues and what passed, measured, and its frame rate.
+fn measured(args: &[String], taste: Vec<Taste>) -> R<(String, Vec<Issue>, Vec<String>, f64)> {
+    let video = words(args, &TAKES).first().map(|v| v.to_string()).ok_or(USAGE)?;
     if !std::path::Path::new(&video).exists() {
         return Err(format!("no file at {video}\n{USAGE}"));
     }
-    let probe = Probe::of(&video)?;
-    let mut issues = Vec::new();
-    let mut passed = Vec::new();
-    let taste = taste_rules(&tastes);
+    let probe = read::probe(&video)?;
+    let (mut issues, mut passed) = (Vec::new(), Vec::new());
     let manifest: Option<Value> = match flag(args, "--manifest") {
         Some(m) => Some(serde_json::from_str(&std::fs::read_to_string(m).map_err(|e| format!("{m}: {e}"))?).map_err(|e| format!("{m}: {e}"))?),
         None => None,
@@ -125,10 +153,17 @@ fn run(args: &[String], tastes: Vec<raea_core_brief::Taste>) -> R<(String, bool)
         loudness(&video, taste_of(&taste, "loudness"), &mut issues, &mut passed)?;
         sound(&video, words.as_deref(), &mut issues, &mut passed)?;
     }
-    freezes(&video, &probe, taste_of(&taste, "still-max"), &mut issues, &mut passed)?;
-    flashing(&video, &probe, &mut issues, &mut passed)?;
-    blotching(&video, &probe, &mut issues, &mut passed)?;
+    picture_rules(&video, &probe, taste_of(&taste, "still-max"), &mut issues, &mut passed)?;
     brand_kit(&[flag(args, "--manifest").unwrap_or(""), video.as_str()], &mut issues, &mut passed);
+    if let Some(p) = flag(args, "--things") {
+        things(p, &mut issues, &mut passed)?;
+    }
+    // a take or a download isn't a delivery: the mix sets the delivery's level, so its own is said, not held to the target
+    if cause::is_source(std::path::Path::new(&video)) {
+        for i in issues.iter_mut().filter(|i| i.rule == "loudness") {
+            (i.p, i.says) = (3, format!("a source, not a delivery: {} (the mix sets the delivery's level)", i.says));
+        }
+    }
     if let Some(manifest) = &manifest {
         let runs = text_runs(manifest);
         let (w, h) = (manifest["width"].as_f64().unwrap_or(probe.w), manifest["height"].as_f64().unwrap_or(probe.h));
@@ -143,83 +178,53 @@ fn run(args: &[String], tastes: Vec<raea_core_brief::Taste>) -> R<(String, bool)
             face_cover(&runs, &faces, &mut issues, &mut passed);
         }
     }
-
-    report(&video, issues, passed, flag(args, "-o"))
+    Ok((video, issues, passed, fps))
 }
 
-/// The issues ranked, written to -o as JSON when asked, and the report's text; true when a P0 or P1 is among them.
-fn report(video: &str, mut issues: Vec<Issue>, passed: Vec<String>, out: Option<&str>) -> R<(String, bool)> {
+/// What `raea fingerprint things FILE --json` found (docs/fingerprint.feature FP13c): a thing floating, two passing
+/// through each other, the camera lurching mid-move, an empty frame; measured there, from depth, masks and the camera's
+/// path, never by a head
+fn things(p: &str, issues: &mut Vec<Issue>, passed: &mut Vec<String>) -> R<()> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?).map_err(|e| format!("{p}: {e}"))?;
+    let before = issues.len();
+    for i in v["issues"].as_array().into_iter().flatten() {
+        let Some(rule) = ["floating", "passing-through", "camera-speed", "empty-frame"].into_iter().find(|r| i["rule"] == *r) else { continue };
+        issues.push(Issue { rule, p: i["p"].as_u64().unwrap_or(2).min(3) as u8, at: i["at"].as_f64(), says: i["says"].as_str().unwrap_or_default().into() });
+    }
+    if issues.len() == before {
+        passed.push("things: nothing floats, passes through, lurches or is empty".into());
+    }
+    Ok(())
+}
+
+/// The issues as Findings (docs/direction.feature DR3: P0 and P1 errors, P2 a warn, P3 a note; a time is its frame at
+/// `fps`), with `more` (a render's own), worst first then by time.
+fn findings_of(mut issues: Vec<Issue>, more: Vec<Finding>, fps: f64) -> Vec<Finding> {
     issues.sort_by(|a, b| a.p.cmp(&b.p).then(a.at.unwrap_or(0.0).total_cmp(&b.at.unwrap_or(0.0))));
-    let bad = issues.iter().any(|i| i.p <= 1);
+    finding::ranked(issues.iter().map(|i| i.finding("raea check", fps)).chain(more).collect())
+}
+
+/// The findings (`findings_of`), written to -o as JSON when asked, and the report's text with the count last. True
+/// when an error is among them.
+fn report(video: &str, issues: Vec<Issue>, more: Vec<Finding>, passed: Vec<String>, out: Option<&str>, fps: f64) -> R<(String, bool)> {
+    let mut found = findings_of(issues, more, fps);
+    // what an earlier export of the same composition already had says so: the change between them didn't move it
+    if let Some(e) = cause::earlier(std::path::Path::new(video)) {
+        cause::carried(&mut found, &e, fps);
+    }
+    let bad = found.iter().any(|f| f.level == Level::Error);
     if let Some(out) = out {
-        let j = json!({
-            "file": video,
-            "issues": issues.iter().map(|i| json!({"rule": i.rule, "p": format!("P{}", i.p), "at": i.at, "says": i.says})).collect::<Vec<_>>(),
-            "passed": passed,
-        });
+        let j = json!({"file": video, "fps": fps, "findings": found, "passed": passed});
         std::fs::write(out, serde_json::to_string_pretty(&j).unwrap()).map_err(|e| format!("{out}: {e}"))?;
     }
-    let mut by = BTreeMap::new();
-    for i in &issues {
-        *by.entry(i.p).or_insert(0) += 1;
+    let mut s = format!("raea check {video}\n");
+    // kept in its project's record beside its renders (DR3), what `raea findings` and `raea next` read
+    let kept = raea_core_facts::record::keep("raea check", std::path::Path::new(video), out.map(std::path::Path::new), &found, vec![], &raea_io_trace::utc(std::time::SystemTime::now()).1);
+    let kept = kept.map(|e| format!("raea check: kept in the project's record as {} (raea findings reads it)", e.id));
+    for line in found.iter().map(Finding::line).chain(passed.iter().map(|p| format!("ok {p}"))).chain(kept) {
+        s.push_str(&line);
+        s.push('\n');
     }
-    let counts = by.iter().map(|(p, n)| format!("P{p} {n}")).collect::<Vec<_>>().join(", ");
-    let mut s = format!("raea check {}: {}\n", video, if issues.is_empty() { "nothing to fix".to_string() } else { format!("{} to fix ({counts})", issues.len()) });
-    for i in &issues {
-        let at = i.at.map(|t| format!("{t:6.2} s")).unwrap_or_else(|| "       ".into());
-        s.push_str(&format!("P{} {:<9} {at}  {}\n", i.p, i.rule, i.says));
-    }
-    for p in &passed {
-        s.push_str(&format!("ok {p}\n"));
-    }
-    Ok((s.trim_end().to_string(), bad))
-}
-
-struct Probe {
-    w: f64,
-    h: f64,
-    duration: f64,
-    /// when the picture ends, on the clock FFmpeg's filters read: it starts at the file's first stream, sound can run on
-    /// past the picture, and the container's duration counts that
-    picture: f64,
-    audio: bool,
-}
-
-/// Where the picture's last packet ends, for a container that doesn't state the video stream's own length (Matroska)
-fn last_packet_end(video: &str) -> Option<f64> {
-    let out = Command::new("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", video]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| {
-            let mut parts = l.split(',');
-            let t: f64 = parts.next()?.trim().parse().ok()?;
-            Some(t + parts.next().and_then(|d| d.trim().parse::<f64>().ok()).unwrap_or(0.0))
-        })
-        .max_by(f64::total_cmp)
-}
-
-impl Probe {
-    fn of(video: &str) -> R<Probe> {
-        let out = Command::new("ffprobe")
-            .args(["-v", "error", "-show_entries", "stream=codec_type,width,height,r_frame_rate,duration,start_time:format=duration,start_time", "-of", "json", video])
-            .output()
-            .map_err(|e| format!("ffprobe: {e}"))?;
-        let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("ffprobe: {e}"))?;
-        let streams = v["streams"].as_array().cloned().unwrap_or_default();
-        let vid = streams.iter().find(|s| s["codec_type"] == "video").ok_or("no video stream")?;
-        let seconds = |field: &Value| field.as_str().and_then(|d| d.parse::<f64>().ok());
-        let duration = seconds(&v["format"]["duration"]).unwrap_or(0.0);
-        let origin = seconds(&v["format"]["start_time"]).unwrap_or(0.0);
-        let picture = match seconds(&vid["duration"]) {
-            Some(length) => seconds(&vid["start_time"]).unwrap_or(origin) - origin + length,
-            None => last_packet_end(video).map_or(duration, |end| end - origin),
-        };
-        Ok(Probe {
-            w: vid["width"].as_f64().unwrap_or(1920.0),
-            h: vid["height"].as_f64().unwrap_or(1080.0),
-            duration,
-            picture,
-            audio: streams.iter().any(|s| s["codec_type"] == "audio"),
-        })
-    }
+    s.push_str(&format!("raea check: {}", finding::count(&found)));
+    Ok((s, bad))
 }

@@ -12,8 +12,14 @@ with [`raea setup-audio`](setup-audio.md)).
 
 ```sh
 raea sao "a heavy wooden door creaks open" --seconds 3 -o door.wav
-raea sao "rain on a tin roof" --seconds 8 --seed 4
+raea sao "rain on a tin roof" --seconds 8 --seed 4 -o media/sfx/rain-4.wav
 ```
+
+A take is up to 11.9 s long; a longer `--seconds` comes back that long. Another `--seed` is another take of the same
+prompt: `sao()` in a composition has no seed, so play a seed's take from its file (`staticFile("sfx/rain-4.wav")`).
+Stable Audio Open Small does better on effects and field recordings than on music, so build an effect from short
+layers (a transient, a body, a tail) and write music as notes on instruments (`raea guide music`). Its licence is
+Stability AI's Community License: [`raea setup-audio`](setup-audio.md) says what that means.
 
 <!-- generated:begin by tools/manual-ref/cli.ts from `raea help --json`; edit only the flag descriptions -->
 

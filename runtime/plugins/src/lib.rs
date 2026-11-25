@@ -15,6 +15,9 @@
 //! by zero. A frame reached by a jump is stepped to through the frames between, and a frame before the last stepped one
 //! reloads the edit and steps from 0, so a plugin's state at frame f is always f steps from the load, however f was
 //! reached (a render of one frame, a play, a seek).
+//!
+//! A load whose rows give the plugins nothing to carry from frame to frame (`steps` false) isn't stepped (#77): its
+//! clock is `pure`, and Time and the keyed rows are the frame drawn's, f / fps from 0, however it was reached (#162).
 
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -44,6 +47,8 @@ mod world;
 pub use world::*;
 mod fields;
 pub use fields::*;
+mod choose;
+pub use choose::*;
 mod reflect;
 pub use reflect::*;
 pub mod character;
@@ -76,8 +81,26 @@ pub fn names() -> Vec<&'static str> {
     PLUGINS.lock().unwrap().iter().map(|r| r.name).collect()
 }
 
-pub fn group(mut b: PluginGroupBuilder) -> PluginGroupBuilder {
-    for r in PLUGINS.lock().unwrap().iter().filter(|r| !r.on_demand) {
+/// Bevy's plugin group for one of raea's Engines (raea-render's, the page's BlitzPage): each registered plugin's change
+/// to it, and Bevy's window plugin left out. The Engines are headless, and what shows one in a window makes that window
+/// itself; WinitPlugin would make an event loop in every App, and winit allows one a process, so a process's second App
+/// panicked "Failed to build event loop: RecreationAttempt" (#182: Linux, a build cargo had unified bevy_winit into).
+/// It's compiled in on the desktop (Cargo.toml), so it's always here to leave out, however the build brought it.
+pub fn group(b: PluginGroupBuilder) -> PluginGroupBuilder {
+    group_of(b, None)
+}
+
+/// `group` for an Engine whose project chose its plugins (choose.rs): only the chosen ones' changes.
+pub fn group_chosen(b: PluginGroupBuilder, chosen: &Chosen) -> PluginGroupBuilder {
+    group_of(b, Some(chosen))
+}
+
+fn group_of(mut b: PluginGroupBuilder, chosen: Option<&Chosen>) -> PluginGroupBuilder {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    if b.contains::<bevy::winit::WinitPlugin>() {
+        b = b.disable::<bevy::winit::WinitPlugin>();
+    }
+    for r in PLUGINS.lock().unwrap().iter().filter(|r| !r.on_demand && chosen.is_none_or(|c| c.adds(r.name))) {
         if let Some(g) = r.group {
             b = g(b);
         }
@@ -92,6 +115,11 @@ pub struct PluginClock {
     pub dt: Duration,
     pub advancing: bool,
     pub steps: u64,
+    /// the load gives the plugins nothing to step (`steps` false): nothing is stepped, and Time and the keyed rows are
+    /// the frame drawn's however it was reached (pure_time, keyed_rows). Stepping only on the frame after the last
+    /// stepped one froze them: a still at frame 200 sampled globals.time 0, and a batch's second frame drew the
+    /// first's <Material> uniforms (#162)
+    pub pure: bool,
 }
 
 /// A mesh whose Transform a plugin owns (sync_meshes leaves it alone).
@@ -111,13 +139,15 @@ struct Keyed {
     last: i64,
 }
 
-/// Adds the registered plugins (all but the on-demand ones) and the frame clock, when there are any. An App without
-/// plugins is left as it was.
+/// Adds the registered plugins (all but the on-demand ones, and of the catalog's only those in the App's Chosen when it
+/// has one) and the frame clock, when there are any. An App without plugins is left as it was.
 pub fn install(app: &mut App, fps: f64) {
     // the keyboard's and mouse buttons' state as resources TypeScript can read and write (Bevy's InputPlugin adds
     // them without registering them for reflection; the gamepad's ButtonInput it registers itself)
     app.register_type::<ButtonInput<KeyCode>>();
     app.register_type::<ButtonInput<MouseButton>>();
+    // a drawn part's layer key, a component row from its source stamp (docs/review.feature R2a)
+    app.register_type::<raea_sys_frame::layer::LayerKey>();
     // a Range field (a Viewport's depth) is reflected opaque without serde's data: given it, it reads as {start, end}
     app.register_type_data::<core::ops::Range<f32>, ReflectDeserialize>();
     app.register_type_data::<core::ops::Range<f32>, ReflectSerialize>();
@@ -132,7 +162,8 @@ pub fn install(app: &mut App, fps: f64) {
     // materials written in TypeScript (<ShaderMaterial>, shader_material.rs): the render Engine only
     shader_material::install(app);
     keyed(app);
-    let list: Vec<fn(&mut App)> = PLUGINS.lock().unwrap().iter().filter(|r| !r.on_demand).map(|r| r.install).collect();
+    let chosen = app.world().get_resource::<Chosen>().cloned();
+    let list: Vec<fn(&mut App)> = PLUGINS.lock().unwrap().iter().filter(|r| !r.on_demand && chosen.as_ref().is_none_or(|c| c.adds(r.name))).map(|r| r.install).collect();
     install_list(app, fps, list);
 }
 
@@ -198,20 +229,64 @@ fn install_list(app: &mut App, fps: f64, list: Vec<fn(&mut App)>) {
     }
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
     app.world_mut().resource_mut::<Time<Fixed>>().set_timestep(dt);
-    app.insert_resource(PluginClock { stepped: 0, dt, advancing: false, steps: 0 });
+    app.insert_resource(PluginClock { stepped: 0, dt, advancing: false, steps: 0, pure: false });
+    app.add_systems(First, pure_time.after(bevy::time::TimeSystems));
+}
+
+/// A pure clock's Time: the frame drawn's, f / fps from 0, whatever was drawn before it (a still alone, a batch's
+/// next frame, a seek back in live play); Time<Virtual> too, which the fixed loop copies back into Time. It moves by
+/// one step on an update that draws another frame than the last, and by none on the same frame drawn again.
+fn pure_time(clock: Option<Res<Clock>>, pc: Option<Res<PluginClock>>, mut virt: ResMut<Time<Virtual>>, mut time: ResMut<Time>, mut last: Local<Option<i64>>) {
+    let (Some(f), Some(c)) = (clock, pc) else { return };
+    if !c.pure {
+        *last = None;
+        return;
+    }
+    let f = f.0.max(0);
+    let at = c.dt * u32::try_from(f).unwrap_or(u32::MAX);
+    let step = if *last == Some(f) { Duration::ZERO } else { c.dt.min(at) };
+    *last = Some(f);
+    let mut v = Time::<Virtual>::default();
+    v.advance_by(at - step);
+    v.advance_by(step);
+    *time = v.as_generic();
+    *virt = v;
 }
 
 pub fn active(world: &World) -> bool {
     world.contains_resource::<PluginClock>()
 }
 
+/// Whether an edit's rows give a plugin anything to carry from frame to frame: a driven mesh, a kind not known to be
+/// frame-pure (a compute's buffers), or a component or resource row of a type from outside Bevy's own
+/// scene and render crates and raea's (a plugin's: a rigid body, a particle effect; Bevy's animation, time or states).
+/// Keyed rows land on their frame however it's reached, so without one a frame is the same however it was reached,
+/// and a still at frame F needn't draw the F frames before it: a film's --at 2448 drew all of them, 217 s (#77).
+pub fn steps(inserted: &[Tup]) -> bool {
+    const PURE: &[&str] = &["camera", "light", "mesh", "model", "panel", "image", "audio", "master", "media", "text", "glyph", "decal", "fogvolume", "plate", "screenpage", "shape2d", "splat", "meshseq", "surface_shader", "entity"];
+    const BEVY: &[&str] = &["bevy_camera", "bevy_ecs", "bevy_light", "bevy_mesh", "bevy_pbr", "bevy_post_process", "bevy_core_pipeline", "bevy_anti_alias", "bevy_render", "bevy_transform", "bevy_color", "bevy_image", "bevy_sprite", "bevy_text", "bevy_ui", "bevy_solari", "bevy_window"];
+    // a short name could be anyone's: it steps
+    let pure_type = |ty: &str| ["material:", "own:", "three:", "raea_"].iter().any(|p| ty.starts_with(p)) || (ty.contains("::") && BEVY.contains(&ty.split("::").next().unwrap_or("")));
+    inserted.iter().any(|t| match t.kind.as_str() {
+        "component" | "resource" => !s(&t.vals, "type").is_some_and(|ty| pure_type(&ty)),
+        "mesh" => t.vals.get("driven").is_some_and(V::truthy),
+        k => !PURE.contains(&k),
+    })
+}
+
 /// Before an update: Time advances one frame when this update draws the frame after the last stepped, else not at all.
 pub fn arm(world: &mut World) {
     let f = world.resource::<Clock>().0;
     let Some(mut c) = world.get_resource_mut::<PluginClock>() else { return };
+    if c.pure {
+        // nothing stepped: Time is the frame's (pure_time), and its real clock doesn't move
+        c.advancing = false;
+        world.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+        return;
+    }
     let step = f == c.stepped + 1;
     c.advancing = step;
-    if std::env::var_os("RAEA_PLUGIN_TRACE").is_some() {
+    if raea_io_trace::stat("RAEA_PLUGIN_TRACE") {
         eprintln!("plugin clock: frame {f}, stepped {}, {}", c.stepped, if step { "step" } else { "hold" });
     }
     let dt = if step {
@@ -225,12 +300,18 @@ pub fn arm(world: &mut World) {
 }
 
 /// Keyed rows whose frame has come, set on the update that draws it (so a plugin's steps after it see them): with a
-/// plugin, on the frame its clock steps to; without one, on the frame drawn, whichever way it was reached.
+/// plugin that steps, on the frame its clock steps to; without one, or with a pure clock, on the frame drawn, whichever
+/// way it was reached.
 /// A live engine (a fed render's, live play's) takes them too: its frames' rows set the values that change
 /// (apply_live_rows), but a row held for its `from` never changes after the load, so nothing else sets it (a render to
 /// MP4 left a rigid body from frame 36 asleep for good). Each lands once, on its frame.
 fn keyed_rows(world: &mut World) {
     let f = match world.get_resource::<PluginClock>() {
+        // a pure clock steps nothing: the frame drawn's rows, as without a plugin (#162)
+        Some(c) if c.pure => match world.get_resource::<Clock>() {
+            Some(c) => c.0,
+            None => return,
+        },
         Some(c) if !c.advancing => return,
         Some(c) => c.stepped,
         None => match world.get_resource::<Clock>() {
@@ -291,7 +372,6 @@ pub fn apply_rows(world: &mut World, inserted: &[Tup], ents: &[Entity], dir: &Pa
     world.insert_resource(Refs { dir: dir.to_path_buf(), names: by_name, media });
     world.insert_resource(raea_bevy_world::EntityNames(row_names));
     world.insert_resource(Loading::default());
-    world.insert_resource(RenderImages::default());
     if active(world) {
         let mut c = world.resource_mut::<PluginClock>();
         c.stepped = 0;

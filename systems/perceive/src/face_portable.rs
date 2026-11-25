@@ -14,7 +14,7 @@ const MODEL: (&str, &str) = (
 const SIDE: usize = 640;
 
 fn model() -> Result<PathBuf, String> {
-    let dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/raea/yunet");
+    let dir = raea_io_home::user_home().unwrap_or_default().join(".cache/raea/yunet");
     let p = dir.join(MODEL.0);
     if !p.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

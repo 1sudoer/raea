@@ -3,9 +3,27 @@
 // native render, where there's no DOM to load an <img> into, three's ImageLoader is stood in for by one that hands
 // back the url (with the picture's size unknown) and the engine loads that file.
 import * as THREE from "three";
-import { targetPixels } from "./targets";
+import { gpuTargetOf, imageOf, onGpu, targetPixels } from "./targets";
 
 const urls = new WeakMap<object, string>();
+
+// a picture three loads from an http(s) URL (drei's <Clouds> fetches its cloud.png from a CDN): raea's engine reads paths,
+// so the URL is fetched once through raea's cache and the cached file is the source (docs/r3f.feature R3F16). With no host
+// to fetch with (a test, a browser) the URL itself.
+const remote = new Map<string, string | undefined>();
+function fetched(src: string): string | undefined {
+  if (!/^https?:\/\//i.test(src) || typeof (globalThis as { __raea_call?: unknown }).__raea_call !== "function") return src;
+  if (!remote.has(src)) {
+    let path: string | undefined;
+    try {
+      path = native<{ path: string }>("asset.load", { path: src })?.path;
+    } catch (e) {
+      console.warn(`raea/r3f: texture ${src} couldn't be fetched (${(e as Error).message ?? e}): drawn without it`);
+    }
+    remote.set(src, path);
+  }
+  return remote.get(src);
+}
 
 /** three's ImageLoader without a DOM: the image is a stand-in carrying its url (raea loads the file) */
 export function standInImages() {
@@ -13,8 +31,8 @@ export function standInImages() {
   if (doc && typeof doc.createElementNS === "function") return;
   const load = function (this: THREE.ImageLoader, url: string, onLoad?: (img: HTMLImageElement) => void) {
     const src = this.manager.resolveURL((this.path ?? "") + url);
-    const img = { src, width: 1, height: 1, naturalWidth: 1, naturalHeight: 1, complete: true } as unknown as HTMLImageElement;
-    urls.set(img, src);
+    const img = { src: fetched(src) ?? src, width: 1, height: 1, naturalWidth: 1, naturalHeight: 1, complete: true } as unknown as HTMLImageElement;
+    urls.set(img, fetched(src) ?? src);
     this.manager.itemStart(src);
     // at once: raea reads a frame's scene in the same turn its components render, so a picture handed over later
     // is missing from the frame (lettra's atlas, any TextureLoader.load). A callback that reads the variable its own
@@ -226,7 +244,8 @@ export function pngOf(rgba: Uint8Array, width: number, height: number): string {
   return "data:image/png;base64," + base64(all);
 }
 
-/** a DataTexture's pixels as RGBA bytes, top row first (three's flipY puts its first row at the bottom) */
+/** a DataTexture's pixels as RGBA bytes in its own row order: its first row is the image's top, where Bevy's v 0 is,
+ *  as three's v 0 is its first row unflipped; a flipY one is read with v turned over (flipsY), as three turns it over */
 function bytesOf(t: THREE.DataTexture): Uint8Array | undefined {
   const { data, width, height } = t.image as { data: ArrayLike<number> | null; width: number; height: number };
   if (!data || !width || !height) return undefined;
@@ -236,9 +255,8 @@ function bytesOf(t: THREE.DataTexture): Uint8Array | undefined {
   const half = t.type === THREE.HalfFloatType;
   const out = new Uint8Array(width * height * 4);
   for (let y = 0; y < height; y++) {
-    const from = t.flipY ? y : height - 1 - y;
     for (let x = 0; x < width; x++) {
-      const i = (from * width + x) * per, o = (y * width + x) * 4;
+      const i = (y * width + x) * per, o = i / per * 4;
       for (let c = 0; c < 4; c++) {
         let v = c < per ? Number(data[i + c]) : c === 3 ? (float ? 1 : 255) : per === 1 ? Number(data[i]) : 0;
         if (half && c < per) v = THREE.DataUtils.fromHalfFloat(v);
@@ -260,12 +278,15 @@ export function srcOf(t: THREE.Texture | null | undefined): string | undefined {
     // row 0 at v = 0: a target isn't flipped in y (its uvs reach raea as three gives them), so it's the PNG's top row
     return pngOf(bytes, drawn.w, drawn.h);
   }
+  // a render target raea's engine draws into (passes.ts, R3F23): the image its camera draws
+  const rt = gpuTargetOf(t);
+  if (rt) return imageOf(rt);
   const given = t.userData?.src;
   if (typeof given === "string") return given;
   const img = t.image as { src?: string; toDataURL?: () => string; data?: unknown } | undefined;
   if (!img) return undefined;
   if (urls.has(img)) return urls.get(img);
-  if (typeof img.src === "string" && img.src !== "") return img.src;
+  if (typeof img.src === "string" && img.src !== "") return fetched(img.src);
   if (typeof img.toDataURL === "function") {
     const s = img.toDataURL();
     urls.set(img, s);
@@ -280,6 +301,13 @@ export function srcOf(t: THREE.Texture | null | undefined): string | undefined {
     return s;
   }
   return undefined;
+}
+
+/** whether `t` counts v from the bottom of its picture, as three's flipY picture does and a render target raea draws
+ *  on the GPU does (Bevy's image counts rows from the top, three's target from the bottom): a mesh reading it has its v
+ *  turned over (scene.ts), a shader's samples of it too (shader.ts, tsl.ts) */
+export function flipsY(t: THREE.Texture): boolean {
+  return t.flipY || onGpu(t);
 }
 
 /** a texture's repeat and offset, rotation, wrap and filter as raea's material props */

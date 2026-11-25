@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { toRaea, stopsOf } from "../units";
 import type { Part, Props } from "./material";
 import { srcOf } from "./texture";
+import { LEFT_OUT, ROOM } from "./pmrem";
 
 const hex = (c: THREE.Color) => "#" + c.getHexString();
 const at = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3()).toArray() as [number, number, number];
@@ -162,12 +163,25 @@ export function skyOf(scene: THREE.Scene, gl?: THREE.WebGLRenderer, webgpu = fal
     if (webgpu && !toned) warnOnce("scene.background", "is tone-mapped by three's WebGPURenderer with a curve raea doesn't copy for it: drawn as given");
     background = hex(toned ?? bg);
   }
-  const env = srcOf(scene.environment);
-  const sky = bg instanceof THREE.Texture ? srcOf(bg) : undefined;
-  if (scene.environment && !(env && PANORAMA.test(env))) warnOnce("scene.environment", "isn't a panorama file raea can load (.hdr, .exr, .png, .jpg): left out");
-  if (bg instanceof THREE.Texture && !(sky && PANORAMA.test(sky))) warnOnce("scene.background", "texture isn't a panorama file raea can load: left out");
+  // three's RoomEnvironment through PMREMGenerator.fromScene (pmrem.ts): raea's <Environment room>, the same room
+  const room = (t: unknown) => (t instanceof THREE.Texture && typeof t.userData?.[ROOM] === "number" ? (t.userData[ROOM] as number) : undefined);
+  const envRoom = room(scene.environment), skyRoom = room(bg);
+  const env = envRoom === undefined ? srcOf(scene.environment) : undefined;
+  const sky = bg instanceof THREE.Texture && skyRoom === undefined ? srcOf(bg) : undefined;
+  // three's PMREMGenerator making one from another scene or a cube map (pmrem.ts): said as that, not as a missing file
+  const by = scene.environment?.userData?.[LEFT_OUT];
+  if (scene.environment && typeof by === "string" && !env) warnOnce("scene.environment", `made by three's ${by}, which renders on the GPU and raea doesn't make yet: the scene is drawn without it (use a panorama: <Environment preset> or PMREMGenerator.fromEquirectangular of an .hdr; PMREMGenerator.fromScene of three's RoomEnvironment is made)`);
+  else if (scene.environment && envRoom === undefined && !(env && PANORAMA.test(env))) warnOnce("scene.environment", "isn't a panorama file raea can load (.hdr, .exr, .png, .jpg): left out");
+  if (bg instanceof THREE.Texture && skyRoom === undefined && !(sky && PANORAMA.test(sky))) warnOnce("scene.background", "texture isn't a panorama file raea can load: left out");
   const rotation = scene.environmentRotation?.y ?? 0;
-  if (env && PANORAMA.test(env)) {
+  if (envRoom !== undefined) {
+    const props: Props = { room: true, blur: envRoom, intensity: scene.environmentIntensity, rotation };
+    if (skyRoom === envRoom) Object.assign(props, { background: true, backgroundIntensity: scene.backgroundIntensity });
+    parts.push({ type: "Environment", props });
+  } else if (skyRoom !== undefined) {
+    // the room behind the scene, lighting nothing
+    parts.push({ type: "Environment", props: { room: true, blur: skyRoom, intensity: 0, rotation: scene.backgroundRotation?.y ?? 0, background: true, backgroundIntensity: scene.backgroundIntensity } });
+  } else if (env && PANORAMA.test(env)) {
     const props: Props = { src: env, intensity: scene.environmentIntensity, rotation };
     if (sky === env) Object.assign(props, { background: true, backgroundIntensity: scene.backgroundIntensity });
     parts.push({ type: "Environment", props });
@@ -178,12 +192,20 @@ export function skyOf(scene: THREE.Scene, gl?: THREE.WebGLRenderer, webgpu = fal
   return { parts, background };
 }
 
+/** a tone mapping and the stops three scales every pixel by before its curve, as raea's: the stops are a <Grade>'s
+ *  exposure (Bevy's colour grading, all pixels), not <ToneMapping exposure>, the camera's, which lights only what lights
+ *  shade (under ACES an unlit colour, a sprite, a line, a basic material was 0.74 stops dark); the two in a fragment */
+export function toneParts(mode: string, stops: number): Part {
+  const tone: Part = { type: "ToneMapping", props: { mode } };
+  if (stops === 0) return tone;
+  return { type: "Fragment", props: {}, children: [tone, { type: "Grade", props: { exposure: stops } }] };
+}
+
 /** three's renderer settings (R3F sets them from <Canvas flat linear>) as raea's tone mapping */
 export function toneOf(gl: THREE.WebGLRenderer): Part {
   const modes: Record<number, string> = { [THREE.ACESFilmicToneMapping]: "aces", [THREE.AgXToneMapping]: "agx", [THREE.NeutralToneMapping]: "neutral", [THREE.ReinhardToneMapping]: "reinhard", [THREE.CineonToneMapping]: "aces", [THREE.LinearToneMapping]: "none", [THREE.NoToneMapping]: "none" };
-  const props: Props = { mode: modes[gl.toneMapping] ?? "none" };
-  // three's ACES scales its input by 1/0.6 where Bevy's ACESFitted doesn't: the same picture is 0.74 stops up in raea
-  const stops = stopsOf(gl.toneMappingExposure / (gl.toneMapping === THREE.ACESFilmicToneMapping ? 0.6 : 1));
-  if (stops !== 0) props.exposure = stops;
-  return { type: "ToneMapping", props };
+  const mode = modes[gl.toneMapping] ?? "none";
+  // three's ACES scales its input by 1/0.6 where Bevy's ACESFitted doesn't; with no curve, three ignores the exposure
+  const stops = mode === "none" ? 0 : stopsOf(gl.toneMappingExposure / (gl.toneMapping === THREE.ACESFilmicToneMapping ? 0.6 : 1));
+  return toneParts(mode, stops);
 }

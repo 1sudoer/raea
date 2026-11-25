@@ -141,7 +141,7 @@ pub fn find(name: &str, built: &[PathBuf]) -> Result<PathBuf, String> {
         s.push(std::env::consts::EXE_SUFFIX);
         PathBuf::from(s)
     };
-    let beside = std::env::current_exe().ok().map(|e| e.canonicalize().unwrap_or(e)).and_then(|e| e.parent().map(|d| d.join(name)));
+    let beside = std::env::current_exe().ok().map(|e| dunce::canonicalize(&e).unwrap_or(e)).and_then(|e| e.parent().map(|d| d.join(name)));
     let on_path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).map(|d| d.join(name)).collect::<Vec<_>>()).unwrap_or_default();
     beside.into_iter().chain(on_path).chain(built.iter().cloned()).map(exe).find(|p| p.is_file()).ok_or(format!("no {name}: put it beside raea or on PATH (in a checkout, build it)"))
 }

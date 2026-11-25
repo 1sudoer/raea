@@ -20,14 +20,17 @@ path = "src/bin/raea-bevy-sdk.rs"
 required-features = ["bevy-plugins"]
 
 [dependencies]
+dunce = "1"
 raea-runtime-plugins = { path = "../../runtime/plugins" }
 raea-io-home = { path = "../../io/home" }
-# the schemas of what an agent writes (brief.ts, script.ts, taste.ts, controllers): raea context reads specs against them
+# the schemas of what an agent writes (brief.ts, script.ts, taste.ts, plan.ts): raea context reads specs against them
 raea-core-brief = { path = "../../core/brief" }
-# `raea workspace`, `raea project` and `raea controller` (docs/projects.feature PJ1-PJ4)
+# `raea workspace` and `raea project` (docs/projects.feature PJ1-PJ4)
 raea-app-workspace = { path = "../../apps/workspace" }
 # raea-runtime-react's defaults
 raea-runtime-react = { path = "../../runtime/react", default-features = false, features = ["h264", "av1", "scripts", "modules", "network", "ml"] }
+# `raea wear bake`: raea/wear's bake from a shell (docs/wear.feature WR4)
+raea-runtime-wear = { path = "../../runtime/wear" }
 # the sound of its renders and plays: <Seedling> samples and speech (raea-runtime-sound's features)
 raea-runtime-sound = { path = "../../runtime/sound", features = ["seedling", "ml"] }
 raea-runtime-export = { path = "../../runtime/export" }
@@ -47,19 +50,43 @@ serde = "1"
 serde_json = "1"
 # `raea neural` (docs/raytracing.feature RT2)
 raea-neural = { path = "../neural" }
+# `raea light check` (docs/realism.feature LT1)
+raea-light = { path = "../light" }
+# `raea bench denoise`: each denoiser against its converged truth (docs/denoise.feature DN0)
+raea-denoise-bench = { path = "../render/denoise/bench" }
+# `raea fix`: a problem looked up in raea's own fixes and the library of community ones the release ships
+raea-sys-fixes = { path = "../../systems/fixes" }
 regex = "1"
 # the app crates' verbs: `raea check`, `raea ci`, and the local tools' (sao, tokensynth, setup-audio, sounds, splat)
 raea-app-check = { path = "../../apps/check" }
+raea-app-direction = { path = "../../apps/direction" }
+# `raea notes`: a person's notes as files the work is held to (docs/direction.feature DR5)
+raea-app-notes = { path = "../../apps/notes" }
+# `raea fingerprint`: axes with small heads over on-device encoders, and the service that keeps them loaded (docs/fingerprint.feature FP3a)
+raea-app-fingerprint = { path = "../../apps/fingerprint" }
+# `raea index`: every picture on a folder or a drive searchable by words, embedded on the Neural Engine (docs/index.feature IX13)
+raea-sys-index = { path = "../../systems/index" }
+raea-app-sound = { path = "../../apps/sound" }
 raea-app-ci = { path = "../../apps/ci" }
 raea-app-tools = { path = "../../apps/tools" }
+raea-app-engines = { path = "../../apps/engines" }
 # raea solid info|view: a solid file measured and pictured
 raea-app-solid = { path = "../../apps/solid" }
 # raea judge: review sheets judged by clef-omni
 raea-app-judge = { path = "../../apps/judge" }
+# raea scene lint|explain|light|stage (docs/stage-guards.feature)
+raea-app-scene = { path = "../../apps/scene" }
+raea-app-voice = { path = "../../apps/voice" }
+raea-app-ask = { path = "../../apps/ask" }
+# raea bake light (docs/bake.feature)
+raea-app-lightbake = { path = "../../apps/lightbake" }
+raea-app-make = { path = "../../apps/make" }
 raea-app-media = { path = "../../apps/media" }
 # `raea app run|check|bundle` and `raea rune` on either target (docs/targets.feature T0b)
 raea-app-targets = { path = "../../apps/targets" }
 raea-app-game = { path = "../../apps/game" }
+raea-app-capcut = { path = "../../apps/capcut" }
+raea-app-layers = { path = "../../apps/layers" }
 raea-app-play = { path = "../../apps/play", features = ["ml"] }
 raea-bevy-plugins = { path = "../../engine/bevy-plugins", optional = true }
 # raea-bevy-sdk's reflection of the plugin build's App: the type registry, a one-camera program, the animation type
@@ -67,9 +94,18 @@ bevy = { version = "=0.20.0", default-features = false }
 raea-core-program = { path = "../../core/program" }
 raea-core-animate = { path = "../../core/animate" }
 
+# the plugin catalog in the macOS build (docs/nobuild.feature NB4a): every plugin compiled in, added to an App only when
+# its project chooses it. Windows and Linux follow once their builders have built and checked it (tools/nobuild.sh catalog)
+[target.'cfg(target_os = "macos")'.dependencies]
+raea-bevy-plugins = { path = "../../engine/bevy-plugins", features = ["catalog"] }
+raea-runtime-react = { path = "../../runtime/react", default-features = false, features = ["bevy-plugins"] }
+
 [features]
 # Bevy plugins compiled in (raea-bevy-plugins), as tools/bevy-plugins.sh names them: bevy-plugins,raea-bevy-plugins/avian,...
 bevy-plugins = ["dep:raea-bevy-plugins", "raea-runtime-react/bevy-plugins"]
+# every plugin engine/bevy-plugins declares but those it leaves out of its catalog, each added to an App only when its
+# project chooses it (raea_runtime_plugins::choose, docs/nobuild.feature NB4a)
+catalog = ["bevy-plugins", "raea-bevy-plugins/catalog"]
 
 [package.metadata.cargo-shear]
 # depended on only to turn their features on (raea-runtime-bake's modules, raea-runtime-sound's seedling and ml)

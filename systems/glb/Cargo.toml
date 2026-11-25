@@ -1,0 +1,10 @@
+[package]
+name = "raea-sys-glb"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "A .glb read as its JSON and bytes, its accessors as floats or indices, and written back with only what's used"
+
+[dependencies]
+serde_json = "1"

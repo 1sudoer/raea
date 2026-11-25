@@ -88,11 +88,18 @@ pub fn peak_db(a: &Audio) -> f64 {
     20.0 * (p as f64).max(1e-12).log10()
 }
 
-/// The K-weighted channels (BS.1770's shelf, then its high-pass), at 48 kHz.
-fn k_weighted(a: &Audio) -> Vec<Vec<f64>> {
-    let a = crate::soft_resample(a, RATE);
+/// The sound at 48 kHz, borrowed when it already is.
+fn at_rate(a: &Audio) -> std::borrow::Cow<'_, Audio> {
+    if a.rate == RATE || a.channels.is_empty() {
+        std::borrow::Cow::Borrowed(a)
+    } else {
+        std::borrow::Cow::Owned(crate::soft_resample(a, RATE))
+    }
+}
+
+/// The two K-weighting biquads (BS.1770 coefficients, derived for 48 kHz): the shelf, then the high-pass.
+fn k_filters() -> ([f64; 5], [f64; 5]) {
     let fs = RATE as f64;
-    // the two K-weighting biquads (BS.1770 coefficients, derived for fs)
     let shelf = {
         let (f0, g, q) = (1681.974450955533, 3.999843853973347, 0.7071752369554196);
         let k = (std::f64::consts::PI * f0 / fs).tan();
@@ -119,26 +126,38 @@ fn k_weighted(a: &Audio) -> Vec<Vec<f64>> {
             (1.0 - k / q + k * k) / a0,
         ]
     };
-    let biquad = |x: &[f64], c: [f64; 5]| -> Vec<f64> {
-        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
-        x.iter()
-            .map(|&v| {
-                let y = c[0] * v + c[1] * x1 + c[2] * x2 - c[3] * y1 - c[4] * y2;
-                x2 = x1;
-                x1 = v;
-                y2 = y1;
-                y1 = y;
-                y
-            })
-            .collect()
-    };
-    a.channels
+    (shelf, hp)
+}
+
+/// One biquad's state, run a sample at a time.
+#[derive(Clone, Default)]
+struct Biquad {
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
+}
+
+impl Biquad {
+    fn run(&mut self, c: &[f64; 5], v: f64) -> f64 {
+        let y = c[0] * v + c[1] * self.x1 + c[2] * self.x2 - c[3] * self.y1 - c[4] * self.y2;
+        self.x2 = self.x1;
+        self.x1 = v;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+}
+
+/// The K-weighted channels (BS.1770's shelf, then its high-pass), at 48 kHz.
+fn k_weighted(a: &Audio) -> Vec<Vec<f64>> {
+    let (shelf, hp) = k_filters();
+    at_rate(a)
+        .channels
         .iter()
         .map(|c| {
-            biquad(
-                &biquad(&c.iter().map(|x| *x as f64).collect::<Vec<_>>(), shelf),
-                hp,
-            )
+            let (mut s, mut h) = (Biquad::default(), Biquad::default());
+            c.iter().map(|x| h.run(&hp, s.run(&shelf, *x as f64))).collect()
         })
         .collect()
 }
@@ -172,18 +191,31 @@ pub fn momentary(a: &Audio, fps: f64, n: usize) -> Vec<f64> {
 /// -70 LUFS, relative gate at -10 LU. Written as column scans.
 pub fn lufs(a: &Audio) -> f64 {
     let fs = RATE as f64;
-    let weighted = k_weighted(a);
-    let len = weighted.first().map(Vec::len).unwrap_or(0);
     let (block, step) = ((0.4 * fs) as usize, (0.1 * fs) as usize);
+    let a = at_rate(a);
+    let (shelf, hp) = k_filters();
+    // each channel weighted a sample at a time, only its last block held: the whole, in f64 with its copies, was about
+    // 0.8 GB a call on a 7-minute film, and its master measures up to a dozen times (SG4a). Each block is summed over
+    // the same samples in the same order, so the same bits.
+    let mut filters = vec![(Biquad::default(), Biquad::default()); a.channels.len()];
+    let mut last = vec![std::collections::VecDeque::with_capacity(block); a.channels.len()];
+    let len = a.channels.first().map(Vec::len).unwrap_or(0);
     let mut z = Vec::new();
-    let mut s = 0;
-    while s + block <= len {
-        let mut e = 0.0;
-        for c in &weighted {
-            e += c[s..s + block].iter().map(|v| v * v).sum::<f64>() / block as f64;
+    for i in 0..len {
+        for ((c, (s, h)), w) in a.channels.iter().zip(&mut filters).zip(&mut last) {
+            if w.len() == block {
+                w.pop_front();
+            }
+            w.push_back(h.run(&hp, s.run(&shelf, c.get(i).copied().unwrap_or(0.0) as f64)));
         }
-        z.push(e);
-        s += step;
+        if i + 1 >= block && (i + 1 - block) % step == 0 {
+            let mut e = 0.0;
+            for w in &last {
+                let (x, y) = w.as_slices();
+                e += x.iter().chain(y).map(|v| v * v).sum::<f64>() / block as f64;
+            }
+            z.push(e);
+        }
     }
     let l = |e: f64| -0.691 + 10.0 * e.max(1e-15).log10();
     let abs: Vec<f64> = z.iter().copied().filter(|&e| l(e) > -70.0).collect();
@@ -222,16 +254,23 @@ pub fn master(a: &Audio, target: f64, ceiling: f64) -> Audio {
 /// change after limiting, given instead, counted it twice: a game played 1 LU under its render).
 pub fn master_gained(a: &Audio, target: f64, ceiling: f64) -> (Audio, f64) {
     let tp = true_envelope(a);
-    // limiting takes loudness off: measure again and make it up (converges in two or three passes)
+    // limiting takes loudness off: measure again and make it up until within 0.1 LU, each step by what the last one's
+    // gain bought (a secant: on the limiter, a dB of gain buys well under a dB of loudness). Made up a dB for a dB, a
+    // track of gunshots, its peaks far over its loudness, was still 1.8 LU short after three passes and 0.04 after 13.
     let mut gain = target - lufs(a);
     let mut out = limit(a, gain, ceiling, &tp);
-    for _ in 0..3 {
-        let miss = target - lufs(&out);
+    let mut lo = lufs(&out);
+    let mut last: Option<(f64, f64)> = None;
+    for _ in 0..8 {
+        let miss = target - lo;
         if miss.abs() < 0.1 {
             break;
         }
-        gain += miss;
+        let slope = last.map(|(g0, l0)| ((lo - l0) / (gain - g0)).clamp(0.05, 1.0)).filter(|s| s.is_finite()).unwrap_or(1.0);
+        last = Some((gain, lo));
+        gain += (miss / slope).clamp(-12.0, 12.0);
         out = limit(a, gain, ceiling, &tp);
+        lo = lufs(&out);
     }
     // the gain ramps reshape the waveform a little: if a peak between samples still gets over, aim that much lower
     for _ in 0..2 {
@@ -264,7 +303,9 @@ pub fn master_for(a: &Audio, target: f64, ceiling: f64, encode: &dyn Fn(&Audio) 
 
 /// The true peak (dBTP): the peak of the signal oversampled 4x.
 pub fn true_peak_db(a: &Audio) -> f64 {
-    peak_db(&crate::soft_resample(a, a.rate * 4))
+    let mut p = 0f32;
+    crate::soft_resample_blocks(a, a.rate * 4, |_, _, b| p = b.iter().fold(p, |m, x| m.max(x.abs())));
+    20.0 * (p as f64).max(1e-12).log10()
 }
 
 /// Each sample's true peak across channels: the largest 4x-oversampled magnitude from half a sample before it to half
@@ -275,17 +316,17 @@ fn true_envelope(a: &Audio) -> Vec<f32> {
     if n == 0 {
         return env;
     }
-    let up = crate::soft_resample(a, a.rate * 4);
-    for ch in &up.channels {
-        for (j, y) in ch.iter().enumerate() {
-            let v = y.abs();
+    // the oversampled sound a block at a time, not held whole (SG4a)
+    crate::soft_resample_blocks(a, a.rate * 4, |_, from, b| {
+        for (k, y) in b.iter().enumerate() {
+            let (j, v) = (from + k, y.abs());
             for i in [(j + 2) / 4, (j + 1) / 4] {
                 if i < n && v > env[i] {
                     env[i] = v;
                 }
             }
         }
-    }
+    });
     for ch in &a.channels {
         for (i, x) in ch.iter().enumerate() {
             env[i] = env[i].max(x.abs());
@@ -344,20 +385,4 @@ fn limit(a: &Audio, gain_db: f64, ceiling: f64, tp: &[f32]) -> Audio {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A tone at a quarter of the rate, 45 degrees off the samples: every sample sits at 0.707 of the wave's peak,
-    /// so a sample-peak limiter lets the true peak through 3 dB over its ceiling. The target is louder than the
-    /// ceiling allows, so the limiter has to work.
-    #[test]
-    fn the_master_ceiling_holds_between_samples() {
-        let n = 3 * RATE as usize;
-        let ch: Vec<f32> = (0..n).map(|i| 0.5 * (std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4).sin()).collect();
-        let a = Audio { rate: RATE, channels: vec![ch.clone(), ch] };
-        let out = master(&a, 6.0, -1.0);
-        let (tp, sp) = (true_peak_db(&out), peak_db(&out));
-        assert!(tp <= -1.0, "true peak {tp:.2} dBTP over the -1 ceiling (sample peak {sp:.2})");
-        assert!(tp > -2.0, "limited far below the ceiling: {tp:.2} dBTP");
-    }
-}
+mod tests;

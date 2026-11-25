@@ -83,7 +83,11 @@ impl Material for ShaderMaterial {
         _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
-        if let Some(f) = descriptor.fragment.as_mut() {
+        // (the shader is the colour pass's only: a prepass keeps Bevy's own fragment, which writes the normals and motion
+        // a prepass target expects. Under Solari the camera has a normal and motion prepass, and the colour shader in it
+        // failed validation, "Error matching ShaderStages(FRAGMENT) ... label = 'prepass_pipeline'": Stay's fern drops)
+        let prepass = descriptor.label.as_deref().is_some_and(|l| l.contains("prepass"));
+        if let (false, Some(f)) = (prepass, descriptor.fragment.as_mut()) {
             f.shader = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(key.bind_group_data.shader), core::marker::PhantomData);
         }
         if key.bind_group_data.double_sided {
@@ -153,7 +157,7 @@ pub fn uniform(name: &str, v: &Value) -> Result<Uniform, String> {
 /// no `#import` of its own any more; WESL is a superset of WGSL, so a `wgsl` source goes in this module unchanged.
 pub fn module(source: &str, uniforms: &[(String, &'static str)], textures: &[String], array: Option<&str>) -> String {
     let group = "constants::MATERIAL_BIND_GROUP";
-    let mut m = String::from("import bevy_pbr::render::forward_io::VertexOutput;\nimport bevy_pbr::render::mesh_view_bindings::{view, globals};\n\n");
+    let mut m = String::from("import bevy_pbr::render::forward_io::VertexOutput;\nimport bevy_pbr::render::mesh_view_bindings::{view, globals};\n@if(VISIBILITY_RANGE_DITHER) import bevy_pbr::render::pbr_functions::visibility_range_dither;\n\n");
     m += &format!("struct RaeaSlots {{ s: array<vec4<f32>, 16> }};\n@group({group}) @binding(0) var<uniform> raea_slots: RaeaSlots;\n");
     for (i, t) in textures.iter().enumerate() {
         m += &format!(
@@ -177,7 +181,7 @@ pub fn module(source: &str, uniforms: &[(String, &'static str)], textures: &[Str
     m += "\n";
     m += source;
     if !source.contains("@fragment") {
-        m += "\n\n@fragment\nfn fragment(in: VertexOutput) -> @location(0) vec4<f32> {\n    return shade(in);\n}\n";
+        m += "\n\n@fragment\nfn fragment(in: VertexOutput) -> @location(0) vec4<f32> {\n    @if(VISIBILITY_RANGE_DITHER) visibility_range_dither(in.position, in.visibility_range_dither);\n    return shade(in);\n}\n";
     }
     m
 }
@@ -277,7 +281,7 @@ mod tests {
         assert!(m.contains("fn u_tint() -> vec4<f32> { return raea_slots.s[0]; }"));
         assert!(m.contains("fn u_speed() -> f32 { return raea_slots.s[1].x; }"));
         assert!(m.contains("@binding(1) var tex_noise: texture_2d<f32>;"));
-        assert!(m.contains("@fragment\nfn fragment(in: VertexOutput)"));
+        assert!(m.contains("@fragment\nfn fragment(in: VertexOutput)") && m.contains("visibility_range_dither(in.position, in.visibility_range_dither);"));
         assert!(m.contains("@binding(9) var tex_frames: texture_2d_array<f32>;"));
     }
 

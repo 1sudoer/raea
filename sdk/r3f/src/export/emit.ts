@@ -134,7 +134,7 @@ export function emit(rec: Recording, name: string, title: string): string {
   const c = rec.camera, s = rec.settings;
   const camTrack = { p: same(c.p) ? undefined : c.p, q: same(c.q) ? undefined : c.q, fov: c.fov.length && !same(c.fov) ? c.fov : undefined, height: c.height.length && !same(c.height) ? c.height : undefined };
   const exposure = r5(s.exposure * (s.toneMapping === THREE.ACESFilmicToneMapping ? 0.6 : 1));
-  const env = rec.environment as { src: string; intensity: number; rotation: number; background: boolean; backgroundIntensity: number } | undefined;
+  const env = rec.environment as Env | undefined;
   // raea's frame effects and Tony are drawn by raea-effects.ts, the composer <Raea> uses (three and its examples only)
   const kinds = [...new Set(rec.effects.flat().map((e) => e.kind))];
   const drawn = kinds.filter((k) => DRAWN_EFFECTS.includes(k));
@@ -164,7 +164,7 @@ const TONY = ${s.tony};
   }, 1);
 `
     : "";
-  const loader = env ? (/\.exr$/i.test(env.src) ? ["EXRLoader", "three/examples/jsm/loaders/EXRLoader.js"] : /\.hdr$/i.test(env.src) ? ["HDRLoader", "three/examples/jsm/loaders/HDRLoader.js"] : ["TextureLoader", ""]) : undefined;
+  const loader = env ? (env.room ? ["RoomEnvironment", "three/examples/jsm/environments/RoomEnvironment.js"] : /\.exr$/i.test(env.src) ? ["EXRLoader", "three/examples/jsm/loaders/EXRLoader.js"] : /\.hdr$/i.test(env.src) ? ["HDRLoader", "three/examples/jsm/loaders/HDRLoader.js"] : ["TextureLoader", ""]) : undefined;
 
   const TONE = s.tony ? "AgXToneMapping" : toneName(s.toneMapping);
   return `// ${title}: written by raea's source export (raea/r3f, docs/r3f.feature R3F9), ${N} frame${N > 1 ? "s" : ""} at ${rec.fps} fps, ${rec.width}x${rec.height}.
@@ -302,8 +302,12 @@ export default function ${name}() {
 `;
 }
 
-function envComponent(loader: string, env: { src: string; intensity: number; rotation: number; background: boolean; backgroundIntensity: number }): string {
+/** raea's <Environment> as the export keeps it (three/scene.ts): a panorama's src, or three's room and its blur */
+type Env = { src: string; room?: boolean; blur?: number; intensity: number; rotation: number; background: boolean; backgroundIntensity: number };
+
+function envComponent(loader: string, env: Env): string {
   const k = 1000 * EXPOSURE;
+  if (env.room) return roomComponent(env, k);
   return `
 /** raea's <Environment>: its panorama lighting the scene${env.background ? " and drawn behind it" : ""} (raea's 1 is 1000 nits at Bevy's exposure) */
 function Environment() {
@@ -311,6 +315,30 @@ function Environment() {
   const t = useLoader(${loader}, ${j(env.src)}) as THREE.Texture;
   useLayoutEffect(() => {
     t.mapping = THREE.EquirectangularReflectionMapping;
+    scene.environment = t;
+    scene.environmentIntensity = ${r5(env.intensity * k)};
+    scene.environmentRotation.set(0, ${env.rotation}, 0);
+${env.background ? `    scene.background = t;\n    scene.backgroundIntensity = ${r5(env.backgroundIntensity * k)};\n    scene.backgroundRotation.set(0, ${env.rotation}, 0);\n` : ""}  }, [t, scene]);
+  return null;
+}
+`;
+}
+
+/** raea's <Environment room> as three makes it: RoomEnvironment through PMREMGenerator.fromScene */
+function roomComponent(env: Env, k: number): string {
+  return `
+/** raea's <Environment room>: three's RoomEnvironment lighting the scene${env.background ? " and drawn behind it" : ""} (raea's 1 is 1000 nits at Bevy's exposure) */
+function Environment() {
+  const { gl, scene } = useThree();
+  const t = useMemo(() => {
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const room = new RoomEnvironment();
+    const made = pmrem.fromScene(room, ${env.blur ?? 0}).texture;
+    room.dispose();
+    pmrem.dispose();
+    return made;
+  }, [gl]);
+  useLayoutEffect(() => {
     scene.environment = t;
     scene.environmentIntensity = ${r5(env.intensity * k)};
     scene.environmentRotation.set(0, ${env.rotation}, 0);

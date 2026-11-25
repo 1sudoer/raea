@@ -247,7 +247,10 @@ impl Node {
         Some(format!("matrix({a} {b} {c} {d} {e} {f})"))
     }
 
-    /// The nearest svg viewport's box in this element's user space: its `viewBox`, or its size.
+    /// The nearest svg viewport's reference box in this element's user space: the `viewBox`'s size (or the viewport's)
+    /// at the origin of user space, where css-transforms-1 #transform-box puts it. A viewBox's x and y move the
+    /// content, not the box: placed at them, the box moved a 0 0 origin there, and `scale(2)` under
+    /// `viewBox="100 50 400 300"` drew its content 100 px left of and 50 px above where Chrome draws it.
     #[cfg(feature = "svg")]
     fn svg_view_box(&self) -> kurbo::Rect {
         let mut at = self.parent;
@@ -256,7 +259,7 @@ impl Node {
             let Some(el) = node.element_data() else { break };
             if el.name.ns == ns!(svg) && &*el.name.local == "svg" {
                 if let Some(vb) = el.attr(local_name!("viewBox")).and_then(|v| v.parse::<svgtypes::ViewBox>().ok()) {
-                    return kurbo::Rect::new(vb.x, vb.y, vb.x + vb.w, vb.y + vb.h);
+                    return kurbo::Rect::new(0.0, 0.0, vb.w, vb.h);
                 }
                 let outer = node.parent.and_then(|p| self.tree()[p].element_data()).is_none_or(|p| p.name.ns != ns!(svg));
                 if outer {
@@ -312,7 +315,7 @@ impl Node {
         let mut out = Vec::new();
         for name in INHERITED {
             if let Some(v) = value(&st, name).filter(|v| value(&parent, name).as_ref() != Some(v)) {
-                out.push(format!("{name}:{v}"));
+                out.push(format!("{name}:{}", svg_paint_rgba(v)));
             }
         }
         // not inherited: where it isn't the initial value
@@ -468,6 +471,7 @@ impl Node {
                     writer.push(' ');
                     write_attr_name(&attr.name, writer);
                     writer.push_str("=\"");
+                    let value_at = writer.len();
                     // raea: an svg's attribute that names var() or a colour usvg can't read, as Chrome resolves it
                     let resolved = opts
                         .resolve_current_color
@@ -495,7 +499,17 @@ impl Node {
                         encode_quoted_attribute_to_string(&attr.value, writer);
                     }
                     if !css_paint.is_empty() && attr.name.ns == ns!() && &*attr.name.local == "style" {
-                        encode_quoted_attribute_to_string(&format!(";{css_paint}"), writer);
+                        // raea: after the element's own declarations when any are left, which start at the first
+                        // of them. A style attribute of transforms alone is empty by now, and a `;` before the
+                        // first declaration stops usvg's parser (simplecss) there: the element lost its transform
+                        // and its CSS paint, so `style="transform: rotate(30deg)"` drew unturned
+                        let own = from_first_declaration(&writer[value_at..]).to_string();
+                        writer.truncate(value_at);
+                        if !own.is_empty() {
+                            writer.push_str(&own);
+                            writer.push(';');
+                        }
+                        encode_quoted_attribute_to_string(&css_paint, writer);
                     }
                     writer.push('"');
                 }
@@ -555,6 +569,28 @@ fn without_transform_decls(style: &str) -> String {
         .join(";")
 }
 
+/// raea: a style attribute from its first declaration on: without the separators, spaces and comments before it,
+/// which CSS allows there and simplecss doesn't (a comment left open runs to the end, as in CSS: nothing is left)
+fn from_first_declaration(mut style: &str) -> &str {
+    loop {
+        style = style.trim_start_matches(|c: char| c == ';' || c.is_whitespace());
+        let Some(comment) = style.strip_prefix("/*") else { return style };
+        style = comment.split_once("*/").map_or("", |(_, rest)| rest);
+    }
+}
+
+/// raea: a computed paint value as usvg reads it: a colour in its own computed syntax (oklch(), oklab(), lab(), lch(),
+/// color()) as sRGB `rgba()`, since usvg drew it black (a class's `stroke-ink-4` or `fill-[var(--ink-4)]` on the app's
+/// oklch tokens); anything else (none, currentcolor, rgb(), a url()) as it is.
+#[cfg(feature = "svg")]
+fn svg_paint_rgba(v: String) -> String {
+    const OWN: [&str; 5] = ["oklch(", "oklab(", "lab(", "lch(", "color("];
+    if !OWN.iter().any(|f| v.starts_with(f)) {
+        return v;
+    }
+    css_color_rgba(&v).unwrap_or(v)
+}
+
 /// raea: a CSS colour (any syntax stylo parses) as sRGB `rgba()`, the form usvg reads; None when `value` isn't one.
 fn css_color_rgba(value: &str) -> Option<String> {
     use style::parser::{Parse, ParserContext};
@@ -578,4 +614,18 @@ fn css_color_rgba(value: &str) -> Option<String> {
     let [r, g, b, a] = *color.into_srgb_legacy().raw_components();
     let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Some(format!("rgba({}, {}, {}, {})", c(r), c(g), c(b), a.clamp(0.0, 1.0)))
+}
+
+#[cfg(all(test, feature = "svg"))]
+mod svg_paint_tests {
+    /// raea: the app's ink (oklch(0.96 0 0)) set by a class reaches usvg as a light grey, not black; what usvg reads
+    /// already is left as it is
+    #[test]
+    fn computed_colours_usvg_cannot_read_become_rgba() {
+        assert_eq!(super::svg_paint_rgba("oklch(0.96 0 0)".into()), "rgba(242, 242, 242, 1)");
+        assert_eq!(super::svg_paint_rgba("lab(50 0 0)".into()), "rgba(119, 119, 119, 1)");
+        for kept in ["none", "currentcolor", "rgb(255, 0, 0)", "url(\"#g\") none", "1.5px"] {
+            assert_eq!(super::svg_paint_rgba(kept.into()), kept);
+        }
+    }
 }

@@ -37,17 +37,12 @@ pub(crate) fn relational(edit: Res<Edit>, clock: Res<Clock>, mut err: ResMut<Err
     let _ = &mut err;
 }
 
-/// The kinds a row spawns as a thing in the 3D scene (spawn_3d).
-pub(crate) fn is_3d_spawn(kind: &str) -> bool {
-    matches!(kind, "light" | "model" | "cube" | "sphere" | "plane" | "mesh" | "panel" | "decal" | "fogvolume" | "fire" | "grass" | "plate" | "splat" | "meshseq" | "entity" | "text" | "glyph" | "screenpage" | "sprite" | "shape2d")
-}
-
 /// A 3D row's entity made what it draws (a light, a model, a mesh with its surface, a panel): what a load does for each
 /// one, and what a live scene does for a row first seen mid-play (Engine::set_rows).
-/// A camera row's entity made the 3D camera, drawing into `target` (the edit's frame in an Engine; a plain App's own,
-/// SceneTarget): its lens and post-processing, motion blur's prepasses, the environment and a window on a larger view.
+/// A camera row's entity made the 3D camera, drawing into `target` (the edit's frame in an Engine, a plain App's own
+/// SceneTarget, or a rendercam's image: R3F23a): its lens and post, motion blur's prepasses, environment and view.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_camera(world: &mut World, e: Entity, vals: &BTreeMap<String, V>, inserted: &[Tup], dir: &Path, size: (u32, u32), target: RenderTarget, has_3d: bool) -> Result<(), String> {
+pub(crate) fn spawn_camera(world: &mut World, e: Entity, vals: &BTreeMap<String, V>, inserted: &[Tup], dir: &Path, (size, target): ((u32, u32), RenderTarget), has_3d: bool) -> Result<(), String> {
     let g = |k: &str, d: f32| num(vals, k, d);
                 world.entity_mut(e).insert((
                     Camera3d::default(),
@@ -59,6 +54,8 @@ pub(crate) fn spawn_camera(world: &mut World, e: Entity, vals: &BTreeMap<String,
                     // single-sampled prepass (compose.rs)
                     if has_3d && !preview() && !vals.contains_key("ssao") && !vals.contains_key("aa") && !vals.contains_key("outline") && !vals.contains_key("frame_looks") && !vals.contains_key("passes") { Msaa::default() } else { Msaa::Off },
                     Transform::from_xyz(g("x", 0.0), g("y", 2.0), g("z", 9.0)).looking_at(Vec3::new(g("look_x", 0.0), g("look_y", 1.0), g("look_z", 0.0)), Vec3::Y),
+                    // the shadow LOD origin (drawing into an image, Bevy picked one and warned on every 3D run)
+                    bevy::camera::ShadowLodOrigin,
                 ));
                 // three.js-style scenes (raea's 3D): a vertical field of view in degrees, and an ambient
                 // light on the camera (brightness in cd/m²); without them the camera is as it always was
@@ -76,7 +73,7 @@ pub(crate) fn spawn_camera(world: &mut World, e: Entity, vals: &BTreeMap<String,
                 environment::environment(world, e, vals, inserted, dir)?;
                 // a window on a larger view (view_*): matchmove
                 matchmove::camera_view(world, e, vals, Vec2::new(size.0 as f32, size.1 as f32));
-    Ok(())
+    raea_sys_frame::camera::into_image(world, e, vals) // a rendercam's: no tone curve, MSAA or dither (R3F23a)
 }
 
 /// A live scene's rows applied to a World (Engine::set_rows, or a plain App's: docs/sdk.feature S6a): each row's values
@@ -115,8 +112,8 @@ pub fn apply_rows(world: &mut World, dir: &Path, rows: &[Tup]) -> Result<bool, S
             None => {
                 let e = store::spawn(world, t);
                 // a camera first seen here is a plain App's (SceneTarget); an Engine's comes with its load
-                match world.get_resource::<SceneTarget>().map(|s| (s.target.clone(), s.size)) {
-                    Some((target, size)) if t.kind == "camera" => spawn_camera(world, e, &t.vals, rows, dir, size, target, true)?,
+                match raea_sys_frame::camera::image_of(world, &t.vals)?.or_else(|| world.get_resource::<SceneTarget>().map(|SceneTarget { target, size }| (*size, target.clone()))) {
+                    Some(on) if matches!(t.kind.as_str(), "camera" | "rendercam") => spawn_camera(world, e, &t.vals, rows, dir, on, true)?,
                     _ => spawn_3d(world, e, t, &media, dir)?,
                 }
                 let r = store::rows(world).len() - 1;
@@ -131,6 +128,9 @@ pub fn apply_rows(world: &mut World, dir: &Path, rows: &[Tup]) -> Result<bool, S
     }
     // a <BevyComponent> or <BevyResource> whose value a live frame changed (or a new one): set on its part
     plugins::apply_live_rows(world, &reflected)?;
+    // a mesh spawned here with a shader over its surface: put on now that this frame's rows are in (scene3d's
+    // shade_meshes), not only when a model came with it
+    scene3d::shade_meshes(world)?;
     Ok(spawned)
 }
 
@@ -143,7 +143,7 @@ pub fn screen_images(world: &World) -> Vec<(String, Handle<Image>, u32, u32)> {
 
 /// A live scene's rows dropped from a World, by kind and id (Engine::remove_rows, or a plain App's): their entities go,
 /// and the rows after them take their places.
-pub fn remove_rows_from(world: &mut World, rows: &[(String, String)]) {
+pub fn remove_rows_from(world: &mut World, rows: &[(String, String)]) -> Result<(), String> {
     // each dropped row's place as the rows stand now, then the places dropped from the last back, so a drop never
     // moves a place still to come. Before, each place was dropped as it was found: a second row dropped in the
     // same call took the place it had before the first moved it up, dropping its neighbour's values instead, and
@@ -151,10 +151,14 @@ pub fn remove_rows_from(world: &mut World, rows: &[(String, String)]) {
     // to make their meshes, dropped together on its third frame: its body gone and other parts drawn huge,
     // 2026-10-20)
     let mut places = Vec::new();
+    let mut gone = Vec::new();
     for (kind, id) in rows {
         let Some(e) = store::find(world, kind, id) else { continue };
         let Some(r) = world.resource::<FrameRows>().ix.get(&e).copied() else { continue };
-        store::despawn(world, e);
+        // its place drops either way (the store drops the row); a row whose entity had already gone is an error (SG4)
+        if let Err(m) = store::despawn(world, e) {
+            gone.push(m);
+        }
         places.push(r);
     }
     let any = !places.is_empty();
@@ -166,6 +170,7 @@ pub fn remove_rows_from(world: &mut World, rows: &[(String, String)]) {
         let ix: bevy::ecs::entity::EntityHashMap<usize> = store::rows(world).iter().enumerate().map(|(r, &e)| (e, r)).collect();
         world.resource_mut::<FrameRows>().ix = ix;
     }
+    if gone.is_empty() { Ok(()) } else { Err(gone.join("; ")) }
 }
 
 /// Where a plain App's 3D camera draws when its camera row arrives through apply_rows (an Engine's draws into its frame).
@@ -281,9 +286,6 @@ pub(crate) fn spawn_3d(world: &mut World, e: Entity, t: &Tup, inserted: &[Tup], 
             } else if let Some(extension) = raea_sys_procmat::of(vals).filter(|_| !scene3d::clay::on()) {
                 // a procedural surface (systems/procmat): its pattern, bump and use made on the GPU; clay draws it plain
                 grid::put(world, e, mesh, raea_sys_procmat::ProcMaterial { base: mat, extension }, vals);
-            } else if let Some(extension) = raea_sys_wear::of(vals).filter(|_| !scene3d::clay::on()) {
-                // worn paint (systems/wear): chipped edges, grime and rust, fixed in the part's own space
-                grid::put(world, e, mesh, raea_sys_wear::WearMaterial { base: mat, extension }, vals);
             } else if vals.get("shader").is_none() {
                 // a plain surface, see-through too: one material per value, shared by the parts that have it (share.rs;
                 // froxel_glass's fog copy is per material, so equal panes share it; mesh_ray_cast's six walls are one)
@@ -341,7 +343,7 @@ pub(crate) fn spawn_3d(world: &mut World, e: Entity, t: &Tup, inserted: &[Tup], 
             let pictures = match vals.get("srcs") {
                 Some(V::S(list)) => {
                     let paths = list.lines().map(|s| if s.starts_with("data:") { Ok(PathBuf::from(s)) } else { resolve_src(inserted, s, dir) }).collect::<Result<Vec<_>, _>>()?;
-                    Some(scene3d::Pictures { paths, shown: g("src_k", 0.0).round().max(0.0) as usize })
+                    Some(scene3d::Pictures { paths, shown: g("src_k", 0.0).round().max(0.0) as usize, live: None })
                 }
                 _ => None,
             };
@@ -352,9 +354,8 @@ pub(crate) fn spawn_3d(world: &mut World, e: Entity, t: &Tup, inserted: &[Tup], 
             let pic = scene3d::panel_picture(&src, inserted, dir).map_err(|e| format!("panel {}: {e}", t.id))?;
             let (pw, ph) = pic.dimensions();
             let tex = world.resource_mut::<Assets<Image>>().add(scene3d::panel_image(pic));
-            if let Some(p) = pictures {
-                world.entity_mut(e).insert(p);
-            }
+            // a picture listed up front swaps by `src_k`; any other by a live frame's `src`
+            world.entity_mut(e).insert(pictures.unwrap_or_else(|| scene3d::Pictures { paths: Vec::new(), shown: 0, live: Some((src.clone(), dir.to_path_buf())) }));
             // a sprite sheet shows one cell: its shape is a cell's (sync_meshes picks the cell, scene3d::sheet_uv)
             let (cols, rows) = (g("sheet_cols", 1.0).max(1.0), g("sheet_rows", 1.0).max(1.0));
             let (w, h) = (g("w", 1.0), g("h", g("w", 1.0) * (ph as f32 / rows) / (pw.max(1) as f32 / cols)));

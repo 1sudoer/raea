@@ -46,9 +46,7 @@ impl Ranged {
         for v in given.values_mut() {
             subst(v, at, &mut found)?;
         }
-        let slots = raea_sys_shader::uniform_slots(&self.src, &self.declared, &given, &self.defs)?;
-        let bytes = self.declared.iter().zip(slots).map(|((n, _), s)| (n.clone(), s.iter().flat_map(|v| v.to_array()).flat_map(f32::to_ne_bytes).collect()));
-        Ok((bytes.collect(), found))
+        Ok((raea_sys_shader::uniform_bytes(&self.src, &self.declared, &given, &self.defs)?, found))
     }
 }
 

@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
+use raea_core_facts::{Finding, Level, finding};
 use raea_runtime_bundle::flag;
 use serde_json::{Map, Value, json};
 
@@ -90,18 +91,21 @@ fn parse_set(s: &str) -> Result<Map<String, Value>, String> {
     Ok(m)
 }
 
-/// `raea solid ...` and `raea judge ...`, the scene loop's verbs (engine/cli hands them over), or None for another verb.
+/// `raea solid ...`, `raea judge ...`, `raea make ...` (docs/make.feature) and `raea ask ...` (docs/ask.feature AK3, which prints as it goes and exits with
+/// its own code), the verbs that build and judge a piece (engine/cli hands them over), or None for another verb.
 pub fn verb(args: &[String]) -> Option<Result<String, String>> {
     match args.first().map(String::as_str) {
         Some("solid") => Some(cli(args)),
         Some("judge") => Some(raea_app_judge::cli(args)),
+        Some("ask") => std::process::exit(raea_app_ask::cli(&args[1..])),
+        Some("make") => Some(raea_app_make::cli(args)),
         _ => None,
     }
 }
 
 pub fn cli(args: &[String]) -> Result<String, String> {
     let (Some(verb @ ("info" | "view" | "export")), Some(file)) = (args.get(1).map(String::as_str), args.get(2)) else { return Err(USAGE.into()) };
-    let file = PathBuf::from(file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
+    let file = dunce::canonicalize(&PathBuf::from(file)).map_err(|e| format!("{file}: {e}"))?;
     let json_out = args.iter().any(|a| a == "--json");
     let set = flag(args, "--set").map(|s| parse_set(&s)).transpose()?.unwrap_or_default();
     let expect_path = flag(args, "--expect").map(PathBuf::from).or_else(|| {
@@ -173,22 +177,33 @@ pub fn cli(args: &[String]) -> Result<String, String> {
         }
         out["walk"] = json!(walk);
     }
-    let errors = out["errors"].as_u64().unwrap_or(0);
+    // what it found as raea's one Finding (docs/direction.feature DR3), about the part, or the solid's file
+    let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let found = finding::ranked(out["found"].as_array().into_iter().flatten().filter_map(|v| Finding::of_value(v, "raea solid info")).map(|f| if f.about.is_empty() { f.about(&name, None) } else { f }).collect());
+    let errors = found.iter().any(|f| f.level == Level::Error);
+    if let Some(o) = out.as_object_mut() {
+        for k in ["found", "errors", "warnings"] {
+            o.remove(k);
+        }
+    }
+    out["count"] = json!(finding::count(&found));
+    out["findings"] = json!(found);
     let text = if json_out {
         serde_json::to_string_pretty(&out).unwrap_or_default()
     } else {
         let s = &out["solid"];
-        let mut t: Vec<String> = out["found"].as_array().into_iter().flatten().filter(|f| !matches!(f["level"].as_str(), Some("ok"))).map(|f| format!("{:<8} {}{}", f["level"].as_str().unwrap_or(""), f["part"].as_str().map(|p| format!("{p}: ")).unwrap_or_default(), f["says"].as_str().unwrap_or(""))).collect();
+        let mut t: Vec<String> = found.iter().map(Finding::line).collect();
         for p in out["parts"].as_array().into_iter().flatten() {
             t.push(format!("part     {}: {} m³, size {}, {} pieces, genus {}", p["part"].as_str().unwrap_or(""), p["volume"], p["box"]["size"], p["pieces"], p["genus"]));
         }
         for w in out["walk"].as_array().into_iter().flatten() {
             t.push(format!("walk     {} = {}: {}{}", w["param"].as_str().unwrap_or(""), w["value"], w["verdict"].as_str().unwrap_or(""), w["says"].as_str().map(|s| format!(" ({s})")).unwrap_or_default()));
         }
-        t.push(format!("solid: {} m³, size {} m, {} pieces, genus {}, {} triangles; {errors} errors, {} warnings", s["volume"], s["box"]["size"], s["pieces"], s["genus"], s["tris"], out["warnings"]));
+        t.push(format!("solid: {} m³, size {} m, {} pieces, genus {}, {} triangles", s["volume"], s["box"]["size"], s["pieces"], s["genus"], s["tris"]));
+        t.push(format!("raea solid info: {}", finding::count(&found)));
         t.join("\n")
     };
-    if errors > 0 {
+    if errors {
         println!("{text}");
         std::process::exit(1);
     }

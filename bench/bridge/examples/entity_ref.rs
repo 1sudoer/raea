@@ -21,7 +21,7 @@ fn main() {
         eprintln!("usage: entity_ref ENTITY.js");
         std::process::exit(2);
     };
-    let js = PathBuf::from(js).canonicalize().expect("the bundle");
+    let js = dunce::canonicalize(&PathBuf::from(js)).expect("the bundle");
     let (w, h) = (320, 240);
     let mut app = App::new();
     app.add_plugins(

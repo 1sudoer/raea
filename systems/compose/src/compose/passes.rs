@@ -78,10 +78,12 @@ pub fn sync_passes(
             let want = (p.round().max(0.0) as u32).min(MOST as u32);
             let mut all = descendants(e, &kids);
             all.push(e);
+            // the pass in the tag's two low bits; the bits above are an <Instances>' copy's number (raea-sys-material tint.rs)
             for d in all {
                 if let Ok(t) = tags.get(d) {
-                    if t.map_or(0, |t| t.value) != want {
-                        commands.entity(d).insert(MeshTag::new(want));
+                    let had = t.map_or(0, |t| t.value);
+                    if had & 3 != want {
+                        commands.entity(d).insert(MeshTag::new((had & !3) | want));
                     }
                 }
             }

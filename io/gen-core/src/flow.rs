@@ -185,13 +185,26 @@ impl Flow {
     /// Each step's key: a hash of its op, model and inputs, with each reference replaced by that step's key, so a
     /// step's key changes when anything it's made from does. Cached outputs are found by it.
     pub fn keys(&self) -> Result<BTreeMap<String, String>, String> {
+        self.keys_in(None)
+    }
+
+    /// The keys, with a `media.load` of a local file keyed by the file's contents as well as its path (read from
+    /// `base` when the path is relative): a picture changed in place is a new input, and every step made from it is
+    /// made again (a face's front made again at the same path kept its old bald edits, sheet3d chars/gb-sapper 11-17).
+    pub fn keys_in(&self, base: Option<&std::path::Path>) -> Result<BTreeMap<String, String>, String> {
         let mut keys = BTreeMap::new();
         for id in self.order()? {
             let s = &self.steps[&id];
             // a mesh's `size` is fitted after the model is made (raea gen check), so it doesn't make another model
             let inputs = J::Object(s.inputs.iter().filter(|(k, _)| !(s.op == "mesh.generate" && k.as_str() == "size")).map(|(k, v)| (k.clone(), v.clone())).collect());
             let resolved = substitute(&inputs, &|r| keys.get(r).map(|k: &String| format!("key:{k}")));
-            let text = format!("{}\u{0}{}\u{0}{}", s.op, s.model.as_deref().unwrap_or(""), canonical(&resolved));
+            let mut text = format!("{}\u{0}{}\u{0}{}", s.op, s.model.as_deref().unwrap_or(""), canonical(&resolved));
+            if let (Some(b), "media.load", Some(p)) = (base, s.op.as_str(), s.inputs.get("path").and_then(|p| p.as_str())) {
+                let f = if std::path::Path::new(p).is_absolute() { std::path::PathBuf::from(p) } else { b.join(p) };
+                if let Ok(bytes) = std::fs::read(&f) {
+                    text.push_str(&format!("\u{0}file:{:x}", Sha256::digest(&bytes)));
+                }
+            }
             keys.insert(id, format!("{:x}", Sha256::digest(text.as_bytes()))[..24].to_string());
         }
         Ok(keys)

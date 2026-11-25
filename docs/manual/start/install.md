@@ -1,0 +1,137 @@
+---
+title: "Install raea"
+summary: "Install raea on macOS, Linux or Windows, update it, pin a version, and know which files it puts where."
+order: 1
+sources: ["apps/site/public/install", "apps/site/public/install.ps1", "engine/cli/src/skill.rs"]
+---
+
+After this page you will have the `raea` command on your PATH and the raea skill installed for your coding agent.
+
+This page installs the engine. The desktop app, where you make video and games with your AI, downloads from
+[raea.io](https://raea.io) for the Mac, Windows and Linux, and tells you when a new version is out.
+
+## Install
+
+On macOS with Apple Silicon, or on Linux on x86_64:
+
+```sh
+curl -fsSL https://raea.io/install | sh
+```
+
+On Windows 10 or 11, in PowerShell:
+
+```powershell
+irm https://raea.io/install.ps1 | iex
+```
+
+Then check that it worked:
+
+```sh
+raea --version     # prints the version you installed
+raea help          # lists every verb
+```
+
+The installer needs no account and no API key. Rendering, playing and checking all run on your own computer.
+
+## What goes where
+
+| Path | What it holds |
+|---|---|
+| `~/.raea/` | The engine, its runtime and SDK, and your settings file (`~/.raea/env`) |
+| `~/.local/bin/raea` | A link to the `raea` command, so it is on your PATH |
+| `~/.claude/skills/raea/` | The raea skill, so Claude Code knows how to write and render with raea |
+
+If `~/.local/bin` is not on your PATH, the installer says so and prints the line to add to your shell's profile.
+
+For another agent, `raea skills install --agent claude|codex|kimi|gemini` puts the skill where that agent reads
+skills, adds raea's hooks (the quick check after a composition is saved, and media sent to the raea app instead of the
+Mac's viewer) and the Blender MCP server; `--no-hooks` and `--no-mcp` leave them out.
+
+In Claude Code you can take the skill and the hooks as a plugin instead:
+`/plugin install raea --marketplace shinyobjectz/raea-skills`. Install raea with `RAEA_NO_SKILLS=1` then, so the
+skill isn't copied twice.
+
+## Update
+
+Run the installer again. It replaces the engine with the newest release that has a build for your machine and
+refreshes the skill:
+
+```sh
+curl -fsSL https://raea.io/install | sh
+```
+
+Then see what changed in [What's new](../whats-new/index.md).
+
+### The desktop app
+
+The desktop app looks for a newer raea when it starts and every six hours, and a card in the bottom right corner says
+when one is out. On the Mac, raea.app downloads and checks the update itself: press **Restart now**, or it switches the
+next time you quit. On Windows and Linux, **Download** gets the new build, and you install it over this one. Your
+projects and settings stay as they are.
+
+To look for an update yourself, open **Settings → General** and press **Check for updates**. From 0.1.3, an update
+that is waiting also shows as **Update** at the foot of the sidebar.
+
+On the Mac, drag raea.app into Applications before you open it. Opened straight from Downloads, macOS runs it from a
+read-only copy, and raea 0.1.1 and 0.1.2 can't replace themselves there: Restart now does nothing. If that happened to
+you, download raea from [raea.io/download/mac](https://raea.io/download/mac), drag it into Applications and open it
+from there. From 0.1.3, raea updates wherever it was opened from, and says so if it ever can't.
+
+## Pick a version
+
+Set `RAEA_VERSION` to install a particular release instead of the newest:
+
+```sh
+RAEA_VERSION=0.1.1 curl -fsSL https://raea.io/install | sh
+```
+
+On Windows:
+
+```powershell
+$env:RAEA_VERSION = "0.1.1"; irm https://raea.io/install.ps1 | iex
+```
+
+## Installer settings
+
+| Setting | What it does |
+|---|---|
+| `RAEA_VERSION` | Installs that release instead of the newest |
+| `RAEA_PREFIX` | Installs somewhere other than `~/.raea` |
+| `RAEA_NO_SKILLS=1` | Leaves the agent skill out |
+| `RAEA_DOWNLOAD` | Downloads the release from a mirror or a local folder instead of GitHub |
+
+## The skill for other agents
+
+The installer adds the skill for Claude Code. For another agent, install it where that agent reads skills:
+
+```sh
+raea skills install --agent codex     # also: claude, kimi, gemini
+```
+
+For Claude Code this also adds a hook that runs `raea check --quick` after each composition is saved and hands the
+agent what it finds. `--no-hooks` leaves the hook out.
+
+If an agent's copy of the skill names a different version than `raea --version` prints, it should read `raea skill`
+instead: that is the skill exactly as your installed raea ships it.
+
+## Build from source
+
+From a checkout of the repository:
+
+```sh
+cargo build --release -p raea-cli     # the binary is target/release/raea
+```
+
+## Supported systems
+
+| System | Status |
+|---|---|
+| macOS on Apple Silicon | Supported |
+| Linux on x86_64 | Supported, on a processor with AVX (most from 2011 on) and glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 and later). raea needs ALSA and fontconfig (Ubuntu 24.04 and Debian: `apt install libasound2t64 libfontconfig1`; `libasound2` before 24.04). An app's window needs a display (X11, Wayland, or Xvfb on a server) |
+| Windows 10 and 11 on x86_64 | Supported through `install.ps1`, on any x86_64 processor |
+| Intel Macs, Linux on ARM | Not yet |
+
+raea draws on the GPU through Metal on the Mac, Vulkan on Linux, and DirectX 12 or Vulkan on Windows. Intel graphics
+from the 6th generation (2015) on, and AMD and NVIDIA cards from about 2012 on, have one of those. On a computer
+without one, such as a 3rd-generation Intel Core PC on Windows, the app's window and 3D can't run, and only 2D video
+renders, on the CPU and more slowly.

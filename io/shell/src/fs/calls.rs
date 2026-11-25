@@ -13,7 +13,7 @@ pub(crate) fn calls() -> Vec<raea_core_calls::Call> {
         mk("fs.open", "{ root: string }", "{ id: number; root: string }", "a project folder opened as a filesystem (made if missing)", Arc::new(|v| {
             let root = Path::new(s(v, "root")?);
             fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
-            let root = root.canonicalize().map_err(|e| e.to_string())?;
+            let root = dunce::canonicalize(&root).map_err(|e| e.to_string())?;
             let mut pr = Project { root: root.clone(), group: None, seq: 0, state: "0".repeat(64), done: Vec::new(), redo: Vec::new() };
             for r in pr.rows() {
                 pr.seq = r["seq"].as_u64().unwrap_or(pr.seq);

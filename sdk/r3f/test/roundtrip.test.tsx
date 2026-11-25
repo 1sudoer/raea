@@ -100,9 +100,9 @@ describe("raea → three.js → raea", () => {
     // its look: one unit from the eye toward [0, 0.5, 0]
     const dir = new THREE.Vector3(...(cam.props.lookAt as [number, number, number])).sub(new THREE.Vector3(4, 3, 6));
     expect(dir.normalize().dot(new THREE.Vector3(-4, -2.5, -6).normalize())).toBeGreaterThan(0.99999);
-    const tone = ofType(back, "ToneMapping")[0].props;
-    expect(tone.mode).toBe("aces");
-    expect(near(tone.exposure as number, 0.5)).toBe(true);
+    expect(ofType(back, "ToneMapping")[0].props).toEqual({ mode: "aces" });
+    // three's toneMappingExposure scales every pixel: it comes back as the Grade's exposure (lights.ts toneParts)
+    expect(near(ofType(back, "Grade")[0].props.exposure as number, 0.5)).toBe(true);
     expect(ofType(back, "Fog")[0].props).toEqual({ color: "#203040", near: 4, far: 30 });
   });
 

@@ -193,6 +193,16 @@ export interface PerspectiveCameraProps {
   clear?: "none";
   bg?: string;
   viewport?: { physical_position: [number, number]; physical_size: [number, number] };
+  /** false: it draws nothing this frame (<Camera3d is_active>), and the first camera that does is the piece's; a frame
+   *  where another camera becomes the piece's is a cut (docs/rerender.feature RR2) */
+  active?: boolean;
+  /** draws into a named image instead of the frame ("render:NAME:WxH", ":float" after it for an Rgba16Float one): a
+   *  pass before the screen's, as three's setRenderTarget then render (docs/r3f.feature R3F23a). A material whose map
+   *  names the image reads what it drew. It has no tone curve and no multisampling, and it isn't the piece's camera;
+   *  give it an `order` below the screen's, a `bg` (or `clear` "none") and the `layers` its scene is on */
+  target?: string;
+  /** the render layers it draws (Bevy's RenderLayers: [0] by default), so a pass draws only its own scene */
+  layers?: number[];
 }
 
 /** The viewpoint the scene is drawn from.
@@ -205,6 +215,8 @@ export function PerspectiveCamera({ fov = 50, children, ...rest }: PerspectiveCa
   if (rest.up !== undefined) checkVec("PerspectiveCamera", "up", rest.up);
   const v = rest.view;
   if (v !== undefined && !(v && v.width > 0 && v.height > 0 && Number.isFinite(v.x) && Number.isFinite(v.y))) throw new TypeError(`PerspectiveCamera: view is { width, height, x, y } in frame pixels, got ${JSON.stringify(v)}`);
-  useCamera3d({ position: rest.position, lookAt: rest.lookAt, fov, up: rest.up });
+  if (rest.target !== undefined && !/^render:[^:]+(:\d+x\d+)?(:float)?$/.test(rest.target)) throw new TypeError(`PerspectiveCamera: target is "render:NAME", "render:NAME:WxH" or "render:NAME:WxH:float", got ${JSON.stringify(rest.target)}`);
+  // a camera into an image isn't the one the pointer picks through
+  useCamera3d({ position: rest.position, lookAt: rest.lookAt, fov, up: rest.up }, rest.active !== false && rest.target === undefined);
   return node3d("PerspectiveCamera", { ...rest, fov }, children);
 }

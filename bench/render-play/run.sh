@@ -3,7 +3,9 @@
 # input, snapshotted at its moments, and the input the play logged (--input-log) is rendered at the same frames
 # (render --input); the two pictures are compared by SSIM. A row passes at 1.000000 on every frame, or, when rows.tsv
 # explains it, at >= 0.999. One line a row (PASS, EXPLAINED or FAIL, each frame's SSIM), then a tally; exits 1 on a FAIL.
-#   bench/render-play/run.sh [ROW-SUBSTRING...]     (RAEA_BIN: the raea to run, default target/release/raea)
+#   bench/render-play/run.sh [ROW-SUBSTRING...]     (RAEA_BIN: the raea to run, default target/release/raea; RAEA_RP_ROWS:
+#                                                    rows from another file, whose paths may be absolute: copies kept
+#                                                    outside the repo)
 # A play keeps stepping to its snapshots' frames however loaded the machine (ovw), so an unreached frame is a failure.
 cd "$(dirname "$0")/../.." || exit 2
 ROOT=$PWD
@@ -20,7 +22,7 @@ pass=0 explained=0 fail=0
 while IFS=$'\t' read -r path input secs why; do
   [[ -z $path || $path == \#* ]] && continue
   if [ $# -gt 0 ]; then hit=0; for s in "$@"; do [[ $path == *"$s"* ]] && hit=1; done; [ $hit = 1 ] || continue; fi
-  src=$ROOT/$path
+  [[ $path == /* ]] && src=$path || src=$ROOT/$path
   slug=$(echo "$path" | tr '/' '_' | sed 's/\.tsx$//')
   w=$(dim "$src" width); w=${w:-$(const "$src" 'CW|VW')}; w=${w:-1920}
   h=$(dim "$src" height); h=${h:-$(const "$src" 'CH|VH')}; h=${h:-1080}
@@ -63,6 +65,6 @@ while IFS=$'\t' read -r path input secs why; do
   else
     echo "FAIL $path:$line (worst $worst; play and renders in $OUT)"; fail=$((fail + 1))
   fi
-done < bench/render-play/rows.tsv
+done < "${RAEA_RP_ROWS:-bench/render-play/rows.tsv}"
 echo "render = play: $pass at 1.000000, $explained explained, $fail failed (out: $OUT)"
 [ $fail = 0 ]

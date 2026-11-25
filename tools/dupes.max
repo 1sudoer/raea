@@ -13,5 +13,21 @@
 # into raea_sys_frame::json_f32; begin_live and app_mut gone; await_models split by target); the one left is an
 # accessor matched by shape: Engine::world_mut and Opening::world_mut (the canvas window goes on before the engine is
 # finished, its camera after) with runtime/page bevy_page.rs BevyPage::app
-exact=295
-near=56
+# Raised once more, 11-11, by the CapCut export (docs/capcut.feature): near 56 -> 59. Its real copies were folded
+# (io/apple's cf_key reused, runtime-bundle's flag, frames_in shared with render.rs's exposure pass, a PNG read through
+# image, the movie writers' frame counts kept once, a byte-concat wrapper gone); the three left match by shape only:
+#   io/capcut store.rs:67 (tasklist's stdout, lower-cased; sdk/ui/parity main.rs:88 trims a command's stdout),
+#   io/capcut build.rs:24 parse (serde_json::from_str + expect; engine/native node.rs:172 js_string, to_string), and
+#   apps/capcut plan.rs:67 (a box moved more than 1 px; systems/layout mod.rs:406, within 1.5 px)
+# Raised once more, 11-17, when every waiting branch landed together (body motion, wear, foliage, segmented export, the
+# realtime controls and the rest): 289/58 -> 294/59. Its copies were folded (io-media's backend() is backend_unsigned
+# wrapped; paint's cut colours read by one closure; foliage's one smoothstep and its bounds in one pass; segments' video
+# track found once in its tests; the Solari switch through raea_io_home::env_on); the six left match by shape only:
+#   exact: runtime/segments encode.rs Segs open_video/decode_audio and encoder/encoder_10bit, Segmented
+#          push_nv12/push_p010 (a Backend's and a VideoEncoder's one-line forwards, alike by the traits' design);
+#          systems/foliage lib.rs hash_str (tone tonegraph.rs hash, the same FNV-1a: foliage can't depend on systems/
+#          tone) and Rng::range (core/grow mesh.rs Rng::range in f64; foliage's stream is its own, so moving it to
+#          core/grow's would change every tree)
+#   near:  runtime/live props.rs Live::controls/held (accessors); io/av1 and io/soft Backend::sound (one-line forwards)
+exact=293
+near=57

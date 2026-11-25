@@ -3,7 +3,8 @@
 // strict where the host is lenient (an op on an id it doesn't know, a second create of an id, a listen twice, an
 // update with nothing in it all throw), so a driver's mistake fails a test instead of passing quietly. Events go back
 // through the wire's own `__ui_deliver`, as the host delivers them.
-import { OPS_VERSION, type Ev, type Op } from "../src/wire";
+import { layout } from "../src/dom";
+import { OPS_VERSION, restart, type Ev, type Op } from "../src/wire";
 
 export type N = { kind: string; props: Record<string, unknown>; text?: string; on: Set<Ev>; children: number[]; parent?: number };
 
@@ -120,3 +121,20 @@ export class Host {
 }
 
 export const kinds = (ops: Op[]) => ops.reduce((a: Record<string, number>, o) => ((a[o.op] = (a[o.op] ?? 0) + 1), a), {});
+
+/** A wire started over and a new stand-in host for it. */
+export function fresh() {
+  restart();
+  return new Host();
+}
+
+/** A layout snapshot with these boxes (by data-testid): [x, y, w, h] and optional scroll [sl, st, sw, sh]. */
+export function snap(host: Host, boxes: Record<string, number[]>) {
+  const n: number[] = [];
+  for (const [t, b] of Object.entries(boxes)) {
+    const id = host.tid(t);
+    const [x, y, w, h, sl = 0, st = 0, sw = w, sh = h] = b;
+    n.push(id, x, y, w, h, sl, st, sw, sh, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+  layout(JSON.stringify({ vw: 800, vh: 600, dpr: 2, n }));
+}

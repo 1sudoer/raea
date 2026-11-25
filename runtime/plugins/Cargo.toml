@@ -18,3 +18,15 @@ serde = "1"
 raea-core-shape = { path = "../../core/shape" }
 raea-bevy-world = { path = "../../engine/bevy-world" }
 serde_json = "1"
+# which plugins an Engine chose, into the run's trace (choose.rs)
+raea-io-trace = { path = "../../io/trace" }
+
+# Bevy's window plugin compiled in on the desktop, so `group` always has it to leave out (#182): raea's Engines are
+# headless, and a build that brings bevy_winit any other way (raea-page-host's window, a plugin's x11, or cargo unifying
+# features across `-p raea-cli -p raea-page-host`) made an event loop in each of a process's Apps; winit allows one, so
+# the second panicked. Linux's winit needs a backend to compile: x11, loaded at run time and never opened here
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+bevy = { version = "=0.20.0", default-features = false, features = ["bevy_winit"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { version = "=0.20.0", default-features = false, features = ["bevy_winit", "x11"] }

@@ -690,6 +690,26 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             })
     }
 
+    /// raea: whether an element's own box draws anything: a background, border, shadow or outline, text of its own (an
+    /// inline root draws all of its inline content's text in its box), or replaced or form content. One that doesn't (a wrapper such as a full-frame AbsoluteFill) adds nothing to a filter
+    /// layer but its descendants (`drawn_bounds`).
+    fn box_paints(&self, node: NodeId) -> bool {
+        let tree = self.dom.as_ref().tree();
+        let n = &tree[node];
+        let Some(s) = n.primary_styles() else { return true };
+        let bg = s.get_background();
+        let border = n.final_layout().border;
+        bg.background_color.resolve_to_absolute(&s.clone_color()).as_srgb_color().components[3] > 0.0
+            || bg.background_image.0.iter().any(|i| !matches!(i, style::values::computed::image::Image::None))
+            || border.top + border.right + border.bottom + border.left > 0.0
+            || !s.get_effects().box_shadow.0.is_empty()
+            || s.get_outline().outline_width.0.to_f64_px() > 0.0
+            || n.element_data().is_some_and(|e| e.image_data().is_some() || e.sub_doc_data().is_some() || e.text_input_data().is_some())
+            || ["input", "select", "button", "textarea", "img", "svg", "canvas", "video", "iframe"].contains(&&**n.local_name())
+            || n.flags.is_inline_root()
+            || n.children.iter().any(|c| matches!(&tree[*c].data, NodeData::Text(t) if !t.content.trim().is_empty()))
+    }
+
     /// raea: the paint phase a child of an element belongs to (Appendix E, see [`Phase`]), and whether it's an in-flow
     /// block drawn a phase at a time: one in a block formatting context that clips nothing, isn't replaced or a form
     /// control and isn't a stacking context (which effects, clip-path and mask make) or part of a 3D rendering context
@@ -722,6 +742,64 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         (if plain { Phase::Blocks } else { Phase::Inlines }, plain)
     }
 
+    /// raea: the boxes `node_id` and its descendants draw, in its own space: `scrollable_overflow`'s walk (blitz-dom's
+    /// resolve_transforms), cut on each axis an element clips (both, under `contain: paint`) to that element's box
+    /// grown by its overflow-clip-margin, as its clip cuts what is drawn (the root element clips nothing: `should_clip`).
+    /// The overflow itself reaches through every clip, so a layer made from it is as large as content nobody sees: a
+    /// filtered card around a small clipping box with a page of content in it would be drawn into a texture the size
+    /// of the page. With `own_filter`, grown by the reach of the element's own filter, which draws past its boxes (a
+    /// descendant's drop shadow). An element whose box draws nothing (`box_paints`) gives only its descendants' boxes,
+    /// and None when nothing in it draws: a full-frame wrapper around a 200 px square is a layer the square's size, as
+    /// Chrome sizes a filter's input by what's drawn. At 2160x3840 every filtered wrapper was a frame-sized image, and
+    /// Vello's atlas held six (#125).
+    fn drawn_bounds(&self, node_id: NodeId, own_filter: bool) -> Option<Rect> {
+        let dom = self.dom.as_ref();
+        let node = dom.get_node(node_id)?;
+        let size = node.final_layout().size;
+        let own = Rect::new(0.0, 0.0, size.width as f64 * self.scale, size.height as f64 * self.scale);
+        let styles = node.primary_styles();
+        let (clips_x, clips_y, grow) = styles.as_ref().filter(|_| self.root_element_id != Some(node_id)).map_or((false, false, 0.0), |s| {
+            let (b, paint) = (s.get_box(), contains_paint(s));
+            (paint || !matches!(b.overflow_x, Overflow::Visible), paint || !matches!(b.overflow_y, Overflow::Visible), s.get_margin().overflow_clip_margin.offset.0.px() as f64 * self.scale.max(1.0))
+        });
+        let filtered = |r: Rect| match styles.as_ref().filter(|_| own_filter).and_then(|s| convert_filters(&s.get_effects().filter.0)) {
+            Some(f) => {
+                let reach = f.expansion_rect();
+                Rect::new(r.x0 + reach.x0, r.y0 + reach.y0, r.x1 + reach.x1, r.y1 + reach.y1)
+            }
+            None => r,
+        };
+        let clip = own.inflate(grow.max(0.0), grow.max(0.0));
+        let paints = self.box_paints(node_id);
+        if clips_x && clips_y && paints {
+            return Some(filtered(clip));
+        }
+        let mut all = paints.then_some(own);
+        let in_flow = node.layout_children.borrow();
+        let in_flow = in_flow.iter().flatten().copied().filter(|&c| dom.get_node(c).is_some_and(|c| !c.is_out_of_flow()));
+        let pseudos = [node.before(), node.after()].into_iter().flatten().filter(|&c| dom.get_node(c).is_some_and(|c| !c.is_out_of_flow()));
+        for child_id in in_flow.chain(node.hoisted_children.borrow().iter().copied()).chain(pseudos) {
+            let Some(child) = dom.get_node(child_id) else { continue };
+            let at = child.final_layout().location;
+            let mut to_own = Affine::translate((at.x as f64 * self.scale, at.y as f64 * self.scale));
+            if let Some(t) = child.transform().as_deref() {
+                to_own *= *t;
+            }
+            if let Some(b) = self.drawn_bounds(child_id, true) {
+                let b = to_own.transform_rect_bbox(b);
+                all = Some(all.map_or(b, |a| a.union(b)));
+            }
+        }
+        let mut all = all?;
+        if clips_x {
+            (all.x0, all.x1) = (all.x0.max(clip.x0), all.x1.min(clip.x1));
+        }
+        if clips_y {
+            (all.y0, all.y1) = (all.y0.max(clip.y0), all.y1.min(clip.y1));
+        }
+        Some(filtered(all))
+    }
+
     fn render_element(
         &self,
         scene: &mut impl PaintScene,
@@ -730,6 +808,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         clip_rect: Rect,
     ) {
         let node = &self.dom.as_ref().tree()[node_id];
+        let _painting = crate::Painting::enter(node_id);
 
         // raea: a plane of a 3D rendering context is drawn by its root, sorted by depth, not in paint order (and a
         // projective one again, inside its warp layer)
@@ -1149,6 +1228,18 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     None if has_url => None,
                     None => convert_filters(&effects.filter.0).map(Arc::new),
                 };
+                // raea: a filter of opacity() functions alone is the group's alpha, as the `opacity` property is (Filter
+                // Effects 1 §10.9 scales the result's alpha), so it's drawn as the layer's alpha, not as a filter: a
+                // filtered element is an image the size of its box in Vello's atlas (8192 px a side), and twelve
+                // full-frame `filter: opacity()` layers at 2160x3840 (a motion blur of <Freeze> samples) outgrew it,
+                // so the frame was drawn without them (#96)
+                let only_opacity = !has_url && !effects.filter.0.is_empty() && effects.filter.0.iter().all(|f| matches!(f, crate::filters::StyloFilter::Opacity(_)));
+                let (filter, opacity) = if only_opacity {
+                    (None, opacity * effects.filter.0.iter().map(|f| if let crate::filters::StyloFilter::Opacity(a) = f { a.0 } else { 1.0 }).product::<f32>())
+                } else {
+                    (filter, opacity)
+                };
+                let has_opacity = has_opacity || opacity < 1.0;
                 // raea: backdrop-filter's url()s the same way, the backdrop clipped to the border box as its other
                 // filters are; a url() to no <filter> leaves the backdrop unfiltered
                 let has_backdrop_url = effects.backdrop_filter.0.iter().any(|f| matches!(f, crate::filters::StyloFilter::Url(_)));
@@ -1182,6 +1273,32 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     .unwrap_or(Rect::ZERO);
 
                 let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
+                // the boxes drawn, None when the element and everything in it draws nothing (its border box then stays)
+                let mut drawn: Option<Rect> = None;
+                // raea: a filter's input is all the element draws, what its descendants draw outside its box
+                // included, as Chrome filters it (a 0x0 wrapper's absolutely positioned children were cut off at its
+                // box, a blur's reach of them left): its boxes up to the clips in their way (`drawn_bounds`), and the
+                // same of each out-of-flow box its stacking context paints past its clip, from a containing block
+                // above it (#39's `from_above`: the walk doesn't meet those), where hoisted_content_bbox places it.
+                // The stacking context's other boxes are met by the walk, under the clips they're painted under
+                if filter.is_some() {
+                    drawn = self.drawn_bounds(node_id, false);
+                    for hoisted in node.stacking_context.iter().flat_map(|sc| sc.children.iter()).filter(|c| cx.from_above(c.node_id)) {
+                        let Some(child) = self.dom.as_ref().get_node(hoisted.node_id) else { continue };
+                        let (p, at) = (hoisted.position(node.tree(), node_id), child.final_layout().location);
+                        let mut to_own = Affine::translate(((p.x + at.x) as f64 * self.scale, (p.y + at.y) as f64 * self.scale));
+                        if let Some(t) = child.transform().as_deref() {
+                            to_own *= *t;
+                        }
+                        if let Some(b) = self.drawn_bounds(hoisted.node_id, true) {
+                            let b = to_own.transform_rect_bbox(b);
+                            drawn = Some(drawn.map_or(b, |d| d.union(b)));
+                        }
+                    }
+                    if let Some(d) = drawn {
+                        effect_layer_clip = d;
+                    }
+                }
                 effect_layer_clip.x0 += filter_expansion_area.x0;
                 effect_layer_clip.y0 += filter_expansion_area.y0;
                 effect_layer_clip.x1 += filter_expansion_area.x1;
@@ -1435,12 +1552,49 @@ fn halve(src: &RasterImageData) -> RasterImageData {
     RasterImageData::new(w, h, Arc::new(out))
 }
 
-/// The level of `image` to sample when it is drawn at `scale` of its size: the image itself, or a halving of it
-fn mip_level(image: &RasterImageData, scale: f64) -> RasterImageData {
+/// raea: halvings of an image handed over ready made, largest first: a video's frame, halved on its decoder's thread.
+/// Not every halving need be there, and the image itself may come without its pixels (only its size): it is then
+/// drawn from these alone (video_level). Kept while the image lives, as the ones made here are.
+pub fn preload_mips(image: &RasterImageData, levels: Vec<RasterImageData>) {
+    MIPS.with_borrow_mut(|mips| {
+        mips.retain(|_, (weak, _)| weak.upgrade().is_some());
+        mips.insert(image.data.id(), (image.data.downgrade(), Some(levels)));
+    });
+}
+
+/// How many times `image` is halved to be sampled at `scale` of its size: the most that leaves it at least the
+/// size it is drawn.
+fn halvings_at(image: &RasterImageData, scale: f64) -> usize {
     let mut want = 0;
     while scale * f64::from(1u32 << (want + 1)) <= 1.0 && image.width >> (want + 1) >= 1 && image.height >> (want + 1) >= 1 {
         want += 1;
     }
+    want
+}
+
+/// A video's frame as it is drawn at `scale` of its size: nothing is halved for it here (it is a new picture each
+/// time), so of the halvings it came with (preload_mips) the smallest still at least the size mip_level would
+/// sample, else the largest. The frame itself when it came with none, or is drawn at over half its size and has
+/// its pixels.
+fn video_level(image: &RasterImageData, scale: f64) -> RasterImageData {
+    let whole = image.data.data().len() >= image.width as usize * image.height as usize * 4;
+    let want = halvings_at(image, scale);
+    if want == 0 && whole {
+        return image.clone();
+    }
+    MIPS.with_borrow(|mips| match mips.get(&image.data.id()) {
+        Some((_, Some(levels))) if !levels.is_empty() => {
+            let least = (image.width >> want).max(1);
+            levels.iter().rev().find(|l| l.width >= least).unwrap_or(&levels[0]).clone()
+        }
+        _ => image.clone(),
+    })
+}
+
+/// The level of `image` to sample when it is drawn at `scale` of its size: the image itself, or a halving of it,
+/// made now if it isn't there yet (an img's, once).
+fn mip_level(image: &RasterImageData, scale: f64) -> RasterImageData {
+    let want = halvings_at(image, scale);
     if want == 0 {
         return image.clone();
     }
@@ -1726,16 +1880,19 @@ impl ElementCx<'_, '_> {
 
             // Render text
             let mut draw_text_context = self.context.draw_text_context.borrow_mut();
+            // raea: where the box's content ends for an ellipsis or a clamp, in the unrounded layout the text was laid out
+            // in. The rounded box can be up to a pixel narrower than the text it shrink-wraps (each edge rounds on its
+            // own), which cut a word that fits ("Frog" to "Fr…" in a grid of picker cells)
+            let content_end = self.node.unrounded_layout().content_box_width() * text_layout.layout.scale();
             // raea: text-overflow: ellipsis on a box that clips its overflow (Blitz drew the text cut off)
             draw_text_context.ellipsis = self.node.primary_styles().and_then(|s| {
                 let clips = !matches!(s.get_box().clone_overflow_x(), Overflow::Visible);
                 let end = s.get_text().text_overflow.second.clone();
-                (clips && matches!(end, style::values::specified::text::TextOverflowSide::Ellipsis))
-                    .then(|| layout.content_box_width() * text_layout.layout.scale())
+                (clips && matches!(end, style::values::specified::text::TextOverflowSide::Ellipsis)).then_some(content_end)
             });
             // raea: -webkit-line-clamp: its lines only, the last ending in an ellipsis (blitz-dom ends the box there)
             let keep = self.node.primary_styles().and_then(|s| blitz_dom::util::clamped_lines(&s)).filter(|&n| text_layout.layout.len() > n);
-            draw_text_context.clamp = keep.map(|n| (n - 1, layout.content_box_width() * text_layout.layout.scale()));
+            draw_text_context.clamp = keep.map(|n| (n - 1, content_end));
             crate::text::stroke_text(
                 scene,
                 text_layout.layout.lines().take(keep.unwrap_or(usize::MAX)),
@@ -2304,10 +2461,20 @@ impl ElementCx<'_, '_> {
                 }
             }
             // raea: a minified <img> is drawn from its halving nearest its drawn size (mip_level); a <video>'s frames
-            // are each a new picture, so they're drawn as they come, as raea's GPU-texture videos are
+            // are each a new picture, so one is drawn from the halvings it came with (preload_mips), as it comes
+            // when it came with none
             let outer = self.transform.determinant().abs().sqrt();
-            let mip = quality != peniko::ImageQuality::Low && self.element.name.local == local_name!("img");
-            let level = if mip { mip_level(image, x_scale.min(y_scale) * outer) } else { image.clone() };
+            let level = if self.element.name.local == local_name!("video") {
+                video_level(image, x_scale.min(y_scale) * outer)
+            } else if quality != peniko::ImageQuality::Low && self.element.name.local == local_name!("img") {
+                mip_level(image, x_scale.min(y_scale) * outer)
+            } else {
+                image.clone()
+            };
+            // a frame that came as its size alone, and nothing to draw it from: nothing is drawn
+            if level.data.data().len() < level.width as usize * level.height as usize * 4 {
+                return;
+            }
             let (lx, ly) = (image.width as f64 / level.width as f64, image.height as f64 / level.height as f64);
             let image = &level;
             let transform = self
@@ -2425,6 +2592,14 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
     let mut frame = CssBox::new(border_box, border, padding, outline_width, border_radii);
     frame.outline_offset = style.get_outline().outline_offset.to_f64_px() * scale;
     frame
+}
+
+/// raea: whether `contain: paint` clips an element's contents, as render_element's `contain_paint` has it (not a
+/// non-atomic inline's, nor an internal table box's other than a cell)
+fn contains_paint(styles: &style::properties::ComputedValues) -> bool {
+    let display = styles.clone_display();
+    let table_part = display.outside() == DisplayOutside::InternalTable && display.inside() != DisplayInside::TableCell;
+    styles.get_box().clone_contain().contains(Contain::PAINT) && !display.is_inline_flow() && !table_part
 }
 
 /// raea: what an overflow clip clips to: overflow-clip-margin's visual box (the padding box by default), grown by its

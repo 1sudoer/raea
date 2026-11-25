@@ -1,0 +1,18 @@
+[package]
+name = "raea-runtime-segments"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "A render's video as shot segments, each its own encode starting on a keyframe, joined into one MP4 by stream copy with the sound laid under once (docs/rerender.feature RR3)"
+
+[dependencies]
+raea-io-trace = { path = "../../io/trace" }
+raea-io-media = { path = "../../io/media", default-features = false }
+raea-io-codec = { path = "../../io/codec", features = ["mux"] }
+muxide = "0.2"
+re_mp4 = "0.5"
+
+[dev-dependencies]
+# the tests encode with the portable backend (openh264)
+raea-io-media = { path = "../../io/media", default-features = false, features = ["soft"] }

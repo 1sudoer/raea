@@ -34,6 +34,32 @@ export interface LookProps {
   /** paint, cartoon: how many flat tones the suns' light makes on a surface, 1-8 (3 for paint: shadow, mid and lit;
    * 2 for cartoon: shade and fill); keyed per frame */
   bands?: number;
+  /** paint, cartoon: the light as a gradient instead of flat bands, 0 (bands, the default) to 1: the form shadow
+   * turns into the light over this much of the turn, a cast shadow keeps its filtered edge, the AO fades in, and a
+   * `paint` light falls off from its centre (half at its band's edge) instead of stopping at a line. The colours
+   * stay the look's own (`shadow`, `mid`), and so do the outline, grain and flat sky */
+  soft?: number;
+  /** paint, cartoon: worlds. Up to four cuts, each a ball in the scene (`at`, `r` metres). A point is in the last cut
+   * that holds it; a mesh is drawn only in its own world (a PaintExtension's `world`: 0, outside every cut, by
+   * default; n, inside cut n; -1, everywhere), cut pixel by pixel in depth, so a room and what replaces it meet along
+   * the ball's surface. `style` redraws everything inside a cut: "pixel" (cells `scale` metres across), "ink" (ink
+   * `a` on paper `b`, hatched `scale` pixels apart), "blueprint" and "neon" (ground `a`, lines `b` ruled every `scale`
+   * metres), "halftone" (dots `scale` pixels apart), "thermal" (`a` to `b` to white by tone), "poster" (three flat
+   * tones of `a` and `b`), "wash" (watercolour let down to paper `b`) or "mono" (`a` to `b` by tone); `amount` 0-1 of
+   * it. Keyed per frame (the colours are the first frame's) */
+  cuts?: LookCut[];
+  /** worlds: how far the cuts' edges tear (m; 0 a clean ball), and a lit rim just inside them (its width in m, its
+   * colour) */
+  cutRag?: number;
+  cutRim?: number;
+  cutRimColor?: string;
+  /** paint, cartoon: a rim of light on what turns from the eye (its colour, how much, how tight: 3), fuller on the
+   * lit side; and with `soft`, a colour the tone takes where it turns out of the light (`terminator`, how much) */
+  rim?: string;
+  rimAmount?: number;
+  rimPower?: number;
+  terminator?: string;
+  terminatorAmount?: number;
   /** paint, cartoon: the darkest tone (turned from the sun, or in a cast shadow), as a colour the surface's own is
    * multiplied by (a cool grey-blue by default; a warm blush for a cartoon) */
   shadow?: string;
@@ -182,6 +208,21 @@ export function checkShares(owner: string, skip: unknown, passes: unknown, setti
   }
 }
 
+const CUT_STYLES = ["pixel", "ink", "blueprint", "halftone", "neon", "thermal", "poster", "wash", "mono"] as const;
+/** One world of a paint look (<Look cuts>): a ball, and how everything inside it is drawn. */
+export interface LookCut {
+  at: [number, number, number];
+  /** metres; 0: closed */
+  r: number;
+  style?: (typeof CUT_STYLES)[number];
+  /** the style's size: metres for pixel, blueprint, neon and wash; pixels for ink and halftone (0.1) */
+  scale?: number;
+  /** how much of the style, 0-1 (1) */
+  amount?: number;
+  /** the style's two colours */
+  a?: string;
+  b?: string;
+}
 const PAINT = { bands: 3, grain: 0.3, rag: 2, boil: 0 };
 
 const CARTOON = { bands: 2, grain: 0.06, rag: 1.5, boil: 2, shadow: "#f2c7b8" };
@@ -212,10 +253,16 @@ function paintLook(props: LookProps, frame: number, fps: number) {
   const d: Record<string, unknown> = cartoon ? CARTOON : PAINT;
   const p = { ...d, ...props } as LookProps & typeof PAINT;
   if (!(Number.isInteger(p.bands) && p.bands >= 1 && p.bands <= 8)) throw new RangeError(`Look: bands must be a whole number from 1 to 8, got ${p.bands}`);
-  for (const k of ["grain", "rag", "ragScale", "seed", "boil", "outlineWidth", "aoHeight", "ssao", "foam", "edge", "edgeScale", "wash", "washSize", "stroke", "strokeScale", "saturate", "foliage", "foliageHeight", "calmFrom", "calmTo", "calmAmount", "texel", "texelJitter", "cloudShadows", "cloudShadowSize", "wind", "windTime", "hazeDensity", "hazeHeight", "hazeStart", "hazeMost"] as const) {
+  for (const k of ["grain", "rag", "ragScale", "seed", "boil", "outlineWidth", "aoHeight", "ssao", "foam", "edge", "edgeScale", "wash", "washSize", "stroke", "strokeScale", "saturate", "foliage", "foliageHeight", "calmFrom", "calmTo", "calmAmount", "texel", "texelJitter", "cloudShadows", "cloudShadowSize", "wind", "windTime", "hazeDensity", "hazeHeight", "hazeStart", "hazeMost", "soft", "cutRag", "cutRim", "rimAmount", "rimPower", "terminatorAmount"] as const) {
     const v = p[k];
     if (v !== undefined && !(typeof v === "number" && Number.isFinite(v) && v >= 0)) throw new RangeError(`Look: ${k} must be a number 0 or more, got ${JSON.stringify(v)}`);
   }
+  if (p.cuts !== undefined && !(Array.isArray(p.cuts) && p.cuts.length <= 4)) throw new RangeError(`Look: cuts is up to 4 cuts, got ${JSON.stringify(p.cuts)}`);
+  for (const c of p.cuts ?? []) {
+    if (!(Array.isArray(c.at) && c.at.length === 3 && c.at.every(Number.isFinite) && Number.isFinite(c.r) && c.r >= 0)) throw new RangeError(`Look: a cut is { at: [x, y, z], r } with r 0 or more, got ${JSON.stringify(c)}`);
+    if (c.style !== undefined && !CUT_STYLES.includes(c.style)) throw new RangeError(`Look: a cut's style is one of ${CUT_STYLES.join(", ")}, got ${JSON.stringify(c.style)}`);
+  }
+  if (p.soft !== undefined && p.soft > 1) throw new RangeError(`Look: soft must be from 0 to 1, got ${p.soft}`);
   if (p.grain !== undefined && p.grain > 1) throw new RangeError(`Look: grain must be from 0 to 1, got ${p.grain}`);
   if (p.ragScale !== undefined && p.ragScale < 1) throw new RangeError(`Look: ragScale must be 1 pixel or more, got ${p.ragScale}`);
   if (p.pixelSize !== undefined && !(p.pixelSize >= 1)) throw new RangeError(`Look: pixelSize must be 1 or more, got ${p.pixelSize}`);
@@ -233,7 +280,11 @@ function paintLook(props: LookProps, frame: number, fps: number) {
     ao: p.ao === undefined ? undefined : toHex("Look", "ao", p.ao),
     foamColor: p.foamColor === undefined ? undefined : toHex("Look", "foamColor", p.foamColor),
     calm: p.calm === undefined ? undefined : toHex("Look", "calm", p.calm), haze: p.haze === undefined ? undefined : toHex("Look", "haze", p.haze), hazeDensity: p.hazeDensity, hazeHeight: p.hazeHeight, hazeStart: p.hazeStart, hazeMost: p.hazeMost,
-    hazeSun: p.hazeSun === undefined ? undefined : toHex("Look", "hazeSun", p.hazeSun), calmFrom: p.calmFrom, calmTo: p.calmTo, calmAmount: p.calmAmount, texel: p.texel, texelJitter: p.texelJitter, cloudShadows: p.cloudShadows, cloudShadowSize: p.cloudShadowSize,
+    hazeSun: p.hazeSun === undefined ? undefined : toHex("Look", "hazeSun", p.hazeSun), calmFrom: p.calmFrom, calmTo: p.calmTo, calmAmount: p.calmAmount, texel: p.texel, texelJitter: p.texelJitter, cloudShadows: p.cloudShadows, cloudShadowSize: p.cloudShadowSize, soft: p.soft,
+    cuts: p.cuts?.map((c) => ({ x: c.at[0], y: c.at[1], z: c.at[2], r: c.r, style: c.style ? CUT_STYLES.indexOf(c.style) + 1 : 0, scale: c.scale, amount: c.amount, a: c.a === undefined ? undefined : toHex("Look", "cuts.a", c.a), b: c.b === undefined ? undefined : toHex("Look", "cuts.b", c.b) })),
+    cutRag: p.cutRag, cutRim: p.cutRim, cutRimColor: p.cutRimColor === undefined ? undefined : toHex("Look", "cutRimColor", p.cutRimColor),
+    rim: p.rim === undefined ? undefined : toHex("Look", "rim", p.rim), rimAmount: p.rimAmount, rimPower: p.rimPower,
+    terminator: p.terminator === undefined ? undefined : toHex("Look", "terminator", p.terminator), terminatorAmount: p.terminatorAmount,
     cloudShadowX: p.cloudShadowDrift?.[0], cloudShadowZ: p.cloudShadowDrift?.[1],
     wind: p.wind, windX: p.windDirection?.[0], windZ: p.windDirection?.[1], windTime: p.windTime ?? (p.wind ? frameTime : undefined),
     aoHeight: p.aoHeight, ground: p.ground, ssao: p.ssao, water: p.water, foam: p.foam, edge: p.edge, edgeScale: p.edgeScale,

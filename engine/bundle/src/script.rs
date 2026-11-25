@@ -89,6 +89,11 @@ impl Plugin for ScriptResolve {
             "@raea/shell" => return Ok(path_id(&s.shell)),
             _ => {}
         }
+        // the workspace's shared code (docs/layout.feature LY2), from where the importer is: not a package
+        if spec.starts_with(raea_io_home::shared::PREFIX) {
+            let dir = args.importer.map(Path::new).and_then(Path::parent).unwrap_or(Path::new("."));
+            return raea_io_home::shared::file(dir, spec).map(|f| path_id(&f)).map_err(|e| anyhow::anyhow!("{e} (imported by {importer})"));
+        }
         // the SDK by its names (docs/sdk.feature S1, S1d): "raea" is its prelude, "raea/<module>" a module, "@raea/<package>"
         // a package, each where sdk/tsconfig.base.json's paths put it (sdk/ is the folder above sdk/raea/src). An
         // `@raea/` name the list doesn't have is left to the rest (@raea/ui's own folders)

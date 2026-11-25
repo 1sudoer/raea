@@ -1,0 +1,11 @@
+[package]
+name = "raea-sys-rendermap"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "A standard material's map that names another render image frame by frame (two targets an app ping-pongs)"
+
+[dependencies]
+raea-sys-frame = { path = "../frame" }
+bevy = { version = "=0.20.0", default-features = false, features = ["std", "default_app", "3d_bevy_render"] }

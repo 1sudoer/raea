@@ -186,11 +186,17 @@ pub fn tokensynth(args: &[String]) -> R<String> {
     if !raea_io_assets::TOKENSYNTH_PRECISIONS.contains(&precision.as_str()) {
         return Err(format!("--precision is one of {}", raea_io_assets::TOKENSYNTH_PRECISIONS.join(", ")));
     }
+    // RAEA_TOKENSYNTH_DEVICE=cuda: an NVIDIA GPU (raea's cloud farm sets it); it's in the params, so a GPU's note is
+    // its own sample in the store, never taken for the CPU's
+    let device = std::env::var("RAEA_TOKENSYNTH_DEVICE").unwrap_or_else(|_| "cpu".into());
+    if device != "cpu" && device != "cuda" {
+        return Err(format!("RAEA_TOKENSYNTH_DEVICE is cpu or cuda, got {device}"));
+    }
     let s = store(args);
     let out = flag(args, "-o").map(PathBuf::from);
     let mut lines = Vec::new();
     for (name, midi) in &notes {
-        let params = json!({"seconds": seconds, "midi": midi, "velocity": velocity, "seed": seed, "device": "cpu", "precision": precision});
+        let params = json!({"seconds": seconds, "midi": midi, "velocity": velocity, "seed": seed, "device": device, "precision": precision});
         let cached = s.made("tokensynth", &timbre, seed, &params)?.is_some_and(|a| s.path(&a).exists());
         let t0 = std::time::Instant::now();
         let a = s.make("tokensynth", &timbre, seed, &params)?;
@@ -247,23 +253,16 @@ pub fn setup_audio(args: &[String]) -> R<String> {
         }
         let now = raea_io_assets::installed(m, &dir);
         missing += !now as usize;
-        let what = if m == "sao" { "foley (Stable Audio Open Small, Core ML)" } else { "music: an instrument's notes (TokenSynth)" };
+        let what = if m == "sao" { "foley (Stable Audio Open Small: Core ML on a Mac, else ONNX)" } else { "music: an instrument's notes (TokenSynth)" };
         let state = match (was, now) {
             (true, _) => "installed".to_string(),
             (false, true) => "installed now".to_string(),
-            (false, false) => format!("not installed: {} installs it", raea_io_assets::setup_script(m).display()),
+            (false, false) => format!("not installed: `raea setup-audio` or {} installs it", raea_io_assets::setup_how(&raea_io_assets::setup_script(m))),
         };
-        lines.push(format!("  {m:<10} {state}; {what}\n             {} ({})", dir.display(), if now { disk(&dir) } else { "-".into() }));
+        lines.push(format!("  {m:<10} {state}; {what}\n             {} ({})", dir.display(), if now { raea_io_home::disk_use(&dir, false) } else { "-".into() }));
     }
     let head = if check { if missing > 0 { "CHECKED  local audio models (some missing)" } else { "CHECKED  local audio models" } } else { "APPLIED  local audio models ready" };
     Ok(format!("{head}\n{}", lines.join("\n")))
-}
-
-/// What a folder takes on disk, as du says it (clones of another install count in full here, as du counts them).
-fn disk(dir: &Path) -> String {
-    std::process::Command::new("du").arg("-sh").arg(dir).output().ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().next().map(str::to_string))
-        .unwrap_or_else(|| "?".into())
 }
 
 // ---- the open sample libraries --------------------------------------------------------------------------------------

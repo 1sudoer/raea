@@ -1,6 +1,8 @@
 //! The window's own chrome (--chrome inset, the desktop app): macOS's title bar made transparent with the page drawn
 //! under it, its traffic lights kept, and what a title bar does left to the page. The page knows from
-//! `globalThis.__raea_window` ({chrome, lights}: the lights' box in points, for the page to leave room for) and asks
+//! `globalThis.__raea_window` ({chrome, os, lights}: the system it runs on, std's name for it, so the page says "this
+//! PC" and Ctrl on Windows where a Mac's says "this Mac" and ⌘; the lights' box in points, for the page to leave room
+//! for) and asks
 //! through two host calls: `window.drag` (a press on the page's title area moves the window, as winit's drag_window
 //! does from that press) and `window.zoom` (a double-click there zooms, as a native title bar's does).
 
@@ -31,7 +33,12 @@ impl Chrome {
     /// The primary window, titled and sized, with this chrome's title bar.
     pub fn window(self, title: &str, size: UVec2) -> Window {
         let inset = self == Self::Inset;
-        let resolution = bevy::window::WindowResolution::new(size.x, size.y);
+        let mut resolution = bevy::window::WindowResolution::new(size.x, size.y);
+        // RAEA_WINDOW_SCALE=2: the window at that scale whatever the display's, so a Retina window can be checked on a
+        // 1x display (the page paints at the window's scale: raea-page-host page.rs size)
+        if let Some(s) = std::env::var("RAEA_WINDOW_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).filter(|s| *s > 0.0) {
+            resolution = resolution.with_scale_factor_override(s);
+        }
         Window { title: title.into(), resolution, titlebar_transparent: inset, titlebar_show_title: !inset, fullsize_content_view: inset, ..default() }
     }
 
@@ -45,11 +52,25 @@ impl Chrome {
             json!({ "x": 7, "y": 6, "w": 54, "h": 14 })
         };
         let bar = if cfg!(all(target_os = "macos", feature = "window")) { 52 } else { 28 };
+        let os = std::env::consts::OS;
         let v = match self {
-            Self::Native => json!({ "chrome": "native" }),
-            Self::Inset => json!({ "chrome": "inset", "lights": lights, "bar": bar }),
+            Self::Native => json!({ "chrome": "native", "os": os }),
+            Self::Inset => json!({ "chrome": "inset", "os": os, "lights": lights, "bar": bar }),
         };
         format!("globalThis.__raea_window = {v};")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // the page reads which system it's on from here (apps/app src/lib/machine.ts)
+    #[test]
+    fn the_preamble_names_the_system() {
+        for c in [super::Chrome::Native, super::Chrome::Inset] {
+            let p = c.preamble();
+            let v: serde_json::Value = serde_json::from_str(p.strip_prefix("globalThis.__raea_window = ").unwrap().trim_end_matches(';')).unwrap();
+            assert_eq!(v["os"], std::env::consts::OS, "{p}");
+        }
     }
 }
 

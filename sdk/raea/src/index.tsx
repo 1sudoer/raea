@@ -41,6 +41,8 @@ export {
   type VolumeProp,
 } from "@raea/video/media";
 export { word, useWords, findPhrase, type WordOptions } from "@raea/video/words";
+// names a project moving from another React video tool uses (#176)
+export { random, interpolateColors, OffthreadVideo, type OffthreadVideoProps } from "./random-colors";
 export {
   song, songAt, useSong, SongPlot,
   type Song, type SongMap, type SongMoment, type SongEvent, type SongEventKind, type SongSection, type SongBar, type SongHit,
@@ -50,12 +52,28 @@ export {
   Composition,
   getCompositions,
   registerRoot,
+  useControl,
+  getInputProps,
+  type CalculateMetadata,
   type CompositionProps,
   type Edit,
   type RegisteredComposition,
+  type Control,
+  type Controls,
+  type ControlCost,
+  type RegisteredControl,
+  type NumberControl,
+  type SwitchControl,
+  type ChoiceControl,
+  type ColourControl,
+  type TextControl,
 } from "@raea/video/registry";
 
+export { Effect, effectAt, type EffectProps } from "@raea/video/effect";
+export { EFFECTS, EFFECT_FNS, effectFilter, effectPartsError, partsFilter, type EffectKind, type EffectPart } from "@raea/video/effects";
 export { Nudge, type NudgeProps } from "@raea/video/nudge";
+export { speedLength, speedPoints, speedSource, type SpeedPoint } from "@raea/video/speed";
+export { Transition, type TransitionProps, type TransitionEdge, type TransitionKind } from "@raea/video/transition";
 export { Region, useRegion, proofBoxes, regionBand, type RegionName, type RegionBox, type RegionProps, type ProofInput, type ProofPart } from "@raea/video/region";
 export { InputRegion } from "@raea/video/input-region";
 export { lyria, sao, fish, isGeneratedAsset, type AssetKind, type GeneratedAsset } from "@raea/asset/assets";
@@ -70,6 +88,8 @@ export {
 export { Overlay, overlays } from "@raea/video/overlay";
 export type { FrameInput, InputTimeline, Perception, Rect } from "@raea/app/clock";
 export { Mix, type MixProps } from "@raea/audio/mix";
+// a frame held until the composition continues it (docs/layout-reads.feature LR9)
+export { delayRender, continueRender, cancelRender, HOLD_TIMEOUT_MS } from "./hold";
 export {
   Animate, Stagger, propsFingerprint, track, move, delay, reverse, curve, curveFn, timeline, sequence, sequenceGap, parallel, stagger, gridDelay, sampleAnimation,
   rise, pop, slam, slide, wipe, fill, tick, strike, pushIn, fade, moves, toMove,

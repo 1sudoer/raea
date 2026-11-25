@@ -13,9 +13,15 @@ impl Engine {
         if (prog.width, prog.height) != self.size() {
             return Err("the edit's size changed: make a new Engine".into());
         }
-        if plugins::active(self.app.world()) {
-            self.replay = Some((prog.clone(), inserted.to_vec()));
+        // kept (and the frames before a frame stepped through: catch_up) only when the rows need steps (#77)
+        self.replay = (plugins::active(self.app.world()) && plugins::steps(inserted)).then(|| (prog.clone(), inserted.to_vec()));
+        // without them, the plugins' clock steps nothing: Time and the keyed rows are each frame's however it's reached
+        // (a still at frame 200, a batch's second frame, a seek), not frozen at the first frame drawn (#162)
+        let pure = self.replay.is_none();
+        if let Some(mut c) = self.app.world_mut().get_resource_mut::<plugins::PluginClock>() {
+            c.pure = pure;
         }
+        self.drawn = None;
         let world = self.app.world_mut();
         let g = world.resource::<Gen>().0;
         world.insert_resource(Gen(if g == 255 { 1 } else { g + 1 }));
@@ -32,6 +38,7 @@ impl Engine {
         }
         // the rows go through the store; what else the last load spawned (overlay, tag, raea's leftovers) goes too
         store::clear(world);
+        world.insert_resource(raea_sys_frame::RenderImages::default()); // its render images: this load's are made as its rows spawn
         world.despawn_all::<With<Mirror>>();
         let ents = store::load(world, inserted);
         #[cfg(feature = "native")]
@@ -42,15 +49,16 @@ impl Engine {
         let has_3d = has_3d(inserted) || raea_sys_sprite::has_2d(inserted);
         // cameras first, so UI can target them; otherwise insertion order
         let mut order: Vec<(&Tup, Entity)> = inserted.iter().zip(ents.iter().copied()).collect();
-        order.sort_by_key(|(t, _)| t.kind != "camera");
+        order.sort_by_key(|(t, _)| !matches!(t.kind.as_str(), "camera" | "rendercam"));
         for (t, e) in order {
             let vals = &t.vals;
             match t.kind.as_str() {
-                "camera" => {
-                    spawn_camera(world, e, vals, inserted, &self.dir, (prog.width, prog.height), RenderTarget::Image(self.target.clone().into()), has_3d)?;
-                    camera.get_or_insert(e); // (the first camera: a second draws over it, two_passes)
+                "camera" | "rendercam" => {
+                    let on = raea_sys_frame::camera::image_of(world, vals)?.unwrap_or(((prog.width, prog.height), RenderTarget::Image(self.target.clone().into())));
+                    spawn_camera(world, e, vals, inserted, &self.dir, on, has_3d || t.kind == "rendercam")?;
+                    if t.kind == "camera" { camera.get_or_insert(e); } // (the first camera: a second draws over it, two_passes)
                 }
-                k if is_3d_spawn(k) => {
+                k if store::is_3d_spawn(k) => {
                     spawn_3d(world, e, t, inserted, &self.dir)?;
                 }
                 // without native a clip or a 2D row is a row only (a browser's page draws its own video and text)
@@ -126,6 +134,8 @@ impl Engine {
             None => std::sync::Arc::new(raea_core_program::timeline::Timeline::from_cols(prog, base)?),
         };
         world.insert_resource(Edit { prog: prog.clone(), timeline, media });
+        world.insert_resource(raea_sys_frame::tables::Cuts::of(prog));
+        world.insert_resource(raea_sys_frame::shots::Shots::of(prog));
         world.insert_resource(FrameRows::new(ix));
         let Some(cam) = camera else { return Err("the edit needs a camera: INSERT INTO camera (id, ...) VALUES (...)".into()) };
         let models = world.query::<&scene3d::Model3d>().iter(world).count();

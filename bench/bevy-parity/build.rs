@@ -9,7 +9,7 @@ fn main() {
     let here = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let src = std::env::var("BEVY_SRC")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join(".cache/raea-vendor/bevy-0.20.0"));
+        .unwrap_or_else(|_| raea_io_home::user_home().unwrap().join(".cache/raea-vendor/bevy-0.20.0"));
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rerun-if-changed=examples.list");
     println!("cargo:rerun-if-env-changed=BEVY_SRC");

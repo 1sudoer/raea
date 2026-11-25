@@ -11,15 +11,31 @@ interface Hold {
 
 const HOLD = ((globalThis as { __raeaHold?: Hold }).__raeaHold ??= { n: 0, wake: new Set() });
 
+/** a hold opened on raea's frame, and its release (once: the last one wakes the frame) */
+function open(): () => void {
+  HOLD.n++;
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    HOLD.n = Math.max(0, HOLD.n - 1);
+    if (HOLD.n === 0) for (const w of [...HOLD.wake]) w();
+  };
+}
+
 function Waiting() {
-  useLayoutEffect(() => {
-    HOLD.n++;
-    return () => {
-      HOLD.n = Math.max(0, HOLD.n - 1);
-      if (HOLD.n === 0) for (const w of [...HOLD.wake]) w();
-    };
-  }, []);
+  useLayoutEffect(() => open(), []);
   return null;
+}
+
+/** raea's frame held until `p` settles (no promise, no hold), then woken: an async three.js program (<Three>) */
+export function useHold(p: Promise<unknown> | undefined) {
+  useLayoutEffect(() => {
+    if (!p) return;
+    const release = open();
+    void p.then(release, release);
+    return release;
+  }, [p]);
 }
 
 /** `children` under a Suspense that holds raea's frame while any of it suspends */

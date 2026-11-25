@@ -14,6 +14,7 @@ pub use raea_render::{dir_of, inserted_of, save_png};
 pub mod html;
 mod sound;
 pub use sound::*;
+mod progress;
 mod render;
 pub use render::*;
 
@@ -38,7 +39,12 @@ pub struct RenderOpts {
     pub ten_bit: bool,
     /// PNGs kept transparent where the composition draws nothing: an HTML page's canvas clear instead of white (#32)
     pub alpha: bool,
+    /// the frames that start shots, found as the frames are made (an outermost Sequence's start, the 3D's camera cut):
+    /// a whole video splits into segments there (raea-runtime-segments)
+    pub cuts: Cuts,
 }
+
+pub use raea_runtime_segments::Cuts;
 
 impl RenderOpts {
     /// ten_bit, or RAEA_EXPORT_10BIT=1
@@ -52,10 +58,23 @@ impl RenderOpts {
         let kbps = self.kbps.unwrap_or_else(|| raea_io_media::default_kbps(width, height, fps, hevc));
         raea_io_media::EncodeOpts { width, height, fps, kbps, quality: self.quality, nv12, realtime }
     }
+
+    /// A whole render's cuts, where its video splits into segments: the ones its frames find (`cuts`) and its 3D's
+    /// camera cuts (the timeline's Shots). None for part of a render, which is encoded in one run.
+    fn cuts_of(&self, prog: &Program) -> Option<Cuts> {
+        self.frames.is_none().then(|| {
+            raea_sys_frame::shots::Shots::of(prog).0.into_iter().for_each(|f| self.cuts.mark(f));
+            self.cuts.clone()
+        })
+    }
 }
 
-/// The encoder for a direct or fed render: 10-bit (P010 frames) when `ten_bit`, else the platform's 8-bit (NV12).
-fn direct_encoder(codec: &str, out: &Path, opts: &raea_io_media::EncodeOpts, ten_bit: bool) -> Result<Box<dyn raea_io_media::VideoEncoder>, String> {
+/// The encoder for a render's video: a whole one's in segments split at `cuts` (raea-runtime-segments), a part's in
+/// one run; 10-bit (P010 frames) when `ten_bit`, else the platform's 8-bit (NV12).
+fn direct_encoder(codec: &str, out: &Path, opts: &raea_io_media::EncodeOpts, ten_bit: bool, cuts: Option<&Cuts>) -> Result<Box<dyn raea_io_media::VideoEncoder>, String> {
+    if let Some(c) = cuts {
+        return raea_runtime_segments::encoder(codec, out, opts, ten_bit, c);
+    }
     let b = raea_io_media::backend(codec)?;
     if ten_bit { b.encoder_10bit(out, opts) } else { b.encoder(out, opts) }
 }
@@ -67,7 +86,7 @@ fn push_direct(enc: &mut Box<dyn raea_io_media::VideoEncoder>, px: &[u8], w: u32
 
 /// Render an edit file (.sql or .rdb) to OUT: .mp4 (video and its sound), .txt (one hash per
 /// frame), .raw (the frames as they came back) or a directory of PNGs. Edits without 3D take the direct path to .mp4,
-/// .mov and .txt (RAEA_DIRECT=1 forces it). Its stats go to stderr as one JSON line.
+/// .mov and .txt (RAEA_DIRECT=1 forces it). With RAEA_RENDER_STATS=1, its timings go to stderr as one JSON line.
 pub fn render_file(edit: &str, out: &Path, opts: &RenderOpts) -> Result<(), String> {
     engine::mem_mark("render: start");
     // an HTML composition: its videos on the GPU, the page over them (html.rs)

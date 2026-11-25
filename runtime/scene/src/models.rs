@@ -131,7 +131,7 @@ pub(crate) fn models_rows(tr: &Tracks, names: &[String], p: &mut Program) {
         meshseq::cloth_columns(p, &mut row, &id, &its);
         placement(p, &mut row, &id, &its);
         visible(p, &mut row, &id, &track);
-        instances_column(&mut row, &its);
+        instances_column(p, &mut row, &id, &its);
         model_shadows(&mut row, &its);
         pass_column(p, &mut row, &id, &its, &names);
         p.spawns.push(("model".into(), vec![row]));
@@ -171,6 +171,7 @@ pub(crate) fn panels_rows(tr: &Tracks, names: &[String], p: &mut Program) {
         visible(p, &mut row, &id, &track);
         pass_column(p, &mut row, &id, &its, &names);
         p.spawns.push(("panel".into(), vec![row]));
+        components(p, &id, &its);
     }
 }
 
@@ -234,7 +235,7 @@ pub(crate) fn fogs_rows(tr: &Tracks, p: &mut Program) {
         if colors.iter().any(|c| *c != colors[0]) {
             let c: Vec<[f64; 3]> = colors.iter().map(|c| rgb(c)).collect();
             for (k, name) in ["col_r", "col_g", "col_b"].iter().enumerate() {
-                p.keys.insert((id.clone(), name.to_string()), c.iter().enumerate().map(|(f, v)| (f as i64, v[k], "linear".to_string())).collect());
+                p.keys.insert((id.clone(), name.to_string()), raea_runtime_look::linear_keys(&c.iter().map(|v| v[k]).collect::<Vec<_>>()));
                 row.insert(name.to_string(), V::N(c[0][k]));
             }
         }

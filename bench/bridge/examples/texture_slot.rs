@@ -30,7 +30,7 @@ fn main() {
         std::process::exit(2);
     };
     let out = args.next();
-    let js = PathBuf::from(js).canonicalize().expect("the bundle");
+    let js = dunce::canonicalize(&PathBuf::from(js)).expect("the bundle");
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins

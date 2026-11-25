@@ -131,3 +131,85 @@ fn a_material_row_sets_only_its_fields() {
     let err = insert_reflect(w, e, "material:bevy_pbr::pbr_material::StandardMaterial", &json!({"no_such": 1.0})).unwrap_err();
     assert!(err.contains("no field no_such"), "{err}");
 }
+
+#[test]
+fn only_rows_a_plugin_carries_from_frame_to_frame_need_the_frames_before_a_still_stepped() {
+    let row = |kind: &str, vals: &[(&str, V)]| Tup { kind: kind.into(), id: "r".into(), vals: vals.iter().map(|(k, v)| (k.to_string(), v.clone())).collect() };
+    let ty = |t: &str| row("component", &[("type", V::S(t.into()))]);
+    // a film's rows: parts, lights, a camera and Bevy's own components (#77)
+    let film = vec![row("camera", &[]), row("light", &[]), row("mesh", &[]), row("model", &[]), row("panel", &[]), row("entity", &[]), ty("bevy_light::NotShadowCaster"), ty("bevy_post_process::bloom::settings::Bloom"), ty("material:bevy_pbr::pbr_material::StandardMaterial"), ty("three:uniforms")];
+    assert!(!steps(&film));
+    for more in [ty("avian3d::dynamics::rigid_body::RigidBody"), ty("bevy_hanabi::ParticleEffect"), ty("bevy_animation::AnimationPlayer"), ty("RigidBody"), row("mesh", &[("driven", V::N(1.0))]), row("compute", &[])] {
+        let mut rows = film.clone();
+        rows.push(more.clone());
+        assert!(steps(&rows), "{more:?} needs its frames stepped");
+    }
+}
+
+/// A load with nothing to step (#77) has a pure clock: its keyed rows land on the frame drawn, not frozen until a step
+/// that never comes. A still at frame 200 alone drew none, and a batch's second frame drew the first's (#162)
+#[test]
+fn a_pure_clock_takes_each_frames_keyed_rows_however_it_was_reached() {
+    let mut app = app();
+    let w = app.world_mut();
+    let a = w.spawn_empty().id();
+    let ty = "bevy_transform::components::transform::Transform".to_string();
+    let rows = [0, 60, 200].map(|f| (Some(a), ty.clone(), json!({"translation": [f as f64, 0.0, 0.0]}), f)).to_vec();
+    w.insert_resource(Keyed { rows, ..default() });
+    w.insert_resource(Error(None));
+    w.insert_resource(PluginClock { stepped: 0, dt: Duration::from_secs_f64(1.0 / 30.0), advancing: false, steps: 0, pure: true });
+    let x = |w: &World| w.get::<Transform>(a).map(|t| t.translation.x);
+    for (f, want) in [(200, 200.0), (60, 60.0), (61, 60.0), (200, 200.0), (0, 0.0)] {
+        w.insert_resource(Clock(f));
+        arm(w);
+        keyed_rows(w);
+        assert_eq!(x(w), Some(want), "frame {f}");
+    }
+    // a clock that steps still holds them for its step (a plugin's state needs them on the update it steps)
+    w.resource_mut::<PluginClock>().pure = false;
+    w.insert_resource(Clock(200));
+    arm(w);
+    keyed_rows(w);
+    assert_eq!(x(w), Some(0.0), "held: 200 isn't the frame after the last stepped");
+}
+
+/// A pure clock's Time is the frame's, f / fps, in any order: what globals.time and a shader's animation read (#162)
+#[test]
+fn a_pure_clocks_time_is_the_frame_drawns() {
+    let mut app = App::new();
+    app.add_plugins(bevy::time::TimePlugin);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+    app.add_systems(First, pure_time.after(bevy::time::TimeSystems));
+    // what reads Time in Update, after the fixed loop has copied Time<Virtual> back into it
+    #[derive(Resource, Default)]
+    struct Seen(Vec<(f64, f64)>);
+    app.init_resource::<Seen>();
+    app.add_systems(Update, |t: Res<Time>, mut s: ResMut<Seen>| s.0.push((t.elapsed_secs_f64(), t.delta_secs_f64())));
+    let dt = Duration::from_secs_f64(1.0 / 30.0);
+    app.insert_resource(PluginClock { stepped: 0, dt, advancing: false, steps: 0, pure: true });
+    fn at(app: &mut App, f: i64) -> (f64, f64) {
+        app.insert_resource(Clock(f));
+        arm(app.world_mut());
+        app.update();
+        *app.world().resource::<Seen>().0.last().unwrap()
+    }
+    let near = |(t, d): (f64, f64), want: (f64, f64)| (t - want.0).abs() < 1e-6 && (d - want.1).abs() < 1e-6;
+    let step = 1.0 / 30.0;
+    for (f, want) in [(60, (2.0, step)), (60, (2.0, 0.0)), (200, (200.0 / 30.0, step)), (61, (61.0 / 30.0, step)), (0, (0.0, 0.0)), (1, (step, step))] {
+        let got = at(&mut app, f);
+        assert!(near(got, want), "frame {f}: Time {got:?}, want {want:?}");
+    }
+    // a clock that steps is left to its steps
+    app.world_mut().resource_mut::<PluginClock>().pure = false;
+    let held = at(&mut app, 500);
+    assert!(held.0 < 1.0, "a stepping clock's Time isn't set to the frame's: {held:?}");
+}
+
+/// #182: an Engine's group leaves Bevy's window plugin out in every desktop build, so no App of raea's makes an event loop
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn an_engine_makes_no_event_loop() {
+    let b = group(bevy::app::PluginGroup::build(bevy::DefaultPlugins));
+    assert!(b.contains::<bevy::winit::WinitPlugin>(), "bevy_winit is compiled in on the desktop (Cargo.toml)");
+    assert!(!b.enabled::<bevy::winit::WinitPlugin>(), "WinitPlugin left in: a second App in the process panics RecreationAttempt");
+}

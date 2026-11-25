@@ -1,7 +1,7 @@
 ---
 title: "raea skill"
 summary: "Print the agent skill this raea ships, matched to its version, or one of its references."
-order: 124
+order: 127
 sources: ["engine/cli/src/skill.rs"]
 ---
 
@@ -23,7 +23,7 @@ raea skill --reference sdk
 ## Usage
 
 ```sh
-raea skill [NAME] [--reference cli|feed|files|sdk] | raea skills install --agent claude|codex|kimi|gemini [--pin MOVE]... [--no-mcp] [--no-hooks]   (the agent skill this raea ships, for its version, which raea --version prints: an agent whose copy names another version reads this; install puts raea's skills where that agent reads skills, adds the blender MCP server unless --no-mcp, makes each --pin MOVE a /MOVE of its own, and for claude adds the quick-check hook unless --no-hooks)
+raea skill [NAME] [--reference cli|feed|files|sdk] | raea skills install --agent claude|codex|kimi|gemini|grokbot [--pin MOVE]... [--no-mcp] [--no-hooks]   (the agent skill this raea ships, for its version, which raea --version prints: an agent whose copy names another version reads this; install puts raea's skills where that agent reads skills, adds the blender MCP server unless --no-mcp, makes each --pin MOVE a /MOVE of its own, and adds raea's hooks to that agent unless --no-hooks (raea hook AGENT: media opened in the Mac's viewer goes to raea show, and the quick check after a composition is saved); a skill folder that's a link is left as it is; grokbot, the Grok Bot app, keeps its skills on its own computer, so its copy is staged on this Mac (RAEA_GROKBOT_HOME moves it) with the grokbot:// links that finish it in Grok Bot, and gets no hooks or MCP server)
 ```
 
 Headless: it needs nothing running and opens no window. Takes up to 1 argument besides its flags.
@@ -32,7 +32,7 @@ Headless: it needs nothing running and opens no window. Takes up to 1 argument b
 
 | Flag | Takes | What it does |
 | --- | --- | --- |
-| `--agent` | `claude\|codex\|kimi\|gemini` | Used by `skills install`; see [`raea skills`](skills.md). |
+| `--agent` | `claude\|codex\|kimi\|gemini\|grokbot` | Used by `skills install`; see [`raea skills`](skills.md). |
 | `--no-hooks` | – | Used by `skills install`; see [`raea skills`](skills.md). |
 | `--no-mcp` | – | Used by `skills install`; see [`raea skills`](skills.md). |
 | `--pin` | `MOVE` | Used by `skills install`; see [`raea skills`](skills.md). |

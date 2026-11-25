@@ -1,4 +1,4 @@
-"""TokenSynth's smaller runtime, made from the fp32 weights setup.sh fetched (run at the end of setup.sh; idempotent: a
+"""TokenSynth's smaller runtime, made from the fp32 weights setup.py fetched (run at the end of setup.py; idempotent: a
 file already made is kept, so a second run does nothing). Everything goes beside weights/, outside the repo:
   weights-fp16/  the transformer, its unconditional twin, DAC's quantizer + decoder and CLAP's text tower (RoBERTa and
                  its projection, without the audio tower or the optimizer state that make up most of the 2.35 GB CLAP

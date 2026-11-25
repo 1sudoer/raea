@@ -58,16 +58,59 @@ pub struct Extra(pub Value);
 pub static LATEST: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
 /// The last few frames' trees, oldest first, so a reader polling from its own thread (the MCP bridge, src/mcp.rs) is
 /// handed each frame in turn and never one later than the first that showed what it waits for: a BRP call is answered
-/// at the end of the frame it arrives in, which would count a frame the tree had already shown as one more.
-pub static TREES: (std::sync::Mutex<std::collections::VecDeque<Value>>, std::sync::Condvar) = (std::sync::Mutex::new(std::collections::VecDeque::new()), std::sync::Condvar::new());
+/// at the end of the frame it arrives in, which would count a frame the tree had already shown as one more. Kept only
+/// while the MCP server serves, what it was handed let go, frames the same kept once (11-18: 240 kept in the person's
+/// app too, where nothing reads them, were 315 MB with a feed of 120 cards open).
+pub static TREES: (std::sync::Mutex<std::collections::VecDeque<Kept>>, std::sync::Condvar) = (std::sync::Mutex::new(std::collections::VecDeque::new()), std::sync::Condvar::new());
+/// The MCP server serves (src/mcp.rs `serve`): without it, only [`LATEST`] is kept.
+pub static KEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The last frame the MCP `ui` tool handed out: it never asks for that one, or one before it, again.
+pub static SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Frames in a row whose trees were the same: the first, and the tree as the last had it (a page at rest is one).
+pub struct Kept(u64, Value);
 
-/// The earliest kept tree of frame `after` or later, waiting up to `limit` for one.
+const KEPT: usize = 240;
+
+fn frame_of(t: &Value) -> u64 {
+    t["frame"].as_u64().unwrap_or(0)
+}
+
+/// Two trees the same but for the frame they're of.
+fn same(a: &Value, b: &Value) -> bool {
+    match (a.as_object(), b.as_object()) {
+        (Some(a), Some(b)) => a.len() == b.len() && a.iter().all(|(k, v)| k == "frame" || b.get(k) == Some(v)),
+        _ => a == b,
+    }
+}
+
+/// This frame's tree kept: the runs handed out (at or before `seen`) let go, the last carried on if it's the same.
+pub fn keep(kept: &mut std::collections::VecDeque<Kept>, t: Value, seen: u64) {
+    kept.retain(|k| frame_of(&k.1) > seen);
+    match kept.back_mut() {
+        Some(k) if same(&k.1, &t) => k.1["frame"] = t["frame"].clone(),
+        _ => kept.push_back(Kept(frame_of(&t), t)),
+    }
+    kept.drain(..kept.len().saturating_sub(KEPT));
+}
+
+/// The earliest kept tree of frame `after` or later (what frame `after` showed, in a run), waiting up to `limit`.
 pub fn tree_after(after: u64, limit: std::time::Duration) -> Option<Value> {
     let (m, cv) = &TREES;
-    let at = |t: &Value| t["frame"].as_u64().unwrap_or(0);
     let g = m.lock().unwrap();
-    let (g, _) = cv.wait_timeout_while(g, limit, |q| !q.back().is_some_and(|t| at(t) >= after)).unwrap();
-    g.iter().find(|t| at(t) >= after).cloned()
+    let (g, _) = cv.wait_timeout_while(g, limit, |q| first_at(q, after).is_none()).unwrap();
+    found(&g, after)
+}
+
+/// Where the earliest kept tree of frame `after` or later is (the frames only go up).
+fn first_at(kept: &std::collections::VecDeque<Kept>, after: u64) -> Option<usize> {
+    kept.iter().position(|k| frame_of(&k.1) >= after)
+}
+
+fn found(kept: &std::collections::VecDeque<Kept>, after: u64) -> Option<Value> {
+    let Kept(first, tree) = &kept[first_at(kept, after)?];
+    let mut t = tree.clone();
+    t["frame"] = json!(first.max(&after));
+    Some(t)
 }
 
 /// The latest frame's state (the `state` method).
@@ -95,12 +138,9 @@ pub fn answer(
     let w = win.single().ok();
     let scale = scale(&target, w);
     if let Some(t) = tree.0.take() {
-        {
+        if KEEP.load(std::sync::atomic::Ordering::Relaxed) {
             let mut kept = TREES.0.lock().unwrap();
-            kept.push_back(t.clone());
-            while kept.len() > 240 {
-                kept.pop_front();
-            }
+            keep(&mut kept, t.clone(), SEEN.load(std::sync::atomic::Ordering::SeqCst));
             TREES.1.notify_all();
         }
         *LATEST.lock().unwrap() = Some(t);
@@ -145,5 +185,38 @@ fn captured(ev: On<ScreenshotCaptured>, mut waiting: ResMut<PngWaiting>) {
             Some(p) => Answer::Png(p.clone(), json!({"frame": f, "w": w, "h": h})),
             None => Answer::Err("the render target couldn't be read back as an image".into()),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(frame: u64, text: &str) -> Value {
+        json!({"frame": frame, "nodes": [{"id": "x", "text": text}]})
+    }
+
+    #[test]
+    fn frames_the_same_are_kept_once_and_each_still_handed_out_as_itself() {
+        let mut kept = std::collections::VecDeque::new();
+        (1..=50).for_each(|f| keep(&mut kept, t(f, "rest"), 0));
+        (51..=52).for_each(|f| keep(&mut kept, t(f, "moved"), 0));
+        assert_eq!(kept.len(), 2);
+        for (f, text) in [(1, "rest"), (37, "rest"), (50, "rest"), (51, "moved"), (52, "moved")] {
+            assert_eq!(found(&kept, f).unwrap(), t(f, text));
+        }
+        assert!(found(&kept, 53).is_none(), "a frame not yet ended");
+        // handed frame 37 of the run: 38 to 50 still to come; handed 51, the run is let go
+        keep(&mut kept, t(53, "moved"), 37);
+        assert_eq!((kept.len(), found(&kept, 38).unwrap()), (2, t(38, "rest")));
+        keep(&mut kept, t(54, "moved"), 51);
+        assert_eq!(kept.iter().map(|k| k.0).collect::<Vec<_>>(), vec![51]);
+    }
+
+    #[test]
+    fn at_most_240_runs() {
+        let mut kept = std::collections::VecDeque::new();
+        (1..=300).for_each(|f| keep(&mut kept, t(f, &f.to_string()), 0));
+        assert_eq!((kept.len(), kept.front().unwrap().0), (KEPT, 61));
     }
 }

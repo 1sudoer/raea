@@ -48,15 +48,9 @@ impl Written {
         }
         self.seen = uniforms.to_string();
         let given: serde_json::Map<String, Value> = serde_json::from_str(uniforms).map_err(|e| format!("uniforms: {e}"))?;
-        self.uniforms = pack(&self.src, &self.declared, &given, &self.defs)?;
+        self.uniforms = raea_sys_shader::uniform_bytes(&self.src, &self.declared, &given, &self.defs)?;
         Ok(true)
     }
-}
-
-/// Each uniform's bytes by name, in its declared type's layout.
-fn pack(src: &str, declared: &[(String, String)], given: &serde_json::Map<String, Value>, defs: &[bevy::shader::ShaderDefVal]) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    let slots = raea_sys_shader::uniform_slots(src, declared, given, defs)?;
-    Ok(declared.iter().zip(slots).map(|((n, _), s)| (n.clone(), s.iter().flat_map(|v| v.to_array()).flat_map(f32::to_ne_bytes).collect())).collect())
 }
 
 /// The source's `@group(0)` declarations, in order; a binding of another kind is refused.
@@ -104,7 +98,7 @@ pub fn build(world: &mut World, o: &serde_json::Map<String, Value>, image: &mut 
         return Err(format!("{path}: frame {frame:?} names none of its texture_2d<f32>s"));
     }
     let declared = raea_sys_shader::bindings::uniforms(&src)?;
-    let uniforms = pack(&src, &declared, &named("uniforms"), &defs).map_err(|e| format!("{path}: {e}"))?;
+    let uniforms = raea_sys_shader::uniform_bytes(&src, &declared, &named("uniforms"), &defs).map_err(|e| format!("{path}: {e}"))?;
     let entry = o.get("entry").and_then(Value::as_str).unwrap_or("fragment").to_string();
     let shader = raea_sys_shader::register(world, src.clone(), &defs, "raea frame pass as written", "raea_sys_framepass");
     Ok((shader, Written { decls, frame, images, samplers: sampled, uniforms, entry, id: String::new(), seen: String::new(), src, declared, defs }))

@@ -5,14 +5,18 @@
 //!   app.open {url}                an http(s) or mailto link, in the person's browser
 //!   notify {title, body}          a macOS notification (asked for once, the first time: notify.permission)
 //!   notify.permission -> bool     macOS's prompt, or its answer if already given
-//!   dock.badge {text}             the dock icon's badge ("" clears it)
+//!   dock.badge {text}             the Dock icon's badge, on Windows the taskbar button's overlay ("" clears it)
 //!   app.urls -> string[]          raea:// links opened since the last ask, the app brought to the front for each
+//!   app.drops -> {over, dropped}  files dragged from the Finder: whether some are over the window, the paths dropped since the last ask
+//!   app.share {paths, x, y}       macOS's share sheet for those files (absolute paths), beside the point (x, y) in the
+//!                                 window from its top left (Shane 11-14: right-click any image or video to share it)
 //!   native.log -> {...}           what was done, for tests
 //!
 //! Live only on screen (--window) and without RAEA_NO_OPEN=1: otherwise every call is recorded and answered as if done,
 //! so headless runs never touch the person's clipboard, browser or notifications. Notifications and raea:// links need
-//! the app's identity: the window running as raea.app's own process (tools/raea-app/launch.sh execs it from
-//! Contents/MacOS); elsewhere notify answers an error that says so.
+//! the app's identity: the window's program in raea.app's Contents/MacOS, which makes raea.app its main bundle
+//! (tools/raea-app/launch.sh starts it there as its child, never exec'd: an exec left the app without a pid in AppKit,
+//! #163); elsewhere notify answers an error that says so.
 //! AppKit is called on the main thread: the calls queue here and `drain` (a NonSend system) runs them.
 
 use std::sync::Mutex;
@@ -34,11 +38,14 @@ struct Log {
     notified: Vec<Value>,
     badge: String,
     urls: Vec<String>,
+    shared: Vec<String>,
 }
 
 static LOG: Mutex<Option<Log>> = Mutex::new(None);
 /// raea:// links that arrived and the page hasn't read yet (filled by the Apple event handler, on the main thread).
 static URLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Files dragged onto the window: whether some are over it now, and the paths dropped the page hasn't read yet (drops).
+static DROPS: Mutex<(bool, Vec<String>)> = Mutex::new((false, Vec::new()));
 
 fn log<T>(f: impl FnOnce(&mut Log) -> T) -> T {
     f(LOG.lock().unwrap().get_or_insert_with(Log::default))
@@ -58,12 +65,12 @@ pub struct NativePlugin {
 impl Plugin for NativePlugin {
     fn build(&self, app: &mut App) {
         let live = self.live && std::env::var("RAEA_NO_OPEN").as_deref() != Ok("1");
-        app.insert_resource(Live(live)).init_resource::<Queue>().init_resource::<HostCalls>().add_systems(Startup, (calls, start)).add_systems(Update, drain);
+        app.insert_resource(Live(live)).init_resource::<Queue>().init_resource::<HostCalls>().add_systems(Startup, (calls, start)).add_systems(Update, (drops, drain).chain());
     }
 }
 
 fn calls(mut calls: ResMut<HostCalls>) {
-    for name in ["clipboard.write", "clipboard.read", "app.open", "notify", "notify.permission", "dock.badge", "app.urls", "native.log"] {
+    for name in ["clipboard.write", "clipboard.read", "app.open", "notify", "notify.permission", "dock.badge", "app.urls", "app.drops", "app.share", "native.log"] {
         calls.on(name, move |w, args, answer| w.resource::<Queue>().0.lock().unwrap().push(Job(name.to_string(), args, answer)));
     }
 }
@@ -72,6 +79,23 @@ fn calls(mut calls: ResMut<HostCalls>) {
 fn start(live: Res<Live>, _main: NonSendMarker) {
     if live.0 {
         mac::listen_for_urls();
+    }
+}
+
+/// Bevy's drag-and-drop messages (winit's), kept for app.drops: live or not, a file dropped on the window is the
+/// person's own act, never something a call does to them.
+fn drops(mut evs: MessageReader<bevy::window::FileDragAndDrop>) {
+    use bevy::window::FileDragAndDrop as D;
+    for e in evs.read() {
+        let mut d = DROPS.lock().unwrap();
+        match e {
+            D::HoveredFile { .. } => d.0 = true,
+            D::HoveredFileCanceled { .. } => d.0 = false,
+            D::DroppedFile { path_buf, .. } => {
+                d.0 = false;
+                d.1.push(path_buf.to_string_lossy().into_owned());
+            }
+        }
     }
 }
 
@@ -97,8 +121,8 @@ fn run(live: bool, name: &str, a: &Value, answer: Answer) {
     match name {
         "clipboard.write" => {
             let t = text(a, "text");
-            if live {
-                mac::clipboard_write(&t);
+            if live && let Err(e) = mac::clipboard_write(&t) {
+                return answer.err(e);
             }
             log(|l| l.clipboard = t);
             answer.ok(json!(true))
@@ -109,18 +133,17 @@ fn run(live: bool, name: &str, a: &Value, answer: Answer) {
             if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:")) {
                 return answer.err(format!("app.open: {url:?} isn't an http(s) or mailto link"));
             }
-            if live {
-                mac::open(&url);
+            // a link that didn't open says so, so the page can show it to copy rather than a button that does nothing
+            if live && let Err(e) = mac::open(&url) {
+                return answer.err(e);
             }
             log(|l| l.opened.push(url));
             answer.ok(json!(true))
         }
         "notify" => {
             let (title, body) = (text(a, "title"), text(a, "body"));
-            if live {
-                if let Err(e) = mac::notify(&title, &body) {
-                    return answer.err(e);
-                }
+            if live && let Err(e) = mac::notify(&title, &body) {
+                return answer.err(e);
             }
             log(|l| l.notified.push(json!({"title": title, "body": body})));
             answer.ok(json!(true))
@@ -136,6 +159,9 @@ fn run(live: bool, name: &str, a: &Value, answer: Answer) {
             let t = text(a, "text");
             if live {
                 mac::badge(&t);
+                // the taskbar button's overlay (win.rs)
+                #[cfg(all(windows, feature = "window"))]
+                crate::win::badge(&t);
             }
             log(|l| l.badge = t);
             answer.ok(json!(true))
@@ -149,7 +175,24 @@ fn run(live: bool, name: &str, a: &Value, answer: Answer) {
             log(|l| l.urls.extend(urls.iter().cloned()));
             answer.ok(json!(urls))
         }
-        "native.log" => answer.ok(log(|l| json!({"live": live, "clipboard": l.clipboard, "opened": l.opened, "notified": l.notified, "badge": l.badge, "urls": l.urls}))),
+        "app.drops" => {
+            let mut d = DROPS.lock().unwrap();
+            let dropped = std::mem::take(&mut d.1);
+            answer.ok(json!({"over": d.0, "dropped": dropped}))
+        }
+        "app.share" => {
+            let paths: Vec<String> = a.get("paths").and_then(Value::as_array).map(|v| v.iter().filter_map(|p| p.as_str().map(String::from)).collect()).unwrap_or_default();
+            if paths.is_empty() || paths.iter().any(|p| !std::path::Path::new(p).is_absolute()) {
+                return answer.err("app.share: paths are the files' absolute paths");
+            }
+            let at = |k: &str| a.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            if live && let Err(e) = mac::share(&paths, at("x"), at("y")) {
+                return answer.err(e);
+            }
+            log(|l| l.shared.extend(paths));
+            answer.ok(json!(true))
+        }
+        "native.log" => answer.ok(log(|l| json!({"live": live, "clipboard": l.clipboard, "opened": l.opened, "notified": l.notified, "badge": l.badge, "urls": l.urls, "shared": l.shared}))),
         _ => answer.err(format!("no native call {name}")),
     }
 }
@@ -161,7 +204,7 @@ mod mac {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject};
     use objc2::{ClassType, define_class, msg_send};
-    use objc2_foundation::NSString;
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use serde_json::json;
     use std::ffi::CString;
     use std::sync::Mutex;
@@ -200,8 +243,9 @@ mod mac {
         }
     }
 
-    pub fn clipboard_write(t: &str) {
-        write_to(None, t)
+    pub fn clipboard_write(t: &str) -> Result<(), String> {
+        write_to(None, t);
+        Ok(())
     }
 
     pub fn clipboard_read() -> String {
@@ -223,15 +267,54 @@ mod mac {
         }
     }
 
-    pub fn open(url: &str) {
+    pub fn open(url: &str) -> Result<(), String> {
         unsafe {
             let u: *mut AnyObject = msg_send![class("NSURL").unwrap(), URLWithString: &*NSString::from_str(url)];
             if u.is_null() {
-                return;
+                return Err(format!("app.open: macOS can't read {url:?} as a link"));
             }
             let ws: *mut AnyObject = msg_send![class("NSWorkspace").unwrap(), sharedWorkspace];
-            let _: Bool = msg_send![ws, openURL: u];
+            let opened: Bool = msg_send![ws, openURL: u];
+            if opened.as_bool() { Ok(()) } else { Err(format!("app.open: macOS didn't open {url}")) }
         }
+    }
+
+    /// NSSharingServicePicker for the files, shown beside the point (x, y), from the top left of the window's content
+    /// in points (the page's own pixels). The picker stays up after this returns; it isn't released (one small object
+    /// a share).
+    pub fn share(paths: &[String], x: f64, y: f64) -> Result<(), String> {
+        unsafe {
+            let a = app();
+            let mut win: *mut AnyObject = msg_send![a, keyWindow];
+            if win.is_null() {
+                win = msg_send![a, mainWindow];
+            }
+            if win.is_null() {
+                return Err("raea's window isn't open".into());
+            }
+            let view: *mut AnyObject = msg_send![win, contentView];
+            if view.is_null() {
+                return Err("raea's window has no view to show the share sheet from".into());
+            }
+            let items: *mut AnyObject = msg_send![class("NSMutableArray").unwrap(), array];
+            for p in paths {
+                let url: *mut AnyObject = msg_send![class("NSURL").unwrap(), fileURLWithPath: &*NSString::from_str(p)];
+                if !url.is_null() {
+                    let _: () = msg_send![items, addObject: url];
+                }
+            }
+            let picker: *mut AnyObject = msg_send![class("NSSharingServicePicker").ok_or("AppKit's share sheet isn't here")?, alloc];
+            let picker: *mut AnyObject = msg_send![picker, initWithItems: items];
+            if picker.is_null() {
+                return Err("the share sheet didn't open".into());
+            }
+            let bounds: NSRect = msg_send![view, bounds];
+            let flipped: Bool = msg_send![view, isFlipped];
+            let at = NSRect::new(NSPoint::new(x, if flipped.as_bool() { y } else { bounds.size.height - y }), NSSize::new(1.0, 1.0));
+            // NSRectEdgeMinY
+            let _: () = msg_send![picker, showRelativeToRect: at, ofView: view, preferredEdge: 1usize];
+        }
+        Ok(())
     }
 
     pub fn badge(t: &str) {
@@ -334,24 +417,10 @@ mod mac {
     }
 }
 
-/// Without a window (the benches, CI, other platforms): nothing reaches the system; Live is false, so these never run.
+/// Off AppKit: Linux's and Windows' window, through raea-io-os, and no window at all (other.rs).
 #[cfg(not(all(target_os = "macos", feature = "window")))]
-mod mac {
-    use super::Answer;
-    pub fn clipboard_write(_: &str) {}
-    pub fn clipboard_read() -> String {
-        String::new()
-    }
-    pub fn open(_: &str) {}
-    pub fn badge(_: &str) {}
-    pub fn notify(_: &str, _: &str) -> Result<(), String> {
-        Err("notifications need raea's window on a Mac".into())
-    }
-    pub fn ask_permission(a: Answer) {
-        a.err("notifications need raea's window on a Mac")
-    }
-    pub fn listen_for_urls() {}
-}
+#[path = "other.rs"]
+mod mac;
 
 #[cfg(all(test, target_os = "macos", feature = "window"))]
 mod tests {
@@ -376,5 +445,32 @@ mod tests {
     fn notifications_outside_the_app_say_why() {
         let e = mac::notify("t", "b").unwrap_err();
         assert!(e.contains("raea.app"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::{DROPS, drops};
+    use bevy::prelude::*;
+    use bevy::window::FileDragAndDrop as D;
+
+    /// What app.drops answers: files over the window while they're dragged, then the paths once, as they're dropped.
+    #[test]
+    fn a_finder_drag_says_over_then_hands_its_paths_once() {
+        let mut app = App::new();
+        app.add_message::<D>().add_systems(Update, drops);
+        let window = Entity::PLACEHOLDER;
+        app.world_mut().write_message(D::HoveredFile { window, path_buf: "/tmp/a.mov".into() });
+        app.update();
+        assert!(DROPS.lock().unwrap().0, "over while dragged");
+        app.world_mut().write_message(D::HoveredFileCanceled { window });
+        app.update();
+        assert!(!DROPS.lock().unwrap().0, "not over once it leaves");
+        app.world_mut().write_message(D::DroppedFile { window, path_buf: "/tmp/a.mov".into() });
+        app.world_mut().write_message(D::DroppedFile { window, path_buf: "/tmp/b c.png".into() });
+        app.update();
+        let mut d = DROPS.lock().unwrap();
+        assert!(!d.0);
+        assert_eq!(std::mem::take(&mut d.1), vec!["/tmp/a.mov".to_string(), "/tmp/b c.png".to_string()]);
     }
 }

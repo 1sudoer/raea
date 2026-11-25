@@ -1,7 +1,7 @@
 // docs/control.feature FC0a: Bevy's EnvironmentMapLight with its own prefiltered maps (3d/pbr, 3d/animated_material),
-// its rotation, and Bevy's Skybox (3d/rotate_environment_map).
+// its rotation, and Bevy's Skybox (3d/rotate_environment_map); <Environment room>, three.js's RoomEnvironment (#165).
 import { describe, expect, test } from "bun:test";
-import { EnvironmentMapLight, Skybox } from "raea/light";
+import { Environment, EnvironmentMapLight, Skybox } from "raea/light";
 import { renderFrame } from "../src/test";
 
 const html = (el: React.ReactElement) => renderFrame(el, { frame: 0, width: 320, height: 240, fps: 30, durationInFrames: 30 });
@@ -39,5 +39,20 @@ describe("rotation and Skybox: Bevy's Quat on both, the sky's cubemap and bright
     expect(() => html(<Skybox image="s.ktx2" brightness={-1} />)).toThrow(/brightness/);
     expect(() => html(<Skybox image="s.ktx2" rotation={[0, 2, 0, 1]} />)).toThrow(/unit Quat/);
     expect(() => html(<EnvironmentMapLight diffuse_map="d.ktx2" specular_map="s.ktx2" rotation={[0, 0, 0] as never} />)).toThrow(/unit Quat/);
+  });
+});
+
+describe("Environment room: three.js's RoomEnvironment, with no file (#165)", () => {
+  test("room and its blur reach the Environment row, with no src", () => {
+    const out = html(<Environment room blur={0.04} intensity={0.5} />);
+    expect(out).toContain('data-3d="Environment"');
+    for (const s of ["&quot;room&quot;:true", "&quot;blur&quot;:0.04", "&quot;intensity&quot;:0.5"]) expect(out).toContain(s);
+    expect(out).not.toContain("&quot;src&quot;");
+  });
+  test("a room with a src, a blur without a room, a negative blur or neither src nor room is refused", () => {
+    expect(() => html(<Environment room src="sky.hdr" />)).toThrow(/src \(a panorama\) or room, not both/);
+    expect(() => html(<Environment src="sky.hdr" blur={0.04} />)).toThrow(/blur is the room's/);
+    expect(() => html(<Environment room blur={-1} />)).toThrow(/blur must be 0 or more/);
+    expect(() => html(<Environment />)).toThrow(/or room for three's RoomEnvironment/);
   });
 });

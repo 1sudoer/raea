@@ -1,0 +1,104 @@
+{
+ "kind": "RTX-PRO-6000",
+ "raea_version": "0.1.6",
+ "blender_version": "5.3.0",
+ "start": 3.6,
+ "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB, 610.57.04",
+ "raea": {
+  "vulkan": [
+   "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+   "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+   "llvmpipe (LLVM 19.1.7, 256 bits)"
+  ],
+  "edit": {
+   "ok": true,
+   "s": 72.46,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-1.mp4 (765.5 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 50894 ms"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 115.78,
+    "sync": 74.12,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.02
+   }
+  },
+  "edit-noclip": {
+   "ok": true,
+   "s": 17.92,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-0.mp4 (182.5 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 112.16,
+    "sync": 60.32,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.02
+   }
+  },
+  "solari": {
+   "ok": true,
+   "s": 6.52,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-1.mp4 (34.2 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 312 ms"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 6.66,
+    "sync": 24.91,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.0
+   }
+  },
+  "solari-noclip": {
+   "ok": true,
+   "s": 4.16,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-0.mp4 (21.3 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 8.23,
+    "sync": 12.41,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.0
+   }
+  }
+ },
+ "blender": {
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "s": 110.97,
+  "samples_per_minute": {
+   "monster": 7986.6,
+   "junkshop": 6227.3,
+   "classroom": 5329.7
+  },
+  "out": null
+ },
+ "frame": {
+  "ok": true,
+  "samples": 300,
+  "load_s": 0.48,
+  "render_s": 7.8,
+  "total_s": 8.41,
+  "out": "AirVent_AO.png\n00:00.979  render           | Fra: 1 | Mem: 34M | Updating Images | Loading europeMap.png\n00:00.983  render           | Fra: 1 | Mem: 34M | Updating Images | Loading crinkledPaper.png\n00:00.983  render           | Fra: 1 | Mem: 34M | Updating Images | Loading base_woodFloor.jpg\n00:00.984  render           | Fra: 1 | Mem: 34M | Updating Images | Loading crinkledPaper_02.png\n00:00.984  render           | Fra: 1 | Mem: 34M | Updating Images | Loading base_wallPaint.jpg\n00:00.985  render           | Fra: 1 | Mem: 34M | Updating Images | Loading pencil_glossyMask.png\n00:00.986  render           | Fra: 1 | Mem: 34M | Updating Images | Loading ceiling_AO.png\n00:01.067  render           | Fra: 1 | Mem: 260M | Updating Volume\n00:01.067  render           | Fra: 1 | Mem: 260M | Updating Camera Volume\n00:01.067  render           | Fra: 1 | Mem: 260M | Updating Lookup Tables\n00:01.067  render           | Fra: 1 | Mem: 260M | Updating Lights\n00:01.067  render           | Fra: 1 | Mem: 260M | Updating Lights | Computing distribution\n00:01.069  render           | Fra: 1 | Mem: 261M | Updating Integrator\n00:01.072  render           | Fra: 1 | Mem: 263M | Updating Film\n00:01.072  render           | Fra: 1 | Mem: 263M | Updating Lookup Tables\n00:01.072  render           | Fra: 1 | Mem: 263M | Updating Baking\n00:01.072  render           | Fra: 1 | Mem: 263M | Updating Device | Writing constant memory\n00:01.073  render           | Fra: 1 | Mem: 263M | Loading denoising kernels (may take a few minutes the first time)\n00:01.084  render           | Fra: 1 | Mem: 1903M | Sample 0/300\n00:01.107  render           | Fra: 1 | Remaining: 00:06.90 | Mem: 2314M | Sample 1/300\n00:05.535  render           | Fra: 1 | Mem: 2314M | Sample 300/300\n00:05.535  render           | Fra: 1 | Mem: 2314M | Finished\n00:08.205  render           | Saved: '/tmp/frame_0001.png'\n00:08.205  render           | Time: 00:07.80 (Saving: 00:02.50)\nRAEA_SAMPLES 300 RAEA_LOADED 1794934969.801777\n\nBlender quit\n"
+ },
+ "s": 223.9,
+ "usd": 0.2315
+}

@@ -64,8 +64,8 @@ fn taste_checks_hold_text_to_the_persons_line() {
     ]}]})).unwrap();
     let rules = taste_rules(&[taste]);
     assert_eq!(rules, vec![
-        Taste { form: "text-above".into(), value: 62.0, line: "Captions sit clear of the bottom.".into() },
-        Taste { form: "text-hold".into(), value: 2.0, line: "Text holds two seconds".into() },
+        Taste { form: "text-above", value: 62.0, line: "Captions sit clear of the bottom.".into() },
+        Taste { form: "text-hold", value: 2.0, line: "Text holds two seconds".into() },
     ]);
     let low = Run { text: "Render anything.".into(), from: 1.0, to: 4.0, box_: [800.0, 800.0, 300.0, 60.0], boxes: vec![[800.0, 800.0, 300.0, 60.0]], color: String::new(), size: 48.0 };
     let high = Run { text: "raea".into(), from: 5.0, to: 6.0, box_: [800.0, 300.0, 300.0, 60.0], boxes: vec![[800.0, 300.0, 300.0, 60.0]], color: String::new(), size: 48.0 };
@@ -73,7 +73,7 @@ fn taste_checks_hold_text_to_the_persons_line() {
     taste_text(&rules, &[low, high], 1920.0, 1080.0, &mut issues, &mut passed);
     let says: Vec<_> = issues.iter().map(|i| (i.rule, i.p, i.at)).collect();
     // the low caption breaks the placement line (860 of 1080 is 80%); the short one breaks the hold
-    assert_eq!(says, vec![("taste", 1, Some(1.0)), ("taste", 1, Some(5.0))]);
+    assert_eq!(says, vec![("text-above", 1, Some(1.0)), ("text-hold", 1, Some(5.0))], "a taste line is the named check of its form (DR4)");
 }
 
 /// `RAEA_CHECK_ARGS="film.mp4 --manifest film.render.json --taste DIR" cargo test -p raea-runtime-react --lib
@@ -292,72 +292,6 @@ fn a_sign_the_camera_carries_off_isnt_clipped_but_a_title_held_off_is() {
     assert_eq!(rules, vec![("safe-area", "THE NIGHT MARKET".to_string()), ("clipped", "WIDE".to_string())]);
 }
 
-/// a 96x54 picture drawn by `paint(frame index, sample, x, y)`, sample 0 the area sample and 1 the point sample, for
-/// `frames` frames at `fps`
-fn flash_samples(frames: usize, fps: f64, paint: impl Fn(usize, usize, usize, usize) -> [u8; 3]) -> Option<(usize, f64, &'static str)> {
-    let (w, h) = (96, 54);
-    let mut screen = FlashScreen::new(w, h);
-    for f in 0..frames {
-        let mut rgb = Vec::with_capacity(w * 2 * h * 3);
-        for y in 0..h {
-            for sample in 0..2 {
-                for x in 0..w {
-                    rgb.extend_from_slice(&paint(f, sample, x, y));
-                }
-            }
-        }
-        screen.push(&rgb, f as f64 / fps);
-    }
-    screen.finish()
-}
-
-fn flash_of(seconds: usize, paint: impl Fn(usize, usize, usize) -> [u8; 3]) -> Option<(usize, f64, &'static str)> {
-    flash_samples(seconds * 60, 60.0, move |f, _, x, y| paint(f, x, y))
-}
-
-/// two colours taking turns `hz` times a second, over a box of the frame
-fn turns(hz: usize, on: [u8; 3], off: [u8; 3], bx: (usize, usize, usize, usize)) -> Option<(usize, f64, &'static str)> {
-    flash_of(3, move |f, x, y| {
-        let inside = x >= bx.0 && x < bx.0 + bx.2 && y >= bx.1 && y < bx.1 + bx.3;
-        if inside && f * hz * 2 / 60 % 2 == 0 { on } else { off }
-    })
-}
-
-#[test]
-fn flashing_is_found_past_three_a_second_and_not_at_it() {
-    let (white, black) = ([255, 255, 255], [0, 0, 0]);
-    let all = (0, 0, 96, 54);
-    assert_eq!(turns(3, white, black, all), None, "three a second is the limit, not past it");
-    let (swings, _, kind) = turns(4, white, black, all).expect("four a second");
-    assert_eq!((swings / 2, kind), (4, "general"));
-    // a small box: under a quarter of any window, and then over it
-    assert_eq!(turns(5, white, black, (40, 20, 10, 10)), None);
-    assert!(turns(5, white, black, (30, 18, 32, 18)).is_some());
-    // too small a change, and both ends too bright for WCAG to count it
-    assert_eq!(turns(5, [60, 60, 60], [30, 30, 30], all), None);
-    assert_eq!(turns(5, [255, 255, 255], [235, 235, 235], all), None);
-    // a dark saturated red: too dim to count as a general flash, past the limit as a red one
-    assert_eq!(turns(5, [150, 0, 0], black, all).map(|t| t.2), Some("red"));
-}
-
-#[test]
-fn a_flash_of_single_frames_counts_at_any_frame_rate() {
-    // 120 fps with one white frame in every 30: four flashes a second, each gone within a sixtieth of a second
-    let found = flash_samples(360, 120.0, |f, _, _, _| if f % 30 == 1 { [255, 255, 255] } else { [0, 0, 0] });
-    assert_eq!(found.map(|(swings, _, kind)| (swings / 2, kind)), Some((4, "general")));
-}
-
-#[test]
-fn a_flash_the_area_sample_averages_away_is_found_in_the_point_sample() {
-    let found = flash_samples(180, 60.0, |f, sample, _, _| {
-        if sample == 0 {
-            return [128, 128, 128];
-        }
-        if f * 5 * 2 / 60 % 2 == 0 { [255, 255, 255] } else { [0, 0, 0] }
-    });
-    assert!(found.is_some(), "the same flash in the point sample alone");
-}
-
 #[test]
 fn a_frame_gets_its_exact_time_from_the_log() {
     // lines FFmpeg 9.0.2 logged with -loglevel level+info
@@ -382,34 +316,107 @@ fn only_a_lines_own_severity_counts_as_an_error() {
     assert_eq!(log_level("frame=  300 fps=0.0"), None);
 }
 
+
+/// A centred line in a left: 0; right: 0 box isn't in the left zone: its letters are tested where the render recorded
+/// them (#89); a left-aligned one is, the finding naming the edge, and a manifest without ink is tested by the box.
 #[test]
-fn a_shape_sliding_past_and_ordinary_cuts_are_not_flashing() {
-    let (white, black) = ([255, 255, 255], [0, 0, 0]);
-    assert_eq!(flash_of(3, move |f, x, _| if x < f { white } else { black }), None, "one wipe across the frame");
-    assert_eq!(flash_of(4, move |f, _, _| if (f / 30) % 2 == 0 { white } else { black }), None, "a cut every half second");
+fn safe_area_tests_the_letters_not_the_box() {
+    let safe_area = |ink: Value| {
+        let m = json!({"fps": 1.0, "frames": [{"frame": 0, "text": [{"text": "centred", "box": [0, 160, 640, 40], "ink": ink}]}]});
+        let (mut issues, mut passed) = (vec![], vec![]);
+        text_rules(&text_runs(&m), None, 640.0, 360.0, None, None, &mut issues, &mut passed);
+        issues.into_iter().filter(|i| i.rule == "safe-area").map(|i| i.says).collect::<String>()
+    };
+    assert_eq!(safe_area(json!([250, 160, 140, 40])), "");
+    let left = safe_area(json!([0, 160, 140, 40]));
+    assert!(left.contains("at the left") && left.contains("its letters 0,160 140x40"), "{left}");
+    assert!(safe_area(Value::Null).contains("its box 0,160 640x40"));
 }
 
 #[test]
-fn a_patch_strobing_while_its_background_dims_is_still_found() {
-    // a third of a window: 0 then 124 on a 148 background, then the background settles at 124 and the patch cycles 124 and 160.
-    // The background's drop is under the 0.10 that counts, but it outweighs the patch in the window's mean.
-    let found = flash_samples(180, 60.0, |f, _, x, y| {
-        let patch = x < 16 && y < 12;
-        let level = match (patch, f) {
-            (true, 0) => 0,
-            (true, 1) => 124,
-            (true, _) => if (f - 2) * 5 * 2 / 60 % 2 == 0 { 160 } else { 124 },
-            (false, 0 | 1) => 148,
-            (false, _) => 124,
-        };
-        [level, level, level]
-    });
-    assert!(found.is_some(), "the patch flashes five times a second");
+fn a_card_sharing_one_word_with_another_line_isnt_held_to_it() {
+    let run = |text: &str, from: f64| Run { text: text.into(), from, to: from + 2.0, box_: [0.0; 4], boxes: vec![], color: String::new(), size: 48.0 };
+    let said = |ws: &[(&str, f64)]| ws.iter().map(|(t, s)| Word { text: (*t).into(), start: *s, end: *s }).collect::<Vec<Word>>();
+    let words = said(&[("at", 37.9), ("wirestock", 38.2), ("i", 38.9), ("worked", 39.0), ("on", 39.2), ("a", 39.3), ("sora", 39.5), ("campaign", 40.2)]);
+    let (mut issues, mut passed) = (vec![], vec![]);
+    // one word of three shared with the line, said 1.35 s before: not a caption of it (the film's false P1)
+    cues(&[run("Wirestock × OpenAI Sora", 39.55)], &words, &mut issues, &mut passed);
+    // one word of four, "campaign": the same
+    cues(&[run("Classroom of Tomorrow campaign", 39.55)], &words, &mut issues, &mut passed);
+    assert!(issues.is_empty(), "{:?}", issues.iter().map(|i| &i.says).collect::<Vec<_>>());
+    // a one-word card is held only to the word said right by it: "wirestock" 1.35 s earlier is another moment
+    cues(&[run("Wirestock", 39.55)], &words, &mut issues, &mut passed);
+    assert!(issues.is_empty(), "{:?}", issues.iter().map(|i| &i.says).collect::<Vec<_>>());
+    // a real caption late by 0.4 s is still found
+    cues(&[run("a Sora campaign", 39.7)], &words, &mut issues, &mut passed);
+    assert_eq!(issues.len(), 1, "{:?}", issues.iter().map(|i| &i.says).collect::<Vec<_>>());
 }
 
 #[test]
-fn a_colour_crossing_the_saturation_line_is_not_a_red_flash() {
-    // one level of green moves the pixel across R/(R+G+B) = 0.8 and hardly changes its red at all
-    let found = flash_samples(180, 60.0, |f, _, _, _| if f * 5 * 2 / 60 % 2 == 0 { [100, 49, 0] } else { [100, 50, 0] });
-    assert_eq!(found, None);
+fn clipping_is_found_and_a_loud_clean_tone_isnt() {
+    // a clean tone near full scale, then the same tone clamped (a limiter's flat tops), then pushed past full scale
+    let loud = tone(3.0, &[(0.0, 3.0, -1.0)]);
+    let one = |x: &[f32]| clipped(&[x.to_vec()]);
+    assert!(one(&loud).is_empty(), "{:?}", one(&loud));
+    let clamped: Vec<f32> = loud.iter().map(|v| (v * 10.0).clamp(-0.3, 0.3)).collect();
+    assert_eq!(one(&clamped).len(), 1);
+    let over: Vec<f32> = loud.iter().map(|v| (v * 2.0).clamp(-1.0, 1.0)).collect();
+    assert_eq!(one(&over).len(), 1);
+    // one transient hitting full scale once isn't clipping
+    let mut once = tone(3.0, &[(0.0, 3.0, -20.0)]);
+    once[SR] = 1.0;
+    assert!(one(&once).is_empty());
+    // clipping is a channel's: one side clipped is found; a centred voice at -1.6 dBFS a side is clean, though the mono
+    // fold (L + R) * 0.707 takes it past full scale (11-19: the walkaround's master read as clipping)
+    assert_eq!(clipped(&[loud.clone(), over.clone()]).len(), 1);
+    let centred: Vec<f32> = loud.iter().map(|v| v * 0.92).collect();
+    assert!(clipped(&[centred.clone(), centred.clone()]).is_empty());
+    let folded: Vec<f32> = centred.iter().map(|v| (v + v) * 0.7071).collect();
+    assert_eq!(one(&folded).len(), 1);
+}
+
+#[test]
+fn a_dropout_is_found_and_a_faded_pause_isnt() {
+    // a bed at -20 dBFS with 0.6 s cut out of it, as the bootstrap's dropout does
+    let mut cut = tone(4.0, &[(0.0, 4.0, -20.0)]);
+    cut[(1.7 * SR as f64) as usize..(2.3 * SR as f64) as usize].iter_mut().for_each(|v| *v = 0.0);
+    let found = dropouts(&cut);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!((found[0].0 - 1.7).abs() < 0.02, "{found:?}");
+    // a pause that fades out over 300 ms and back in isn't one, nor a sound that stops and stays stopped
+    let gain = |t: f32| ((1.7 - t) / 0.3).max((t - 2.3) / 0.3).clamp(0.0, 1.0);
+    let paused: Vec<f32> = tone(4.0, &[(0.0, 4.0, -20.0)]).into_iter().enumerate().map(|(i, v)| v * gain(i as f32 / SR as f32)).collect();
+    assert!(dropouts(&paused).is_empty(), "{:?}", dropouts(&paused));
+    assert!(dropouts(&tone(4.0, &[(0.0, 2.0, -20.0)])).is_empty());
+}
+
+#[test]
+fn a_flash_frame_is_found_and_a_cut_or_a_fade_isnt() {
+    let mut shot = vec![0.5f32; 60];
+    shot[30] = 0.0;
+    assert_eq!(flash_frames(&shot, 30.0).len(), 1);
+    shot[31] = 0.0;
+    assert_eq!(flash_frames(&shot, 30.0).len(), 1, "two frames are one flash");
+    let cut: Vec<f32> = (0..60).map(|i| if i < 30 { 0.6 } else { 0.1 }).collect();
+    assert!(flash_frames(&cut, 30.0).is_empty());
+    let fade: Vec<f32> = (0..60).map(|i| 0.6 * (1.0 - i as f32 / 59.0)).collect();
+    assert!(flash_frames(&fade, 30.0).is_empty());
+    // a white frame, too
+    let mut white = vec![0.3f32; 20];
+    white[10] = 1.0;
+    assert_eq!(flash_frames(&white, 30.0)[0].0, 10.0 / 30.0);
+}
+
+#[test]
+fn things_found_are_findings_and_an_unknown_rule_is_not() {
+    let p = std::env::temp_dir().join(format!("raea-check-things-{}.json", std::process::id()));
+    let found = r#"{"issues": [{"rule": "floating", "p": 2, "at": 1.5, "to": 3.0, "says": "cup floats"}, {"rule": "made-up", "p": 0, "at": 0.0, "says": "x"}]}"#;
+    std::fs::write(&p, found).unwrap();
+    let (mut issues, mut passed) = (Vec::new(), Vec::new());
+    things(p.to_str().unwrap(), &mut issues, &mut passed).unwrap();
+    assert_eq!(issues.iter().map(|i| (i.rule, i.p, i.at)).collect::<Vec<_>>(), [("floating", 2, Some(1.5))]);
+    std::fs::write(&p, r#"{"issues": []}"#).unwrap();
+    things(p.to_str().unwrap(), &mut Vec::new(), &mut passed).unwrap();
+    let _ = std::fs::remove_file(&p);
+    assert_eq!(passed.len(), 1, "nothing found is a pass");
 }

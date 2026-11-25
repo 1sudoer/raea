@@ -13,6 +13,7 @@ use crate::{
 };
 use blitz_traits::shell::Viewport;
 use style::Atom;
+use selectors::matching::ElementSelectorFlags;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::stylesheets::OriginSet;
 use thin_vec::ThinVec;
@@ -41,6 +42,16 @@ enum SpecialOp {
     UnloadSubDocument(NodeId),
     #[cfg(feature = "custom-widget")]
     UnloadCustomWidget(NodeId),
+}
+
+/// raea (RAEA_FINE_RESTYLE=1; off unless set, and raea-page-host sets it unless it's set already): an attribute set or
+/// cleared restyles only what its snapshot's invalidation finds (the selectors that read it, siblings' and ancestors'
+/// included), each ancestor itself (for `:has()`), and, for `style`, the element's own declarations
+/// (RESTYLE_STYLE_ATTRIBUTE, below), as Servo does, instead of the element's and its parent's whole subtrees. A clip
+/// dragged along a timeline track restyled every clip on the track each step (raea feed's TL13a).
+fn fine_restyle() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("RAEA_FINE_RESTYLE").is_some_and(|v| v == "1"));
+    *ON
 }
 
 pub struct DocumentMutator<'doc> {
@@ -265,21 +276,62 @@ impl DocumentMutator<'_> {
         }
     }
 
+    /// raea (RAEA_FINE_RESTYLE): each ancestor of a changed element matched again, itself only. The snapshot's
+    /// invalidation doesn't reach an ancestor whose `:has()` reads the element (basecoat's
+    /// `label:has(input:checked)` stayed unchecked under the trial, ui-parity p18-dom/lib-basecoat); the parent's whole
+    /// subtree restyled in its place, every clip on a timeline track for one clip's move.
+    fn restyle_ancestors_self(&mut self, node_id: NodeId) {
+        let mut up = self.doc.nodes[node_id].parent;
+        while let Some(id) = up {
+            let Some(node) = self.doc.nodes.get_mut(id) else { break };
+            if let Some(mut data) = node.try_stylo_element_data_mut().and_then(|s| s.get_mut()) {
+                data.hint |= RestyleHint::RESTYLE_SELF;
+            }
+            up = node.parent;
+        }
+    }
+
+    /// raea: `from` and each element up from it whose `:has()` was matched (Stylo flags it ANCHORS_RELATIVE_SELECTOR)
+    /// matched again, itself only, after a node under it was inserted or removed. The traversal visited them (their
+    /// ancestors marked dirty) but kept the answer their `:has()` gave before: a caption a <Sequence> put on the page
+    /// at its frame stayed hidden under `:not(:has([data-raea-role="caption"]))` (docs/layers.feature LA2a, an
+    /// export's captions pass), and footage that came in later under RAEA_HIDE_MEDIA=under. Chrome matches them again.
+    fn restyle_has_anchors(&mut self, from: NodeId) {
+        let anchors = ElementSelectorFlags::ANCHORS_RELATIVE_SELECTOR | ElementSelectorFlags::ANCHORS_RELATIVE_SELECTOR_NON_SUBJECT;
+        let mut at = Some(from);
+        while let Some(id) = at {
+            let Some(node) = self.doc.nodes.get_mut(id) else { break };
+            if node.element_data().is_some_and(|e| e.selector_flags.get().intersects(anchors)) {
+                if let Some(mut data) = node.try_stylo_element_data_mut().and_then(|s| s.get_mut()) {
+                    data.hint |= RestyleHint::RESTYLE_SELF;
+                }
+            }
+            at = node.parent;
+        }
+    }
+
     pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document {
             self.doc.snapshot_node(node_id);
 
+            let fine = fine_restyle();
+            if fine {
+                self.doc.snapshot_changed_attr(node_id, &name);
+                self.restyle_ancestors_self(node_id);
+            }
             let node = &mut self.doc.nodes[node_id];
             if let Some(mut data) = node.try_stylo_element_data_mut().and_then(|s| s.get_mut()) {
-                data.hint |= RestyleHint::restyle_subtree();
+                if !fine {
+                    data.hint |= RestyleHint::restyle_subtree();
+                }
                 data.damage.insert(ALL_DAMAGE);
             }
             node.mark_damaged();
 
             // TODO: make this fine grained / conditional based on ElementSelectorFlags
             let parent = node.parent;
-            if let Some(parent_id) = parent {
+            if let Some(parent_id) = parent.filter(|_| !fine) {
                 let parent = &mut self.doc.nodes[parent_id];
                 if let Some(mut data) = parent
                     .try_stylo_element_data_mut()
@@ -404,10 +456,17 @@ impl DocumentMutator<'_> {
         if node_is_in_document {
             self.doc.snapshot_node(node_id);
 
+            let fine = fine_restyle();
+            if fine {
+                self.doc.snapshot_changed_attr(node_id, &name);
+                self.restyle_ancestors_self(node_id);
+            }
             let node = &mut self.doc.nodes[node_id];
 
             if let Some(mut data) = node.try_stylo_element_data_mut().and_then(|s| s.get_mut()) {
-                data.hint |= RestyleHint::restyle_subtree();
+                if !fine {
+                    data.hint |= RestyleHint::restyle_subtree();
+                }
                 data.damage.insert(ALL_DAMAGE);
             }
             node.mark_damaged();
@@ -556,6 +615,9 @@ impl DocumentMutator<'_> {
             parent.mark_ancestors_dirty();
             parent.children.retain(|id| *id != node_id);
             self.maybe_record_node(parent_id);
+            if node_is_in_document {
+                self.restyle_has_anchors(parent_id);
+            }
         }
     }
 
@@ -596,6 +658,9 @@ impl DocumentMutator<'_> {
 
             parent.children.retain(|id| *id != node_id);
             self.maybe_record_node(parent_id);
+            if parent_is_in_doc {
+                self.restyle_has_anchors(parent_id);
+            }
         }
 
         node
@@ -622,6 +687,9 @@ impl DocumentMutator<'_> {
         for child_id in children {
             self.process_removed_subtree(child_id);
             let _ = self.doc.drop_node_ignoring_parent(child_id);
+        }
+        if parent_is_in_doc {
+            self.restyle_has_anchors(node_id);
         }
         self.maybe_record_node(node_id);
     }
@@ -701,6 +769,9 @@ impl DocumentMutator<'_> {
 
             old_parent.children.retain(|id| *id != child_id);
             self.maybe_record_node(old_parent_id);
+            if child_was_in_doc {
+                self.restyle_has_anchors(old_parent_id);
+            }
         }
 
         let new_parent = &mut self.doc.nodes[parent_id];
@@ -719,6 +790,9 @@ impl DocumentMutator<'_> {
         }
 
         insert_children_fn(new_parent, child_ids);
+        if new_parent_is_in_document {
+            self.restyle_has_anchors(parent_id);
+        }
 
         for child_id in child_ids.iter().copied() {
             let child = &mut self.doc.nodes[child_id];

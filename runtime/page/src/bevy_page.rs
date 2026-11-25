@@ -44,12 +44,7 @@ impl BevyPage {
         let surf = match self.surf.filter(|e| react.get::<ReactKind>(*e).is_some_and(|k| k.0 == "surface")) {
             Some(e) => e,
             None => {
-                let mut q = react.query::<(Entity, &ReactKind, Option<&ReactProps>)>();
-                let e = q
-                    .iter(react)
-                    .find(|(_, k, p)| k.0 == "surface" && p.and_then(|p| p.0.get("id")).and_then(Value::as_str) == Some("motion"))
-                    .map(|(e, _, _)| e)
-                    .ok_or("the composition's surface isn't there")?;
+                let e = raea_runtime_react::scene::surface(react).ok_or("the composition's surface isn't there")?;
                 self.surf = Some(e);
                 e
             }
@@ -103,11 +98,7 @@ impl BevyPage {
             }
         }
         crate::screen::retire(&mut self.apps, &self.app_screens);
-        for (name, _, _, app) in &self.app_screens {
-            if self.apps.failed.insert(name.clone(), app.clone()).is_none() {
-                eprintln!("raea: screen {name:?}: its app {app:?} isn't drawn yet: app screens move to raea-runtime-js roots of their own (ts-native P27)");
-            }
-        }
+        crate::screen::step_all(&mut self.apps, &self.app_screens, &self.dir);
         self.page.place_videos(videos)
     }
 
@@ -152,17 +143,32 @@ impl BevyPage {
     /// The page and each <Screen>'s picture drawn and read back: the page's premultiplied RGBA, and each screen's name,
     /// size and RGBA.
     pub fn frame_all(&mut self) -> R<(Vec<u8>, Vec<(String, u32, u32, Vec<u8>)>)> {
-        self.page.frame_all()
+        let (px, mut pics) = self.page.frame_all()?;
+        pics.extend(crate::screen::pictures(&mut self.apps)?);
+        Ok((px, pics))
     }
 
-    /// The page drawn at frame `f` of a composition at `fps`: its CSS animations and transitions where they are then.
+    /// The page drawn at frame `f` of a composition at `fps`: its CSS animations and transitions where they are then,
+    /// and its app screens stepped there.
     pub fn at_frame(&mut self, f: i64, fps: f64) {
         self.page.at_frame(f, fps);
+        self.set_app_frame(f, fps);
+    }
+
+    /// The frame the app screens step to at the next sync (live play, whose page keeps its own CSS clock).
+    pub fn set_app_frame(&mut self, f: i64, fps: f64) {
+        self.apps.frame = Some((f, fps));
     }
 
     /// The page drawn and read back: premultiplied RGBA rows, `w` x `h`.
     pub fn frame(&mut self) -> R<Vec<u8>> {
         self.page.frame()
+    }
+
+    /// The first thing the page shows that isn't black, and where it's written (raea-page's visible_paint): a frame all
+    /// black while it's there was lost (#96).
+    pub fn visible_paint(&mut self) -> Option<String> {
+        self.page.visible_paint()
     }
 
     /// Whether the page's GPU still runs work (raea-page's gpucheck).
@@ -173,6 +179,17 @@ impl BevyPage {
     /// A React element's box as it's drawn, transforms applied ([x, y, w, h] in page px), by its React id.
     pub fn client_box(&mut self, id: u64) -> Option<[f32; 4]> {
         self.page.client_box(id + REACT_IDS)
+    }
+
+    /// Every React element's boxes as the page lays them out now (`page.layout`, docs/layout-reads.feature LR1), keyed by
+    /// React id: the page's own elements (the body, holders' parts) left out. Lay the page out first.
+    pub fn layout_snapshot(&self, request: &str) -> String {
+        // the elements whose computed style the read asks for (React ids; op ids here)
+        let styles: Vec<u64> = serde_json::from_str::<serde_json::Value>(request)
+            .ok()
+            .and_then(|v| v["styles"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_u64).map(|r| r + REACT_IDS).collect()))
+            .unwrap_or_default();
+        self.page.layout_snapshot(|id| (id >= REACT_IDS && id & TEXT_BIT == 0).then(|| id - REACT_IDS), &styles)
     }
 
     /// The React element topmost at the point (page px): its React id (none over the page's own body).
@@ -197,10 +214,15 @@ impl BevyPage {
         self.page.boxes()
     }
 
-    /// Frame `f` of the render's manifest (render.json): the videos and text the page shows, as laid out.
+    /// Frame `f` of the render's manifest (render.json): the videos, text and pictures the page shows, as laid out.
     pub fn manifest_frame(&mut self, f: i64) -> Value {
-        let (videos, text) = self.page.manifest();
-        serde_json::json!({"frame": f, "videos": videos, "text": text})
+        let (videos, text, pictures) = self.page.manifest();
+        serde_json::json!({"frame": f, "videos": videos, "text": text, "pictures": pictures})
+    }
+
+    /// The page laid out, nothing drawn (`raea world`): what `manifest_frame` and `boxes` read after a `sync`.
+    pub fn lay_out(&mut self) {
+        self.page.lay_out();
     }
 
     /// The page drawn, nothing read back (live play): its picture is `texture`.
@@ -259,9 +281,10 @@ impl BevyPage {
         &mut self.apps
     }
 
-    /// Each <Screen>'s picture as last drawn, by name: its texture on the shared device.
+    /// Each <Screen>'s picture as last drawn, by name: its texture on the shared device (an app screen's too).
     pub fn screen_textures(&self) -> Vec<(String, wgpu::Texture)> {
-        self.page.sub_textures().into_iter().map(|(k, t, _, _)| (k, (*t).clone())).collect()
+        let apps = crate::screen::textures(&self.apps);
+        self.page.sub_textures().into_iter().map(|(k, t, _, _)| (k, t)).chain(apps).map(|(k, t)| (k, (*t).clone())).collect()
     }
 
     /// The page's picture as last drawn, on the shared device (`Rgba8UnormSrgb`, premultiplied).

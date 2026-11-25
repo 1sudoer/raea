@@ -4,7 +4,7 @@ use super::*;
 
 /// Where raea's npm keeps what it fetched: RAEA_NPM_HOME, or ~/.raea/npm.
 pub(crate) fn home() -> PathBuf {
-    std::env::var_os("RAEA_NPM_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".raea/npm"))
+    raea_io_home::env_path("RAEA_NPM_HOME", ".raea/npm")
 }
 
 /// A package name as one path segment ("@scope/name" is "@scope+name").

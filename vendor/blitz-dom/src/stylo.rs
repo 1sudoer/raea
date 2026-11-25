@@ -1431,7 +1431,17 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
         if let Some(el) = node.as_element() {
             // let mut data = el.mutate_data().unwrap();
             let mut data = unsafe { el.ensure_data() };
+            let unstyled = data.styles.get_primary().is_none();
             recalc_style_at(self, context, el, &mut data, note_child);
+
+            // raea: an element styled for the first time is built and laid out from scratch. Stylo gives a first
+            // style no damage (damage is a difference from an old style), and it clears the data, damage included,
+            // of everything under a `display: none` element. So a node added under a hidden element kept the layout
+            // children collected while it had no style (none), and showing the element drew it as its padding with
+            // nothing in it: the app's notes rail, closed while a note was posted, opened on an empty row.
+            if unstyled && data.styles.get_primary().is_some() {
+                data.damage |= crate::layout::damage::ALL_DAMAGE;
+            }
 
             sync_pseudo_element_styles(el, &data, &self.nodes_needing_style_image_flush);
 

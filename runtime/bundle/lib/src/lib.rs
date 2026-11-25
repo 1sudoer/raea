@@ -24,7 +24,7 @@ pub fn lib() -> Result<&'static Lib, String> {
         let mut at: Vec<PathBuf> = std::env::var_os("RAEA_BUNDLE_LIB").map(PathBuf::from).into_iter().collect();
         // beside the binary (runtime/react/build.rs puts it there), or a folder up (test binaries run from deps/); the binary
         // itself, not a link to it (an install links ~/.local/bin/raea to ~/.raea/bin)
-        if let Some(dir) = std::env::current_exe().ok().map(|e| e.canonicalize().unwrap_or(e)).and_then(|e| e.parent().map(Path::to_path_buf)) {
+        if let Some(dir) = std::env::current_exe().ok().map(raea_io_home::real).and_then(|e| e.parent().map(Path::to_path_buf)) {
             at.push(dir.join(&name));
             at.extend(dir.parent().map(|d| d.join(&name)));
         }

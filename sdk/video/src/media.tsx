@@ -1,23 +1,26 @@
 // Video, Audio, Img and staticFile (spec: "Media plays in step with the frame"). These render as plain elements
 // that carry their props for the renderer, with the timing already worked out for the frame being rendered.
-import type { CSSProperties, ImgHTMLAttributes } from "react";
+import { createContext, useContext, type CSSProperties, type ImgHTMLAttributes } from "react";
 // assets stays in raea until it moves to @raea/asset (docs/sdk.feature S1d)
 import { isGeneratedAsset, type GeneratedAsset } from "@raea/asset/assets";
 import { useClockState, useLocalTime } from "@raea/app/clock";
 import { jsx } from "react/jsx-runtime";
+import { SPEEDS, speedLength, speedPoints, speedSource, type SpeedPoint } from "./speed";
 
 export type VolumeProp = number | ((mediaFrame: number) => number);
 
 export interface MediaProps {
   /** the file: staticFile("clip.mp4"), or a generated asset */
   src: string;
-  /** the media's own frame it starts playing from (0); the same as trimBefore */
+  /** where in the media it starts playing (0), counted in the composition's frames, not the
+   * media's own: a 24 fps clip in a 60 fps film starts at its 4 s with startFrom={240}; the same as trimBefore */
   startFrom?: number;
-  /** the media's frame it stops before (exclusive): it holds the last frame, or loops; the same as trimAfter */
+  /** where in the media it stops (exclusive), in the composition's frames like startFrom: it holds the last frame, or
+   * loops; the same as trimAfter */
   endAt?: number;
-  /** frames of the media cut off its start (the newer name for startFrom) */
+  /** how much of the media is cut off its start, in the composition's frames (the newer name for startFrom) */
   trimBefore?: number;
-  /** the media's frame it's cut at (the newer name for endAt) */
+  /** where the media is cut, in the composition's frames (the newer name for endAt) */
   trimAfter?: number;
   /** linear gain, 1 being unity (0.5 is about -6 dB, 1.78 about +5 dB), or a function of the media's own frame */
   volume?: VolumeProp;
@@ -25,10 +28,15 @@ export interface MediaProps {
   gainDb?: VolumeProp;
   /** ours: seconds to ramp the sound in from silence at its start (applied by the renderer at the audio's rate) */
   fadeIn?: number;
-  /** ours: seconds to ramp the sound out to silence at its end */
+  /** ours: seconds to ramp the sound out to silence by its end: the end of its Sequence or Loop pass, or endAt, whichever
+   *  comes first (one removed some other way fades out after it's gone) */
   fadeOut?: number;
   /** how fast it plays (1): 2 is double speed */
   playbackRate?: number;
+  /** ours: its speed as a curve over its source, [place, speed] points: the place from 0 (startFrom) to 1 (endAt, which
+   *  it needs), the speed from 0.1 to 10 and changing in a straight line between two points. Wins over playbackRate;
+   *  its Sequence is as long as the curve takes (`speedLength`) */
+  speedCurve?: SpeedPoint[];
   /** play no sound */
   muted?: boolean;
   /** start again from `startFrom` when it reaches `endAt` */
@@ -49,10 +57,37 @@ export interface VideoProps extends MediaProps {
   framing?: "face";
   /** ours: multiplies the framing's scale (1.15 is the usual) */
   punchIn?: number;
+  /** ours: its cutout (docs/timeline.feature TL7l, CapCut's Auto cutout): the mattes made of its file, which it wears as
+   *  its mask, so what is cut out shows what is under it */
+  matte?: VideoMatte;
+}
+
+/** A clip's mattes: PNGs whose alpha is what is kept, m00001.png on, in one folder of the media folder. */
+export interface VideoMatte {
+  /** the folder, as staticFile gives it: staticFile("matte/take-person") */
+  src: string;
+  /** the file's frame rate: m00001.png is its frame 0 */
+  fps: number;
+  /** one matte each `every` frames of the file, held until the next (1, every frame, when left out) */
+  every?: number;
+  /** how many mattes there are: past the last, the last is worn */
+  count: number;
+}
+
+/** The matte `m` has for `seconds` of the file, worn where the picture is (`fit` and `place` as its objectFit and
+ *  objectPosition), so each pixel of the matte is over the pixel of the frame it was made from. */
+export function matteStyle(m: VideoMatte, seconds: number, fit: CSSProperties["objectFit"], place: CSSProperties["objectPosition"]): CSSProperties {
+  const every = m.every ?? 1;
+  if (typeof m.src !== "string" || !m.src || !(m.fps > 0) || !(every >= 1) || !(m.count >= 1)) {
+    throw new RangeError(`Video matte: give its folder (src), the file's fps, and count (at least 1), every 1 or more: got ${JSON.stringify(m)}`);
+  }
+  const i = Math.max(0, Math.min(m.count - 1, Math.floor((Math.max(0, seconds) * m.fps) / every + 1e-6)));
+  const size = fit === "contain" || fit === "cover" ? fit : fit === "none" || fit === "scale-down" ? "auto" : "100% 100%";
+  return { maskImage: `url(${m.src.replace(/\/$/, "")}/m${String(i + 1).padStart(5, "0")}.png)`, maskSize: size, maskPosition: String(place ?? "50% 50%"), maskRepeat: "no-repeat" };
 }
 
 export type AudioProps = Omit<MediaProps, "style" | "className" | "src"> & {
-  /** a file URL, or a generated asset from lyria() or sao() */
+  /** a file URL (staticFile), or a generated sound from sao() */
   src: string | GeneratedAsset;
 };
 
@@ -61,6 +96,10 @@ interface MediaTiming {
   sourceFrame: number;
   ended: boolean;
   volume: number;
+  /** how fast the source is passing at this frame: playbackRate, or the curve's speed here */
+  rate: number;
+  /** how many frames it plays from its start to endAt (Infinity with no endAt) */
+  length: number;
 }
 
 function pick(owner: string, a: number | undefined, aName: string, b: number | undefined, bName: string) {
@@ -86,7 +125,24 @@ function timing(owner: string, props: MediaProps, frame: number, src: string): M
 
   let sourceFrame = startFrom + Math.max(0, frame) * rate;
   let ended = false;
-  if (endAt !== undefined && sourceFrame >= endAt) {
+  let now = rate;
+  let length = endAt === undefined ? Infinity : (endAt - startFrom) / rate;
+  if (props.speedCurve !== undefined) {
+    if (endAt === undefined) throw new Error(`${owner} ${src}: speedCurve runs from startFrom to endAt, so it needs endAt`);
+    const ps = speedPoints(`${owner} ${src}`, props.speedCurve);
+    const span = endAt - startFrom;
+    length = speedLength(ps, span);
+    let f = Math.max(0, frame);
+    if (f >= length) {
+      if (props.loop) f %= length;
+      else ended = true;
+    }
+    // endAt is exclusive: hold the last frame before it
+    const at = ended ? Math.max(0, span - 1) : speedSource(ps, span, f);
+    sourceFrame = startFrom + at;
+    // the source this frame passes: what the sound plays at, so the next frame's source is where it has got to
+    now = ended ? rate : Math.max(SPEEDS[0], speedSource(ps, span, f + 1) - at);
+  } else if (endAt !== undefined && sourceFrame >= endAt) {
     if (props.loop) {
       const span = endAt - startFrom;
       sourceFrame = startFrom + ((sourceFrame - startFrom) % span);
@@ -115,9 +171,11 @@ function timing(owner: string, props: MediaProps, frame: number, src: string): M
   TIMING.sourceFrame = sourceFrame;
   TIMING.ended = ended;
   TIMING.volume = volume;
+  TIMING.rate = now;
+  TIMING.length = length;
   return TIMING;
 }
-const TIMING: MediaTiming = { sourceFrame: 0, ended: false, volume: 1 };
+const TIMING: MediaTiming = { sourceFrame: 0, ended: false, volume: 1, rate: 1, length: Infinity };
 
 /** A fade length in seconds, checked; the renderer applies it at the audio's own rate, so it can be under a frame. */
 function fadeSeconds(owner: string, props: MediaProps, name: "fadeIn" | "fadeOut", src: string): number {
@@ -128,22 +186,47 @@ function fadeSeconds(owner: string, props: MediaProps, name: "fadeIn" | "fadeOut
   return v;
 }
 
+/** The composition frame after the last one media under it plays (a Sequence's end, a Loop pass's): its fadeOut ends
+ *  there, in the clip, not after it (timeline.tsx gives it; Infinity: none) */
+export const MediaEndContext = createContext(Infinity);
+
+/** `volume` turned down by the fade-out into `end` (a composition frame) at composition frame `now`. The mixer ramps
+ *  each frame's gain over the frame after it, so a frame says the gain one frame on, and its last frame is 1/(fade * fps):
+ *  a frame at 0 would drop the sound a frame early (a silent sound isn't played), and the stop at `end` takes it the rest
+ *  of the way in the mixer's 5 ms edge. */
+function fadedOut(volume: number, fade: number, fps: number, now: number, end: number): number {
+  if (!(fade > 0) || end === Infinity) return volume;
+  return volume * Math.min(1, Math.max(0, (end - now) / (fade * fps)));
+}
+
 // `src`: the file the element plays (an <Audio>'s generated sound passes its file; its props were copied to give it)
 function useMediaAttrs(owner: string, props: MediaProps, src = props.src as string) {
   const { fps } = useClockState(owner).config;
   const { frame, origin } = useLocalTime(owner);
   if (typeof src !== "string" || src === "") throw new Error(`${owner}: src is required`);
   const t = timing(owner, props, frame, src);
+  // (read now: `t` is one object every media element shares)
+  const rate = t.rate;
+  // where it stops: its Sequence's (or Loop pass's) end, or endAt reached (a loop never reaches it)
+  const endAt = props.loop ? undefined : (props.endAt ?? props.trimAfter);
+  const own = endAt === undefined ? Infinity : origin + Math.ceil(t.length);
+  const fadeOut = fadeSeconds(owner, props, "fadeOut", src);
+  const end = Math.min(useContext(MediaEndContext), own);
+  const volume = fadedOut(t.volume, fadeOut, fps, origin + frame, end);
   const attrs: Record<string, string | number | undefined> = {
     src,
     "data-source-time": t.sourceFrame / fps,
     "data-source-frame": t.sourceFrame,
-    "data-volume": props.muted ? 0 : t.volume,
+    "data-volume": props.muted ? 0 : volume,
     "data-fade-in": fadeSeconds(owner, props, "fadeIn", src),
-    "data-fade-out": fadeSeconds(owner, props, "fadeOut", src),
-    "data-playback-rate": props.playbackRate ?? 1,
+    // faded here into its end: the stop at the end is the mixer's edge. With no end, the mixer fades it once it's gone
+    "data-fade-out": end === Infinity ? fadeOut : 0,
+    "data-playback-rate": rate,
     "data-start-from": props.startFrom ?? props.trimBefore ?? 0,
     "data-end-at": props.endAt ?? props.trimAfter,
+    // the clip's span of its source in seconds, where raea's mix measures it to level dialogue (raea-sys-mix level.rs)
+    "data-clip-from": (props.startFrom ?? props.trimBefore ?? 0) / fps,
+    "data-clip-to": endAt === undefined ? undefined : endAt / fps,
     "data-loop": props.loop ? "true" : undefined,
     "data-muted": props.muted ? "true" : undefined,
     "data-ended": t.ended ? "true" : undefined,
@@ -154,6 +237,11 @@ function useMediaAttrs(owner: string, props: MediaProps, src = props.src as stri
     // another by it, however many come and go around it
     "data-from": origin,
   };
+  // its source stamps (engine/bundle stamp.rs: where its JSX is written, its list key and uses), so the element it
+  // draws is selectable as its layer (docs/review.feature R2)
+  for (const [k, v] of Object.entries(props)) {
+    if (k.startsWith("data-raea-") && (typeof v === "string" || typeof v === "number")) attrs[k] = v;
+  }
   return attrs;
 }
 
@@ -169,7 +257,10 @@ export function Video(props: VideoProps) {
   // a framed Video's position is the engine's (its face track, punchIn): the centred default is left out, so only an
   // objectPosition the author gives wins over framing
   const framed = props.framing !== undefined || props.punchIn !== undefined;
-  const style: CSSProperties = { objectFit: "cover", ...(framed ? {} : { objectPosition: "50% 50%" }), ...props.style };
+  // (the engine places a framed take on its face, where a matte can't follow it)
+  if (props.matte && framed) throw new RangeError(`Video ${props.src}: a matte is worn over the picture as it is placed, so it can't go with framing or punchIn`);
+  const placed: CSSProperties = { objectFit: "cover", ...(framed ? {} : { objectPosition: "50% 50%" }), ...props.style };
+  const style = props.matte ? { ...placed, ...matteStyle(props.matte, Number(attrs["data-source-time"]), placed.objectFit, placed.objectPosition) } : placed;
   return (
     <video
       {...attrs}

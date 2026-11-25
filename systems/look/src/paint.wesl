@@ -14,6 +14,7 @@ import bevy_pbr::render::mesh_view_types;
 import bevy_pbr::render::shadows;
 import bevy_pbr::render::mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT;
 import raea_sys_look::paint_lights::light_bands;
+import raea_sys_look::paint_world::{world_at, world_shows};
 @if(PREPASS_PIPELINE) import bevy_pbr::prepass::io::{VertexOutput, FragmentOutput};
 @if(PREPASS_PIPELINE) import bevy_pbr::deferred::functions::deferred_output;
 @if(!PREPASS_PIPELINE) import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
@@ -38,7 +39,8 @@ struct Paint {
     calm: vec4<f32>,
     // texel (m: surfaces as pixel art, 0 for none), each cell's shade jitter, cloud shadows' drift (x, z, m)
     k5: vec4<f32>,
-    // cloud shadows: cover (0 none to 1), size (m); this material sways in the wind (1: a cut-out leaf or blade), -
+    // cloud shadows: cover (0 none to 1), size (m); this material sways in the wind (1: a cut-out leaf or blade); soft
+    // (0: the light in flat bands; above it the light as a gradient this wide)
     k6: vec4<f32>,
     // wind: how far a blade's tip bends (m, 0 none), its direction (x, z), the time it has blown (s)
     k7: vec4<f32>,
@@ -47,6 +49,21 @@ struct Paint {
     k8: vec4<f32>,
     haze: vec4<f32>,
     haze_sun: vec4<f32>,
+    // worlds (paint_world.wesl): up to four cuts, each a ball (its centre, its radius in m; 0: off)
+    cut: array<vec4<f32>, 4>,
+    // what's inside each cut: its style (0: the look's own), the style's scale, how much of it (0 to 1), -
+    style: array<vec4<f32>, 4>,
+    style_a: array<vec4<f32>, 4>,
+    style_b: array<vec4<f32>, 4>,
+    // this mesh's world (0: outside every cut; 1 to 4: inside that cut alone; -1: everywhere), the cuts' torn edge
+    // (m), their lit rim's width (m), -
+    kw: vec4<f32>,
+    // the rim's colour (a: on)
+    cut_rim: vec4<f32>,
+    // the eye-side rim's amount and power, the terminator's amount, -
+    k9: vec4<f32>,
+    rim: vec4<f32>,
+    term: vec4<f32>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100)
@@ -93,8 +110,24 @@ fn fragment(
     // the centre of its cell in a world grid `texel` across (nudged a quarter cell off the surface first, so a face
     // lying on a grid plane doesn't flicker between cells), and everything the shading reads from the point (the
     // texture, the shadow, strokes, grades) is read there: each cell one colour, the frame still full resolution
-    let texel = paint.k5.x;
+    var texel = paint.k5.x;
     let fine = pbr_input.world_position.xyz;
+    // the world the point is in (a <Look cuts>: paint_world.wesl), and that world's style and two colours
+    let world = world_at(fine, paint.cut[0], paint.cut[1], paint.cut[2], paint.cut[3], paint.kw.y);
+    var wstyle = vec4<f32>(0.0);
+    var wa = vec3<f32>(0.0);
+    var wb = vec3<f32>(1.0);
+    if world.x > 0.5 {
+        let wi = u32(world.x) - 1u;
+        wstyle = paint.style[wi];
+        wa = paint.style_a[wi].rgb;
+        wb = paint.style_b[wi].rgb;
+        // pixels: the world's surfaces in cells of its own size (not a mesh that is in every world: the cast keeps
+        // its own detail, and takes the world's short ramp of colour)
+        if wstyle.x > 0.5 && wstyle.x < 1.5 && paint.kw.x > -0.5 {
+            texel = wstyle.y;
+        }
+    }
     var wp = fine;
     if texel > 0.0 {
         wp = (floor((fine + pbr_input.world_normal * texel * 0.25) / texel) + 0.5) * texel;
@@ -113,6 +146,10 @@ fn fragment(
     ux = dpdx(uv0);
     uy = dpdy(uv0);
 }
+    // a mesh of another world isn't here
+    if !world_shows(world.x, paint.kw.x) {
+        discard;
+    }
     // unlit (a MeshBasicMaterial, `unlit`): its own colour, as drawn
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) != 0u {
         out.color = main_pass_post_lighting_processing(pbr_input, vec4<f32>(c.rgb + pbr_input.material.emissive.rgb * view_bindings::view.exposure, c.a));
@@ -200,9 +237,20 @@ fn fragment(
     // how square the surface faces the suns (`ndl`), and whether a sun that it faces reaches it (`lit`)
     var ndl = 0.0;
     var lit = false;
+    // soft: how far the surface is turned to a sun (`face`, 0 to 1 over `soft` of the turn) and how much of that
+    // light arrives past the cast shadows (`reach`), both as gradients
+    var soft = paint.k6.w;
+    // a world of pixels or of poster tones keeps its light flat
+    if (wstyle.x > 0.5 && wstyle.x < 1.5) || (wstyle.x > 6.5 && wstyle.x < 7.5) {
+        soft = 0.0;
+    }
+    var face = 0.0;
+    var reach = 0.0;
     if suns == 0u {
         ndl = 1.0;
         lit = true;
+        face = 1.0;
+        reach = 1.0;
     }
     for (var i: u32 = 0u; i < suns; i = i + 1u) {
         let light = &view_bindings::lights.directional_lights[i];
@@ -219,6 +267,16 @@ fn fragment(
                 sp = vec4<f32>(wp + pbr_input.world_normal * texel, 1.0);
             }
             s = shadows::fetch_directional_shadow(i, sp, pbr_input.world_normal, view_z, pbr_input.frag_coord.xy);
+        }
+        // inside a cut the sun's shadows are the other world's (its walls and furniture still stand in the shadow
+        // map): the world is lit by how it faces the sun alone
+        if world.x > 0.5 {
+            s = 1.0;
+        }
+        if soft > 0.0 {
+            let e = smoothstep(0.0, soft, d);
+            face = max(face, e);
+            reach = max(reach, e * s);
         }
         // the shadow's filtered edge cut at half: a shadow is a shape, not a gradient
         if s >= 0.5 + edge {
@@ -245,6 +303,20 @@ fn fragment(
         let j = min(steps, 1.0 + floor(clamp(ndl, 0.0, 1.0) * steps));
         tint = mix(paint.mid.rgb, vec3<f32>(1.0), j / steps);
     }
+    // soft: the same tones as a gradient, the form shadow turning into the light over `soft` and the cast shadow as
+    // soft as its filtered edge
+    if soft > 0.0 && n > 1.5 {
+        var turned = paint.mid.rgb;
+        if n < 2.5 {
+            turned = paint.shadow.rgb;
+        }
+        tint = mix(mix(turned, vec3<f32>(1.0), face), paint.shadow.rgb, clamp(face - reach, 0.0, 1.0));
+        // the terminator: where the surface turns out of the light its tone takes a colour of its own (a warm
+        // bleed, as light through skin or paint), most at the half turn
+        if paint.k9.z > 0.0 {
+            tint = mix(tint, tint * paint.term.rgb, 4.0 * face * (1.0 - face) * paint.k9.z);
+        }
+    }
     // cloud shadows: big soft-edged shapes of shade drifting over the land, cut hard like the cast shadows
     if lit && paint.k6.x > 0.0 {
         let q = vec2<f32>(wp.x - paint.k5.z, wp.z - paint.k5.w) / max(paint.k6.y, 1.0);
@@ -256,7 +328,7 @@ fn fragment(
         }
     }
     // the point and spot lights that ask for paint, in bands of their own colour (paint_lights.wesl)
-    tint = light_bands(tint, lit, pbr_input.world_position, pbr_input.N, pbr_input.world_normal, pbr_input.frag_coord, view_z, pbr_input.is_orthographic, pbr_input.flags, wobble, edge);
+    tint = light_bands(tint, lit, pbr_input.world_position, pbr_input.N, pbr_input.world_normal, pbr_input.frag_coord, view_z, pbr_input.is_orthographic, pbr_input.flags, wobble, edge, soft);
     let up = abs(pbr_input.N.y);
     // ambient occlusion as one band: walls near the ground (ao height, ragged) and creases the SSAO finds
     if paint.ao.w > 0.0 {
@@ -266,7 +338,17 @@ fn fragment(
         if paint.k1.y > 0.0 && pbr_input.diffuse_occlusion.r < paint.k1.y + (n2 - 0.5) * 0.15 {
             occluded = true;
         }
-        if occluded {
+        if soft > 0.0 {
+            // soft: the band's edges as gradients (up the wall, and over the SSAO's last `soft` before its threshold)
+            var o = 0.0;
+            if !lit && paint.k0.y > 0.0 && up < 0.7 {
+                o = 1.0 - smoothstep(0.0, paint.k0.y * (0.6 + 0.8 * n2), wp.y - paint.k0.z);
+            }
+            if paint.k1.y > 0.0 {
+                o = max(o, 1.0 - smoothstep(paint.k1.y * (1.0 - soft), paint.k1.y + 1e-3, pbr_input.diffuse_occlusion.r));
+            }
+            tint = mix(tint, tint * paint.ao.rgb, o);
+        } else if occluded {
             tint = tint * paint.ao.rgb;
         }
     }
@@ -289,6 +371,92 @@ fn fragment(
     // each texel a shade of its own, lighter or darker by up to `jitter`: a flat colour reads as hand-placed pixels
     if texel > 0.0 && paint.k5.y > 0.0 {
         rgb = rgb * (1.0 + (hash3(wp / texel + vec3<f32>(0.37)) - 0.5) * 2.0 * paint.k5.y);
+    }
+    let to_eye = normalize(view_bindings::view.world_position.xyz - fine);
+    let fres = 1.0 - saturate(dot(pbr_input.N, to_eye));
+    // the rim: what turns from the eye takes an edge of light in the look's rim colour, fuller on the lit side
+    if paint.k9.x > 0.0 {
+        var lightk = reach;
+        if soft <= 0.0 {
+            lightk = f32(lit);
+        }
+        rgb = rgb + c.rgb * paint.rim.rgb * pow(fres, paint.k9.y) * paint.k9.x * mix(0.3, 1.0, lightk);
+    }
+    // the world's style: the lit colour redrawn as that world draws things
+    if wstyle.x > 0.5 && wstyle.z > 0.0 {
+        let kind = u32(wstyle.x + 0.5);
+        let sc = max(wstyle.y, 1e-4);
+        let lum = clamp(dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+        let fc = pbr_input.frag_coord.xy;
+        var styled = rgb;
+        if kind == 1u {
+            // pixels: each cell's colour from a short ramp
+            styled = floor(rgb * 5.0 + vec3<f32>(0.5)) / 5.0;
+        } else if kind == 2u {
+            // ink: paper and ink, the half tones hatched by lines `scale` pixels apart
+            let h1 = fract((fc.x + fc.y) / sc);
+            let h2 = fract((fc.x - fc.y) / sc);
+            var ink = 0.0;
+            if lum < 0.16 || (lum < 0.36 && (h1 < 0.38 || h2 < 0.38)) || (lum < 0.6 && h1 < 0.3) {
+                ink = 1.0;
+            }
+            styled = mix(wb, wa, ink);
+        } else if kind == 3u || kind == 5u {
+            // blueprint and neon: lines ruled through the world every `scale` metres, and an edge of light
+            let g = abs(fract(fine / sc + vec3<f32>(0.5)) - vec3<f32>(0.5)) * sc;
+            let lw = max(0.0016 * length(view_bindings::view.world_position.xyz - fine), sc * 0.012);
+            let an = abs(pbr_input.world_normal);
+            var ruled = 0.0;
+            if (an.x < 0.92 && g.x < lw) || (an.y < 0.92 && g.y < lw) || (an.z < 0.92 && g.z < lw) {
+                ruled = 1.0;
+            }
+            if kind == 3u {
+                styled = mix(wa * (0.45 + 0.75 * lum), wb, max(ruled, pow(fres, 2.5) * 0.7));
+            } else {
+                styled = wa * 0.05 + c.rgb * lum * 0.22 + wb * (ruled * 1.6 + pow(fres, 2.0) * 1.8);
+            }
+        } else if kind == 4u {
+            // halftone: flat colour, its shade a screen of dots `scale` pixels apart
+            let q = vec2<f32>(0.866 * fc.x - 0.5 * fc.y, 0.5 * fc.x + 0.866 * fc.y) / sc;
+            let dd = length(fract(q) - vec2<f32>(0.5));
+            let rad = sqrt(1.0 - lum) * 0.66;
+            let dots = 1.0 - smoothstep(rad - 0.06, rad + 0.06, dd);
+            styled = mix(c.rgb * wb, c.rgb * wa, dots);
+        } else if kind == 6u {
+            // thermal: the tone as heat
+            if lum < 0.5 {
+                styled = mix(wa, wb, lum * 2.0);
+            } else {
+                styled = mix(wb, vec3<f32>(1.0, 0.96, 0.75), lum * 2.0 - 1.0);
+            }
+        } else if kind == 7u {
+            // poster: three flat tones of two colours
+            if lum < 0.22 {
+                styled = wa;
+            } else if lum < 0.55 {
+                styled = mix(wa, wb, 0.55);
+            } else {
+                styled = wb;
+            }
+        } else if kind == 8u {
+            // wash: watercolour, the colour let down toward the paper and pooled by a noise `scale` metres wide
+            let pool = fbm3(fine / sc);
+            styled = mix(rgb, wb, 0.1 + 0.3 * pow(fres, 2.0)) * (0.84 + 0.32 * pool);
+        } else if kind == 9u {
+            // mono: one ink's tones on one paper
+            styled = mix(wa, wb, smoothstep(0.04, 0.85, lum));
+        }
+        // (a mesh that is in every world, the cast, takes less than half of a world's style: it has to read in all of them)
+        var much = wstyle.z;
+        if paint.kw.x < -0.5 {
+            much = much * 0.4;
+        }
+        rgb = mix(rgb, styled, much);
+    }
+    // a cut's edge, lit: the last `rim width` metres inside it go to the rim's colour
+    if paint.cut_rim.w > 0.0 && world.x > 0.5 && world.y < paint.kw.z {
+        let k = 1.0 - world.y / paint.kw.z;
+        rgb = mix(rgb, paint.cut_rim.rgb * 2.5, k * k);
     }
     // saturation: painted colour is fuller than photographed colour
     let grey = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));

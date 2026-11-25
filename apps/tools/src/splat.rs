@@ -71,7 +71,7 @@ pub fn splat(args: &[String]) -> R<String> {
 
 fn train(args: &[String]) -> R<String> {
     let (input, params) = parse(args)?;
-    let input = input.canonicalize().map_err(|e| format!("{}: {e}", input.display()))?;
+    let input = dunce::canonicalize(&input).map_err(|e| format!("{}: {e}", input.display()))?;
     let out = PathBuf::from(flag(args, "-o").or_else(|| flag(args, "--o")).ok_or(format!("-o OUT.ply is required\n{USAGE}"))?);
     if out.extension().and_then(|e| e.to_str()) != Some("ply") {
         return Err(format!("-o names a .ply, got {}", out.display()));

@@ -8,13 +8,28 @@ use super::*;
 /// both, paired x3, lightspeed T1/G6): the media engine is the bound, not the queue.
 pub(crate) const VT_INFLIGHT: usize = 3;
 
+/// Why a full queue doesn't just wait (#83): above 4096x2304 (H.264 Level 5.2's ceiling) VideoToolbox gives an H.264
+/// session its software encoder, though VTCompressionSessionCreate succeeds, and that one emits nothing until it holds
+/// 13 frames. With VT_INFLIGHT out, a push then waited forever (and the watchdog blamed the GPU). So a queue that's full
+/// with nothing out for VT_STUCK has its frames completed (what RAEA_VT_FLUSH does), and every full queue after that;
+/// nothing out for VT_DEADLINE fails the render instead of hanging it. Hardware encoders never go quiet that long.
+const VT_STUCK: std::time::Duration = std::time::Duration::from_millis(300);
+const VT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The render's error when the encoder gave nothing back for VT_DEADLINE.
+fn vt_stuck(o: &EncodeOpts, hevc10: bool) -> String {
+    let codec = if hevc10 { "HEVC" } else { "H.264" };
+    format!("VideoToolbox: no frame came out of the {codec} encoder for {} s at {}x{}; --10bit encodes HEVC on the hardware up to 8K", VT_DEADLINE.as_secs(), o.width, o.height)
+}
+
 pub(crate) struct VtState {
     pub(crate) inflight: usize,
     /// RAEA_MEM_MARKS diagnostics: the most frames ever in flight, bytes of samples kept
     pub(crate) max_inflight: usize,
     pub(crate) kept: usize,
     pub(crate) discard: bool,
-    pub(crate) frames: Vec<Option<(Vec<u8>, bool)>>,
+    /// each frame's sample on disk as it comes out, not in memory (SG4a: a 7-minute film's 1 GB)
+    pub(crate) samples: Option<raea_io_codec::samples::Samples>,
     /// SPS and PPS, Annex B, from the first sample's format description
     pub(crate) params: Option<Vec<u8>>,
     pub(crate) err: Option<String>,
@@ -42,6 +57,8 @@ pub(crate) struct VtEncoder {
     pub(crate) own_pool: Option<(objc2_core_foundation::CFRetained<CVPixelBufferPool>, i32)>,
     /// HEVC Main10 from P010 (Backend::encoder_10bit)
     pub(crate) hevc10: bool,
+    /// a full queue went quiet once (VT_STUCK): every full queue since completes its frames at once
+    pub(crate) rescued: bool,
 }
 
 pub(crate) unsafe extern "C-unwind" fn vt_output(
@@ -111,12 +128,12 @@ pub(crate) unsafe fn vt_output_pooled(refcon: *mut std::ffi::c_void, frame: *mut
     })();
     match got {
         Ok(f) => {
-            if st.frames.len() <= idx {
-                st.frames.resize(idx + 1, None);
-            }
-            st.kept += f.0.len();
             // RAEA_VT_DISCARD (diagnostics): drop the samples, to tell our storage from the encoder's
-            st.frames[idx] = Some(if st.discard { (Vec::new(), f.1) } else { f });
+            let data: &[u8] = if st.discard { &[] } else { &f.0 };
+            st.kept += data.len();
+            if let Some(Err(e)) = st.samples.as_mut().map(|s| s.put(idx, data, f.1)) {
+                st.err = Some(format!("VideoToolbox: {e}"));
+            }
         }
         Err(e) => st.err = Some(e),
     }
@@ -129,7 +146,7 @@ impl VtEncoder {
     pub(crate) fn new(out: &Path, o: &EncodeOpts, hevc10: bool) -> R<VtEncoder> {
         use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFType};
         use objc2_video_toolbox::*;
-        let shared = Box::new(VtShared { st: std::sync::Mutex::new(VtState { inflight: 0, max_inflight: 0, kept: 0, discard: std::env::var_os("RAEA_VT_DISCARD").is_some(), frames: Vec::new(), params: None, err: None }), cv: std::sync::Condvar::new(), hevc: hevc10 });
+        let shared = Box::new(VtShared { st: std::sync::Mutex::new(VtState { inflight: 0, max_inflight: 0, kept: 0, discard: std::env::var_os("RAEA_VT_DISCARD").is_some(), samples: Some(raea_io_codec::samples::Samples::new()?), params: None, err: None }), cv: std::sync::Condvar::new(), hevc: hevc10 });
         unsafe {
             let fmt = CFNumber::new_i32(if hevc10 {
                 kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
@@ -199,7 +216,7 @@ impl VtEncoder {
                 None => o.realtime,
             };
             set(kVTCompressionPropertyKey_RealTime, CFBoolean::new(realtime))?;
-            if std::env::var_os("RAEA_MEM_MARKS").is_some() {
+            if raea_io_trace::stat("RAEA_MEM_MARKS") {
                 eprintln!("vt_mark session realtime {realtime}");
             }
             set(kVTCompressionPropertyKey_ProfileLevel, if hevc10 { kVTProfileLevel_HEVC_Main10_AutoLevel } else { kVTProfileLevel_H264_High_AutoLevel })?;
@@ -232,7 +249,7 @@ impl VtEncoder {
                 }
                 None => None,
             };
-            Ok(VtEncoder { session, shared, out: out.to_path_buf(), opts: o.clone(), cap, n: 0, flush, own_pool, hevc10 })
+            Ok(VtEncoder { session, shared, out: out.to_path_buf(), opts: o.clone(), cap, n: 0, flush, own_pool, hevc10, rescued: false })
         }
     }
 
@@ -241,15 +258,35 @@ impl VtEncoder {
         let t0 = std::time::Instant::now();
         {
             let mut st = self.shared.st.lock().unwrap();
+            let mut quiet = std::time::Instant::now();
             while st.inflight >= self.cap && st.err.is_none() {
-                st = self.shared.cv.wait(st).unwrap();
+                if quiet.elapsed() >= VT_DEADLINE {
+                    return Err(vt_stuck(&self.opts, self.hevc10));
+                }
+                let before = st.inflight;
+                if self.rescued || quiet.elapsed() >= VT_STUCK {
+                    if !self.rescued {
+                        self.rescued = true;
+                        eprintln!("raea encode: VideoToolbox's encoder holds frames back at {}x{} (its software H.264 above 4096x2304), so they're completed as they go, slower; --10bit encodes HEVC on the hardware", self.opts.width, self.opts.height);
+                    }
+                    // unlocked: the output callback takes the lock for each frame complete_frames lets out
+                    drop(st);
+                    unsafe { self.session.complete_frames(objc2_core_media::kCMTimeInvalid) };
+                    st = self.shared.st.lock().unwrap();
+                }
+                if st.inflight >= before && st.err.is_none() {
+                    st = self.shared.cv.wait_timeout(st, VT_STUCK).unwrap().0;
+                }
+                if st.inflight < before {
+                    quiet = std::time::Instant::now();
+                }
             }
             if let Some(e) = st.err.take() {
                 return Err(e);
             }
             st.inflight += 1;
             st.max_inflight = st.max_inflight.max(st.inflight);
-            if std::env::var_os("RAEA_MEM_MARKS").is_some() && self.n % 25 == 0 {
+            if raea_io_trace::stat("RAEA_MEM_MARKS") && self.n % 25 == 0 {
                 eprintln!("vt_mark frame {} in_flight {} max_in_flight {} kept_bytes {}", self.n, st.inflight, st.max_inflight, st.kept);
             }
         }
@@ -296,6 +333,14 @@ impl VtEncoder {
             }
         }
         Ok(())
+    }
+}
+
+/// An encoder dropped on an error (a stuck one's VT_DEADLINE among them) still holding frames: the session is torn down
+/// first, so no output callback reaches its shared state once that's freed. finish() has invalidated it already.
+impl Drop for VtEncoder {
+    fn drop(&mut self) {
+        unsafe { self.session.invalidate() };
     }
 }
 
@@ -358,7 +403,7 @@ impl VideoEncoder for VtEncoder {
         })
     }
     fn finish(self: Box<Self>, audio: Option<&Audio>) -> R<EncodeStats> {
-        if std::env::var_os("RAEA_ENC_TRACE").is_some() && self.n > 0 {
+        if raea_io_trace::stat("RAEA_ENC_TRACE") && self.n > 0 {
             let ms = |i: usize| VT_PUSH_NS[i].load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6 / self.n as f64;
             eprintln!("raea encode: {} frames, a frame's submit: waiting for room and a buffer {:.3} ms, the copy into it {:.3} ms, encode_frame {:.3} ms (max in flight {})", self.n, ms(0), ms(1), ms(2), self.cap);
         }
@@ -367,8 +412,16 @@ impl VideoEncoder for VtEncoder {
         }
         {
             let mut st = self.shared.st.lock().unwrap();
+            let mut quiet = std::time::Instant::now();
             while st.inflight > 0 && st.err.is_none() {
-                st = self.shared.cv.wait(st).unwrap();
+                if quiet.elapsed() >= VT_DEADLINE {
+                    return Err(vt_stuck(&self.opts, self.hevc10));
+                }
+                let before = st.inflight;
+                st = self.shared.cv.wait_timeout(st, VT_STUCK).unwrap().0;
+                if st.inflight < before {
+                    quiet = std::time::Instant::now();
+                }
             }
         }
         unsafe { self.session.invalidate() };
@@ -376,32 +429,38 @@ impl VideoEncoder for VtEncoder {
         if let Some(e) = st.err.take() {
             return Err(e);
         }
-        let frames: Vec<(Vec<u8>, bool)> = std::mem::take(&mut st.frames).into_iter().enumerate().map(|(i, f)| f.ok_or(format!("VideoToolbox: frame {i} never came out"))).collect::<R<_>>()?;
+        // each frame's sample on disk (samples::Samples), read back one at a time as the mux asks
+        let frames = st.samples.take().ok_or("VideoToolbox: finished twice")?;
+        if let Some(i) = frames.missing() {
+            return Err(format!("VideoToolbox: frame {i} never came out"));
+        }
         if frames.len() != self.n as usize {
             return Err(format!("VideoToolbox: {} of {} frames came out", frames.len(), self.n));
         }
-        if std::env::var_os("RAEA_MEM_MARKS").is_some() {
+        if raea_io_trace::stat("RAEA_MEM_MARKS") {
             eprintln!("vt_mark finish frames {} max_in_flight {} kept_bytes {}", frames.len(), st.max_inflight, st.kept);
         }
         if st.discard {
             return Ok(EncodeStats { frames: frames.len(), bytes: 0, video_codec: "h264 (VideoToolbox, discarded)".into(), audio_codec: String::new() });
         }
+        let n = frames.len();
+        let mut read = frames.reader()?;
         let codec = if self.hevc10 { muxide::api::VideoCodec::H265 } else { muxide::api::VideoCodec::H264 };
         let audio_codec = match audio {
             Some(a) => {
                 let m4a = self.out.with_extension("aac.m4a");
                 write_aac(&m4a, a)?;
-                raea_io_codec::remux::annexb_mux(codec, &frames, self.opts.width, self.opts.height, self.opts.fps, Some(&m4a), &self.out)?;
+                raea_io_codec::remux::annexb_mux_from(codec, n, &mut read, self.opts.width, self.opts.height, self.opts.fps, Some(&m4a), &self.out)?;
                 let _ = std::fs::remove_file(&m4a);
                 "aac (AudioToolbox)".to_string()
             }
             None => {
-                raea_io_codec::remux::annexb_mux(codec, &frames, self.opts.width, self.opts.height, self.opts.fps, None, &self.out)?;
+                raea_io_codec::remux::annexb_mux_from(codec, n, &mut read, self.opts.width, self.opts.height, self.opts.fps, None, &self.out)?;
                 String::new()
             }
         };
         let video_codec = if self.hevc10 { "hevc main10 (VideoToolbox)" } else { "h264 (VideoToolbox)" };
-        Ok(EncodeStats { frames: frames.len(), bytes: std::fs::metadata(&self.out).map(|m| m.len()).unwrap_or(0), video_codec: video_codec.into(), audio_codec })
+        Ok(EncodeStats { frames: n, bytes: std::fs::metadata(&self.out).map(|m| m.len()).unwrap_or(0), video_codec: video_codec.into(), audio_codec })
     }
 }
 

@@ -1,7 +1,7 @@
 //! The media verbs' command line (`raea media|ffmpeg|ffprobe`, and raea's shell, in process): the agent's media
 //! work on raea-media (lib.rs and its files), and an HTML composition's render (html.rs).
 //!
-//!   media probe|still|sheet|audio|loudness|motion|cuts|freezes|proxy|trim|concat FILE ...   media work, native (media help)
+//!   media probe|still|sheet|audio|loudness|motion|cuts|freezes|proxy|lod|trim|concat FILE ...   media work, native (media help)
 //!   ffmpeg ARGS | ffprobe ARGS        ffmpeg and ffprobe command lines read as the media verbs (no ffmpeg involved)
 //!   render PAGE.html -o OUT.mp4|OUT.png|DIR [--at F,F] [--alpha] [--codec apple|soft|av1|ffmpeg] [--kbps K | --quality Q]
 //!   shots [--size WxH] [--root DIR]  plain HTML pages' first frames as PNGs, over white: stdin lines `PAGE\tOUT.png`,
@@ -53,7 +53,7 @@ fn run(args: Vec<String>) {
         "render" => {
             let out = PathBuf::from(flag("-o").unwrap_or_else(|| fail("render needs -o OUT.mp4|DIR")));
             let frames = flag("--at").map(|at| at.split(',').map(|f| f.trim().parse().unwrap_or_else(|_| fail(format!("bad frame {f}")))).collect());
-            let opts = raea_runtime_encode::RenderOpts { frames, codec: flag("--codec"), kbps: flag("--kbps").and_then(|k| k.parse().ok()), quality: flag("--quality").map(|q| raea_io_media::parse_quality(&q).unwrap_or_else(|e| fail(e))), ssim: flag_on("--ssim"), sound: None, ten_bit: flag_on("--10bit"), alpha: flag_on("--alpha") };
+            let opts = raea_runtime_encode::RenderOpts { frames, codec: flag("--codec"), kbps: flag("--kbps").and_then(|k| k.parse().ok()), quality: flag("--quality").map(|q| raea_io_media::parse_quality(&q).unwrap_or_else(|e| fail(e))), ssim: flag_on("--ssim"), sound: None, ten_bit: flag_on("--10bit"), alpha: flag_on("--alpha"), ..Default::default() };
             if opts.alpha && out.extension().is_some_and(|x| x != "png") {
                 fail("--alpha writes PNGs (OUT.png or a folder): video here is H.264 or HEVC, which hold no alpha");
             }

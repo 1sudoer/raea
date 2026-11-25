@@ -1,0 +1,102 @@
+{
+ "kind": "none",
+ "raea_version": "0.1.6",
+ "blender_version": "5.3.0",
+ "start": 2.9,
+ "device": "cpu",
+ "raea": {
+  "vulkan": [
+   "llvmpipe (LLVM 19.1.7, 256 bits)"
+  ],
+  "edit": {
+   "ok": true,
+   "s": 166.79,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-1.mp4 (1626.0 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 89002 ms"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 290.38,
+    "sync": 307.08,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.0
+   }
+  },
+  "edit-noclip": {
+   "ok": true,
+   "s": 53.11,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-0.mp4 (558.6 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 283.4,
+    "sync": 246.35,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.0
+   }
+  },
+  "solari": {
+   "ok": true,
+   "s": 71.36,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-1.mp4 (457.9 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 555 ms"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 176.11,
+    "sync": 267.56,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.0
+   }
+  },
+  "solari-noclip": {
+   "ok": true,
+   "s": 59.93,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-0.mp4 (387.5 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 176.68,
+    "sync": 204.18,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.0
+   }
+  }
+ },
+ "blender": {
+  "device": "AMD EPYC 7B13",
+  "s": 113.38,
+  "samples_per_minute": {
+   "monster": 140.4,
+   "junkshop": 109.4,
+   "classroom": 78.5
+  },
+  "out": null
+ },
+ "frame": {
+  "ok": true,
+  "samples": 300,
+  "load_s": 0.78,
+  "render_s": 222.87,
+  "total_s": 223.78,
+  "out": "282M | Updating Camera Volume\n00:01.131  render           | Fra: 1 | Mem: 282M | Updating Lookup Tables\n00:01.131  render           | Fra: 1 | Mem: 282M | Updating Lights\n00:01.131  render           | Fra: 1 | Mem: 282M | Updating Lights | Computing distribution\n00:01.133  render           | Fra: 1 | Mem: 284M | Updating Integrator\n00:01.134  render           | Fra: 1 | Mem: 286M | Updating Film\n00:01.135  render           | Fra: 1 | Mem: 285M | Updating Lookup Tables\n00:01.135  render           | Fra: 1 | Mem: 286M | Updating Baking\n00:01.135  render           | Fra: 1 | Mem: 286M | Updating Device | Writing constant memory\n00:01.135  render           | Fra: 1 | Mem: 286M | Loading denoising kernels (may take a few minutes the first time)\n00:01.135  render           | Fra: 1 | Mem: 286M | Sample 0/300\n00:02.000  render           | Fra: 1 | Remaining: 04:18.65 | Mem: 697M | Sample 1/300\n00:24.932  render           | Fra: 1 | Remaining: 03:12.54 | Mem: 697M | Sample 33/300\n00:47.797  render           | Fra: 1 | Remaining: 02:48.70 | Mem: 697M | Sample 65/300\n01:10.719  render           | Fra: 1 | Remaining: 02:25.62 | Mem: 697M | Sample 97/300\n01:34.020  render           | Fra: 1 | Remaining: 02:03.12 | Mem: 697M | Sample 129/300\n01:56.679  render           | Fra: 1 | Remaining: 01:39.75 | Mem: 697M | Sample 161/300\n02:19.815  render           | Fra: 1 | Remaining: 01:16.88 | Mem: 697M | Sample 193/300\n02:43.585  render           | Fra: 1 | Remaining: 00:54.15 | Mem: 697M | Sample 225/300\n03:06.784  render           | Fra: 1 | Remaining: 00:31.06 | Mem: 697M | Sample 257/300\n03:29.640  render           | Fra: 1 | Remaining: 00:07.93 | Mem: 697M | Sample 289/300\n03:40.081  render           | Fra: 1 | Mem: 697M | Sample 300/300\n03:40.081  render           | Fra: 1 | Mem: 697M | Finished\n03:43.486  render           | Saved: '/tmp/frame_0001.png'\n03:43.486  render           | Time: 03:42.87 (Saving: 00:03.39)\nRAEA_SAMPLES 300 RAEA_LOADED 1794935225.9278357\n\nBlender quit\n"
+ },
+ "s": 694.3,
+ "usd": 0.1226
+}

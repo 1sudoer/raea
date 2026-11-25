@@ -56,6 +56,8 @@ pub fn step(world: &mut World) {
             committed |= drain(world, r);
         }
         r.js(world, |js| js.idle());
+        // (no host calls in it: a collection, the engine's pages, its heap's numbers)
+        r.upkeep.tick(r.js.as_mut());
         if let Some(f) = &r.frame {
             swap_frame(world, r.page, f);
         }

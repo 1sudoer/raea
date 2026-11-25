@@ -5,22 +5,52 @@
 use super::*;
 use std::process::Command;
 
-const USAGE: &str = "usage: raea workspace [--json] | raea workspace init [NAME] [--layout monorepo|submodules] | raea workspace adopt DIR [--name NAME] [--layout monorepo|submodules]\n       raea project [--json] | raea project new NAME [--storage inline|submodule] | raea project split NAME [--remote URL] | raea project join NAME";
+const USAGE: &str = "usage: raea workspace [--json] | raea workspace init [NAME] [--layout monorepo|submodules] | raea workspace adopt DIR [--name NAME] [--layout monorepo|submodules]\n       raea project [--json] | raea project new NAME [--storage inline|submodule] [--client NAME] | raea project tag [NAME] [--client NAME | --no-client] [--json] | raea project split NAME [--remote URL] | raea project join NAME | raea project scan [DIR] [--json]";
 
 /// git for raea's own commits. A new Mac has no user.email and a hostname git can't make one from, so every commit
 /// failed with "Author identity unknown" and the person's first project was never made. git reads $EMAIL only when
-/// user.email isn't set, so this gives a fresh Mac an address without overriding anyone's own.
+/// user.email isn't set, so this gives a fresh Mac an address without overriding anyone's own. A Linux account with no
+/// full name (a CI runner's, a container's) has no name either ("empty ident name ... not allowed"), and git has no
+/// fallback below user.name to give it, so when no user.name is set the author and committer are named for the account.
 pub(crate) fn git_cmd() -> Command {
-    let mut c = Command::new("git");
+    let mut c = Command::new(program());
+    let user = std::env::var("USER").unwrap_or_else(|_| "raea".into());
     if std::env::var_os("EMAIL").is_none() {
-        let user = std::env::var("USER").unwrap_or_else(|_| "raea".into());
         c.env("EMAIL", format!("{user}@raea.local"));
+    }
+    if !has_name() {
+        c.env("GIT_AUTHOR_NAME", &user).env("GIT_COMMITTER_NAME", &user);
     }
     c
 }
 
+/// The git raea runs (raea_io_assets::git: the PATH's, else on Windows the app's or raea's own, fetched once), found
+/// once a process; "git" when there's none, its spawn then failing as `missing` says.
+fn found() -> &'static Result<std::path::PathBuf, String> {
+    static GIT: std::sync::OnceLock<Result<std::path::PathBuf, String>> = std::sync::OnceLock::new();
+    GIT.get_or_init(raea_io_assets::git)
+}
+
+pub(crate) fn program() -> std::path::PathBuf {
+    found().clone().unwrap_or_else(|_| "git".into())
+}
+
+/// A git that didn't start, said as why: there's no git here (and how to get one), or what the system said
+pub(crate) fn missing(e: std::io::Error) -> String {
+    match found() {
+        Err(why) if e.kind() == std::io::ErrorKind::NotFound => why.clone(),
+        _ => format!("git: {e}"),
+    }
+}
+
+/// Whether git has a user.name to sign commits with (asked once a process).
+fn has_name() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| Command::new(program()).args(["config", "--get", "user.name"]).output().is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty()))
+}
+
 pub(crate) fn git(dir: &Path, args: &[&str]) -> R<String> {
-    let out = git_cmd().arg("-C").arg(dir).args(args).output().map_err(|e| format!("git: {e}"))?;
+    let out = git_cmd().arg("-C").arg(dir).args(args).output().map_err(missing)?;
     if !out.status.success() {
         return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -29,12 +59,12 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> R<String> {
 
 /// `git config` on a file (or the global config when `file` is None), its output trimmed; Err when git says no.
 pub(crate) fn config(file: Option<&Path>, args: &[&str]) -> R<String> {
-    let mut c = Command::new("git");
+    let mut c = Command::new(program());
     c.arg("config");
     if let Some(f) = file {
         c.arg("-f").arg(f);
     }
-    let out = c.args(args).output().map_err(|e| format!("git: {e}"))?;
+    let out = c.args(args).output().map_err(missing)?;
     if !out.status.success() {
         return Err(format!("git config {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -65,22 +95,12 @@ pub(crate) fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 
 /// The words of a command that aren't flags or a flag's value.
 fn words(args: &[String]) -> Vec<&str> {
-    let takes = ["--layout", "--storage", "--name", "--remote"];
-    args.iter().enumerate().filter(|(i, a)| !a.starts_with("--") && !(*i > 0 && takes.contains(&args[i - 1].as_str()))).map(|(_, a)| a.as_str()).collect()
+    raea_app_check::words(args, &["--layout", "--storage", "--name", "--remote", "--client"])
 }
 
-/// A name as a folder: lowercase, dashes.
-pub fn slug(s: &str) -> String {
-    let mut out = String::new();
-    for c in s.trim().to_lowercase().chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_end_matches('-').to_string()
-}
+// a name as a folder (slug), and the nearest folder holding a marker (up): the registry's, which reads projects with
+// them
+pub use raea_app_registry::{slug, up};
 
 /// A new id: the prefix and eight hex digits from the clock and the process.
 pub(crate) fn new_id(prefix: &str) -> String {
@@ -88,28 +108,44 @@ pub(crate) fn new_id(prefix: &str) -> String {
     format!("{prefix}_{:08x}", (t as u64 ^ (std::process::id() as u64) << 20) as u32)
 }
 
-/// Where workspaces live on this machine: `git config --global raea.root`, else ~/Studio.
+/// Where workspaces live on this machine: `git config --global raea.root`, else default_root.
 pub fn root() -> PathBuf {
     let set = config(None, &["--global", "raea.root"]).ok().filter(|s| !s.is_empty());
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    // HOME, else USERPROFILE: Windows sets no HOME for an app opened from the Start menu, which made the root
+    // Documents/raea under whatever folder raea ran in. git's global config is found the same way.
+    let home = raea_io_home::user_home().unwrap_or_default();
     match set {
         Some(s) if s.starts_with("~/") => home.join(&s[2..]),
         Some(s) => PathBuf::from(s),
-        None => home.join("Studio"),
+        None => default_root(&home),
     }
 }
 
-/// The nearest folder at or above `from` that holds `marker` (.raea/workspace, .raea/project).
-pub fn up(from: &Path, marker: &str) -> Option<PathBuf> {
-    let from = from.canonicalize().ok()?;
-    from.ancestors().find(|d| d.join(marker).is_file()).map(Path::to_path_buf)
+/// Where a workspace someone names goes with no raea.root set: ~/Documents/raea, or ~/raea when iCloud keeps the
+/// Documents folder (a workspace's git history and footage don't belong in a synced folder). Nothing is made there
+/// until the person or an agent sets a workspace up (`raea workspace init NAME`); ~/Studio, the root on raea's own Mac
+/// before 11-10, is no one else's (Shane 11-14: "no internal no studio"). The feed's host says the same (raea-feed
+/// host/workspace.ts defaultRoot).
+pub fn default_root(home: &Path) -> PathBuf {
+    if home.join("Library/Mobile Documents/com~apple~CloudDocs/Documents").is_dir() {
+        home.join("raea")
+    } else {
+        // a folder at a time: on Windows "Documents/raea" printed as C:\Users\you\Documents/raea\...
+        home.join("Documents").join("raea")
+    }
 }
 
 /// The include in a repo's own config that makes `git config` read a committed file. Idempotent; the path is relative
 /// to the config file, which for a submodule lives under the workspace's .git/modules.
 pub(crate) fn include(repo: &Path, file: &Path) -> R<()> {
+    // both ends the same way, plain (dunce): on Windows git prints C:/... and canonicalize() alone gave \\?\C:\..., which
+    // share no root, so the include climbed to the drive and named the file by its \\?\ path, and every git command in
+    // the workspace failed ("Invalid argument") from its first commit (0.1.5, 0.1.6). Such an include goes first: with
+    // it there, the rev-parse below fails too.
+    crate::repair::drop_verbatim_includes(repo)?;
     let cfg = PathBuf::from(git(repo, &["rev-parse", "--path-format=absolute", "--git-path", "config"])?);
-    let file = file.canonicalize().map_err(|e| format!("{}: {e}", file.display()))?;
+    let cfg = dunce::canonicalize(&cfg).unwrap_or(cfg);
+    let file = dunce::canonicalize(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let rel = relative(cfg.parent().unwrap_or(Path::new("/")), &file);
     let have = config(Some(&cfg), &["--get-all", "include.path"]).unwrap_or_default();
     if have.lines().any(|l| l.trim() == rel) {
@@ -118,9 +154,14 @@ pub(crate) fn include(repo: &Path, file: &Path) -> R<()> {
     config(Some(&cfg), &["--add", "include.path", &rel]).map(drop)
 }
 
-fn relative(from: &Path, to: &Path) -> String {
+/// `to` from the folder `from`, '/' between its parts as git reads an include.path; `to` itself (with '/') when the two
+/// share no root, as two drives don't.
+pub(crate) fn relative(from: &Path, to: &Path) -> String {
     let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
     let same = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    if same == 0 {
+        return to.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+    }
     let mut out: Vec<String> = std::iter::repeat_n("..".to_string(), a.len() - same).collect();
     out.extend(b[same..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
     out.join("/")
@@ -147,7 +188,17 @@ pub(crate) fn commit(repo: &Path, paths: &[&str], what: &str) -> R<()> {
     git(repo, &["commit", "-q", "-m", &format!("raea: {what}"), "--"]).map(|_| ())
 }
 
-const AGENTS_PROJECT: &str = "# Agents\n\nRun `raea context .` here before any work: the taste, this project's brief.ts and script.ts, its look and the guides\nits modes need, in the order to read them. Specs are TypeScript (`export default brief({...})` from \"raea/brief\").\n";
+const AGENTS_PROJECT: &str = "# Agents\n\nRun `raea context .` here before any work: the taste, this project's brief.ts and script.ts, its look and the guides\nits modes need, in the order to read them. Specs are TypeScript (`export default brief({...})` from \"raea/brief\").\n\nWhere files go (docs/layout.feature):\n\n- compositions/: what renders, a registerRoot <Composition> or a default export; versions are NAME-v2.tsx\n- components/: what compositions import; every prop is a component whose props animate it\n- assets/: media in (footage, stills, audio, models, fonts) and the brand kit in assets/brand/\n- artifacts/: the small React apps posted to the feed\n- out/: renders\n\nThe workspace's shared/ holds the same five folders for every project: import them as\n`@shared/components/desk`, never by a relative path out of this folder.\n";
+
+/// The kinds of file a project, and the workspace's shared/, keep a folder each for (docs/layout.feature).
+pub const KINDS: [&str; 4] = ["compositions", "components", "assets", "artifacts"];
+
+/// LFS for media in and renders out, at any depth: in each project and in shared/ (a pattern with a slash is anchored to
+/// the workspace root, so the old media/** never matched a project's media/)
+const GITATTRIBUTES: &str = "**/assets/** filter=lfs diff=lfs merge=lfs -text\n**/out/** filter=lfs diff=lfs merge=lfs -text\n**/media/** filter=lfs diff=lfs merge=lfs -text\n";
+
+/// A project's tsconfig: @shared/ resolves to the workspace's shared/ for an editor and tsc, as the engine resolves it.
+const TSCONFIG_PROJECT: &str = "{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"module\": \"esnext\",\n    \"moduleResolution\": \"bundler\",\n    \"target\": \"es2022\",\n    \"strict\": true,\n    \"noEmit\": true,\n    \"baseUrl\": \".\",\n    \"paths\": { \"@shared/*\": [\"../../shared/*\"] }\n  }\n}\n";
 
 /// `raea workspace …`
 pub fn workspace(args: &[String]) -> R<String> {
@@ -195,7 +246,7 @@ fn init(name: Option<&str>, layout: Option<&str>) -> R<String> {
 /// An existing folder made a workspace in place: git when it isn't a repo, .raea/workspace, and each folder in it
 /// holding a brief.ts registered as an inline project. Nothing is moved or deleted.
 fn adopt(dir: &Path, name: Option<&str>, layout: Option<&str>) -> R<String> {
-    let dir = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = dunce::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let name = name.map(String::from).unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
     make_workspace(&dir, &name, layout_of(layout)?)?;
     let mut found = vec![];
@@ -220,14 +271,14 @@ fn count(n: usize) -> String {
     if n == 1 { "1 project".into() } else { format!("{n} projects") }
 }
 
-fn make_workspace(dir: &Path, name: &str, layout: &str) -> R<()> {
+pub(crate) fn make_workspace(dir: &Path, name: &str, layout: &str) -> R<()> {
     // never a workspace in another repo's own folder (on a case-insensitive disk ~/Raea is ~/raea, raea's checkout); a
     // repo further up, as a home folder kept in git, is fine: the workspace is a repo of its own inside it
     let parent = dir.parent().unwrap_or(Path::new("/"));
     if !dir.join(".git").exists() && parent.exists() {
         let top = git(parent, &["rev-parse", "--show-toplevel"]).ok().map(PathBuf::from);
-        if top.is_some_and(|t| t.canonicalize().ok() == parent.canonicalize().ok()) {
-            return Err(format!("{} would be a folder of the git repo {}: set where workspaces go, `git config --global raea.root ~/Studio`", dir.display(), parent.display()));
+        if top.is_some_and(|t| dunce::canonicalize(t).ok() == dunce::canonicalize(parent).ok()) {
+            return Err(format!("{} would be a folder of the git repo {}: set where workspaces go, `git config --global raea.root ~/Documents/raea`", dir.display(), parent.display()));
         }
     }
     std::fs::create_dir_all(dir.join("projects")).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -241,11 +292,17 @@ fn make_workspace(dir: &Path, name: &str, layout: &str) -> R<()> {
     set(&file, "workspace.name", name)?;
     set(&file, "workspace.layout", layout)?;
     include(dir, &file)?;
-    write_new(&dir.join("controllers/.gitkeep"), "")?;
+    // what every project here can call on (docs/layout.feature LY1, LY2): imported as @shared/<kind>/...
+    for k in KINDS {
+        write_new(&dir.join("shared").join(k).join(".gitkeep"), "")?;
+    }
     write_new(&dir.join("projects/.gitkeep"), "")?;
     write_new(&dir.join("taste.ts"), &format!("import {{ taste }} from \"raea/brief\";\n\n// {name}'s house rules: every project here follows them, after the person's own taste.\nexport default taste({{\n  title: {:?},\n  sections: [],\n}});\n", format!("{name}: house rules")))?;
-    write_new(&dir.join(".gitattributes"), "media/** filter=lfs diff=lfs merge=lfs -text\nout/** filter=lfs diff=lfs merge=lfs -text\n")?;
-    commit(dir, &[".raea/workspace", "controllers/.gitkeep", "projects/.gitkeep", "taste.ts", ".gitattributes"], &format!("workspace {name}"))
+    write_new(&dir.join(".gitattributes"), GITATTRIBUTES)?;
+    let kept: Vec<String> = KINDS.iter().map(|k| format!("shared/{k}/.gitkeep")).collect();
+    let mut files: Vec<&str> = vec![".raea/workspace", "projects/.gitkeep", "taste.ts", ".gitattributes"];
+    files.extend(kept.iter().map(String::as_str));
+    commit(dir, &files, &format!("workspace {name}"))
 }
 
 /// The workspace's projects: (name, path, storage), from .raea/workspace.
@@ -283,16 +340,21 @@ fn register(ws: &Path, dir: &Path, rel: &str, storage: &str) -> R<String> {
 
 fn show_workspace(json_out: bool) -> R<String> {
     let here = std::env::current_dir().map_err(|e| e.to_string())?;
-    let ws = up(&here, ".raea/workspace").ok_or("not in a workspace: raea workspace init NAME makes one (under `git config --global raea.root`, else ~/Studio)")?;
+    let ws = up(&here, ".raea/workspace").ok_or("not in a workspace: raea workspace init NAME makes one (under `git config --global raea.root`, else ~/Documents/raea)")?;
     let file = ws.join(".raea/workspace");
     let ps = projects(&ws);
     if json_out {
-        let projects: Vec<_> = ps.iter().map(|(n, p, s)| json!({"name": n, "path": p, "storage": s, "id": get(&file, &format!("project.{n}.id"))})).collect();
-        return Ok(json!({"path": ws, "id": get(&file, "workspace.id"), "name": get(&file, "workspace.name"), "layout": get(&file, "workspace.layout"), "projects": projects}).to_string());
+        let projects: Vec<_> = ps.iter().map(|(n, p, s)| json!({"name": n, "path": p, "storage": s, "id": get(&file, &format!("project.{n}.id")), "client": client_of(&ws, n)})).collect();
+        // the clients its projects name, so a new one joins an existing client rather than a near-twin of it
+        let mut clients: Vec<String> = ps.iter().filter_map(|(n, _, _)| client_of(&ws, n)).collect();
+        clients.sort_by_key(|c| c.to_lowercase());
+        clients.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        return Ok(json!({"path": ws, "id": get(&file, "workspace.id"), "name": get(&file, "workspace.name"), "layout": get(&file, "workspace.layout"), "clients": clients, "projects": projects}).to_string());
     }
     let mut out = format!("{} ({}, {})\n{}\n", get(&file, "workspace.name").unwrap_or_default(), get(&file, "workspace.id").unwrap_or_default(), get(&file, "workspace.layout").unwrap_or_default(), ws.display());
     for (n, p, s) in &ps {
-        out.push_str(&format!("  {n}  {p}  {s}\n"));
+        let c = client_of(&ws, n).map(|c| format!("  client {c}")).unwrap_or_default();
+        out.push_str(&format!("  {n}  {p}  {s}{c}\n"));
     }
     Ok(out.trim_end().to_string())
 }
@@ -302,16 +364,39 @@ pub fn project(args: &[String]) -> R<String> {
     let w = words(args);
     match w.first().copied() {
         None => show_project(args.iter().any(|a| a == "--json")),
-        Some("new") => new_project(w.get(1).ok_or(USAGE)?, flag(args, "--storage")),
+        Some("new") => {
+            let name = *w.get(1).ok_or(USAGE)?;
+            let said = new_project(name, flag(args, "--storage"))?;
+            match flag(args, "--client") {
+                Some(c) => Ok(format!("{said}\n{}", tag(Some(name), Some(c), false, false)?)),
+                None => Ok(said),
+            }
+        }
+        Some("tag") => tag(w.get(1).copied(), flag(args, "--client"), args.iter().any(|a| a == "--no-client"), args.iter().any(|a| a == "--json")),
         Some("split") => storage::split(w.get(1).ok_or(USAGE)?, flag(args, "--remote")),
         Some("join") => storage::join(w.get(1).ok_or(USAGE)?),
+        // PJ8: the folder's compositions and components, and what isn't connected
+        Some("scan") => {
+            let dir = w.get(1).map(PathBuf::from).map_or_else(|| std::env::current_dir().map_err(|e| e.to_string()), Ok)?;
+            let r = crate::registry::scan(&dir);
+            Ok(if args.iter().any(|a| a == "--json") { r.json().to_string() } else { r.text() })
+        }
         Some(v) => Err(format!("raea project has no {v:?}\n{USAGE}")),
     }
 }
 
+pub use super::client::client_of;
+pub(crate) use super::client::tag;
+
 fn new_project(name: &str, storage: Option<&str>) -> R<String> {
     let here = std::env::current_dir().map_err(|e| e.to_string())?;
     let ws = up(&here, ".raea/workspace").ok_or("not in a workspace: raea workspace init NAME makes one")?;
+    new_project_in(&ws, name, storage)
+}
+
+/// A new project in the workspace at `ws` (the folder holding .raea/workspace).
+pub(crate) fn new_project_in(ws: &Path, name: &str, storage: Option<&str>) -> R<String> {
+    let ws = ws.to_path_buf();
     let slugged = slug(name);
     if slugged.is_empty() {
         return Err(format!("{name:?} has no letters or digits to name a folder by"));
@@ -329,11 +414,15 @@ fn new_project(name: &str, storage: Option<&str>) -> R<String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     write_new(&dir.join("brief.ts"), &format!("import {{ brief }} from \"raea/brief\";\n\nexport default brief({{\n  title: {name:?},\n}});\n"))?;
     write_new(&dir.join("AGENTS.md"), AGENTS_PROJECT)?;
-    for d in ["media", "brand", "out"] {
+    write_new(&dir.join("tsconfig.json"), TSCONFIG_PROJECT)?;
+    // the project's layout (docs/layout.feature LY1): a folder for each kind of file, and its renders
+    for d in KINDS.iter().chain(["out"].iter()) {
         write_new(&dir.join(d).join(".gitkeep"), "")?;
     }
     let id = register(&ws, &dir, &rel, storage)?;
-    let files = [".raea/project", "brief.ts", "AGENTS.md", "media/.gitkeep", "brand/.gitkeep", "out/.gitkeep"];
+    let kept: Vec<String> = KINDS.iter().chain(["out"].iter()).map(|d| format!("{d}/.gitkeep")).collect();
+    let mut files: Vec<&str> = vec![".raea/project", "brief.ts", "AGENTS.md", "tsconfig.json"];
+    files.extend(kept.iter().map(String::as_str));
     if storage == "submodule" {
         git(&dir, &["init", "-q"])?;
         commit(&dir, &files, &format!("project {name}"))?;
@@ -355,17 +444,13 @@ fn show_project(json_out: bool) -> R<String> {
     let dir = up(&here, ".raea/project").ok_or("not in a project: raea project new NAME (in a workspace) makes one")?;
     let file = dir.join(".raea/project");
     let ws = up(&dir, ".raea/workspace").filter(|w| *w != dir);
-    let overrides: Vec<(String, String)> = all(&file).into_iter().filter(|(k, _)| k.starts_with("controller.")).collect();
     if json_out {
-        let o: serde_json::Map<String, serde_json::Value> = overrides.iter().map(|(k, v)| (k.trim_start_matches("controller.").to_string(), json!(v))).collect();
-        return Ok(json!({"path": dir, "id": get(&file, "project.id"), "name": get(&file, "project.name"), "workspace": ws, "controllers": o}).to_string());
+        let client = ws.as_ref().and_then(|w| projects(w).into_iter().find(|p| p.1 == relative(w, &dir)).and_then(|p| client_of(w, &p.0)));
+        return Ok(json!({"path": dir, "id": get(&file, "project.id"), "name": get(&file, "project.name"), "workspace": ws, "client": client}).to_string());
     }
     let mut out = format!("{} ({})\n{}\n", get(&file, "project.name").unwrap_or_default(), get(&file, "project.id").unwrap_or_default(), dir.display());
     if let Some(ws) = &ws {
         out.push_str(&format!("in workspace {}\n", ws.display()));
-    }
-    for (k, v) in overrides {
-        out.push_str(&format!("  {} = {v}\n", k.trim_start_matches("controller.")));
     }
     Ok(out.trim_end().to_string())
 }

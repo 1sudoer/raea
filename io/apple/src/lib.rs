@@ -4,6 +4,7 @@
 #![cfg(target_vendor = "apple")]
 
 mod audio;
+mod convert;
 mod decode;
 mod encode;
 mod vt;
@@ -34,7 +35,8 @@ use raea_io_codec::{Audio, Backend, EncodeOpts, EncodeStats, Frame, Info, R, Vid
 
 pub struct Apple;
 
-fn cf_key(k: &CFString) -> &NSString {
+/// A CoreFoundation string constant as the NSString key AVFoundation takes (toll-free bridged).
+pub fn cf_key(k: &CFString) -> &NSString {
     // CFString and NSString are toll-free bridged
     unsafe { &*(k as *const CFString as *const NSString) }
 }
@@ -64,6 +66,14 @@ impl Backend for Apple {
     }
     fn encoder_10bit(&self, out: &Path, o: &EncodeOpts) -> R<Box<dyn VideoEncoder>> {
         objc2::rc::autoreleasepool(|_| VtEncoder::new(out, o, true).map(|e| Box::new(e) as Box<dyn VideoEncoder>))
+    }
+    /// AAC through AudioToolbox, as VtEncoder lays it under its video
+    fn sound(&self, a: &Audio) -> R<raea_io_codec::SoundTrack> {
+        let p = std::env::temp_dir().join(format!("raea-sound-{}-{:?}.m4a", std::process::id(), std::thread::current().id()));
+        objc2::rc::autoreleasepool(|_| write_aac(&p, a))?;
+        let t = raea_io_codec::remux::aac_track(&p);
+        let _ = std::fs::remove_file(&p);
+        t
     }
 }
 
@@ -103,6 +113,7 @@ fn open_decoder(path: &Path) -> R<Decoder> {
         });
     });
     let a = asset(path);
+    let alpha;
     let info = unsafe {
         let media = AVMediaTypeVideo.ok_or("AVMediaTypeVideo")?;
         #[allow(deprecated)]
@@ -116,6 +127,13 @@ fn open_decoder(path: &Path) -> R<Decoder> {
         let fps = track.nominalFrameRate() as f64;
         #[allow(deprecated)]
         let duration = a.duration().seconds();
+        // whether its frames carry alpha (ProRes 4444 at depth 32, HEVC with alpha): the decoder keeps it (#113)
+        alpha = track.formatDescriptions().firstObject().is_some_and(|d| {
+            use objc2_core_foundation::{CFBoolean, CFNumber};
+            let fd = &*(Retained::as_ptr(&d) as *const objc2_core_media::CMFormatDescription);
+            let has = fd.extension(objc2_core_media::kCMFormatDescriptionExtension_ContainsAlphaChannel).is_some_and(|v| v.downcast_ref::<CFBoolean>().is_some_and(|b| b.as_bool()));
+            has || fd.extension(objc2_core_media::kCMFormatDescriptionExtension_Depth).and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i32())) == Some(32)
+        });
         // the codec, from the track's format description (a CMFormatDescription in the array)
         let fourcc = {
             let descs = track.formatDescriptions();
@@ -151,8 +169,10 @@ fn open_decoder(path: &Path) -> R<Decoder> {
         next: None,
         since_restart: 0,
         nv12: false,
+        alpha,
         surface: false,
         sample_pts: None,
+        shift: None,
         watch: Watch::new(),
         path: path.to_path_buf(),
         seeker: None,

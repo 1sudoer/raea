@@ -12,7 +12,8 @@ pub struct Topo {
     pub degenerate: usize,
 }
 
-fn find(p: &mut [u32], mut i: u32) -> u32 {
+/// The root of `i`'s set in a union-find's parents `p`, halving the path as it goes.
+pub fn find(p: &mut [u32], mut i: u32) -> u32 {
     while p[i as usize] != i {
         p[i as usize] = p[p[i as usize] as usize];
         i = p[i as usize];

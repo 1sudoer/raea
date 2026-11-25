@@ -6,10 +6,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import * as THREE from "three";
-import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from "three/webgpu";
+import { MeshBasicNodeMaterial, MeshLambertNodeMaterial, MeshStandardNodeMaterial } from "three/webgpu";
 import * as TSLTyped from "three/tsl";
 // untyped: @types/three's chained TSL types make tsc take minutes and gigabytes
-const { attribute, color, mix, sin, texture, time, uv } = TSLTyped as unknown as Record<string, (...a: unknown[]) => any> & { time: any };
+const { attribute, color, float, mix, mx_noise_float, normalLocal, positionLocal, sin, texture, time, uv } = TSLTyped as unknown as Record<string, any>;
 import { composeEffects, configureFontTexture, createText, parseFont, scramble, wipe } from "lettra/three";
 import { materialOf } from "../src/input/material";
 import { nodeMaterialOf, type NodeAt, type ShaderSpec } from "../src/input/tsl";
@@ -71,7 +71,9 @@ function compiles(spec: ShaderSpec) {
   if (!naga) return;
   const dir = mkdtempSync(join(tmpdir(), "raea-tsl-"));
   const vs = prelude(spec) + spec.vertex + "\n@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) t: vec2<f32>, @builtin(instance_index) i: u32) -> ThreeVaryings { return three_vertex(ThreeVertex(p, n, t, vec4<f32>(1.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), i)); }\n";
-  const fs = prelude(spec) + spec.fragment + "\n@fragment fn fs(v: ThreeVaryings, @builtin(front_facing) f: bool) -> @location(0) vec4<f32> { return three_fragment(v, f); }\n";
+  // a lit one's fragment returns its surface (tsl-lit.ts), which the engine lights
+  const entry = spec.fragment.includes("fn three_surface(") ? "three_surface(v, f).base" : "three_fragment(v, f)";
+  const fs = prelude(spec) + spec.fragment + `\n@fragment fn fs(v: ThreeVaryings, @builtin(front_facing) f: bool) -> @location(0) vec4<f32> { return ${entry}; }\n`;
   for (const [name, src] of [["vertex", vs], ["fragment", fs]]) {
     const f = join(dir, `${name}.wgsl`);
     writeFileSync(f, src);
@@ -160,15 +162,39 @@ describe("TSL node materials → raea's ThreeShaderMaterial", () => {
     expect(part.props).toMatchObject({ color: "#3fb950", roughness: 0.3, metalness: 0.2 });
   });
 
-  test("a lit node material with a graph is lit by three's own light nodes", () => {
+  test("a lit node material's surface is lit by Bevy's lights, not three's (R3F21)", () => {
+    // the noise blob: a displaced, noise-coloured icosahedron with its own roughness, metalness and glow
     const m = new MeshStandardNodeMaterial();
-    m.colorNode = mix(color("#ff0000"), color("#0000ff"), uv().x);
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(), m);
+    const n = mx_noise_float(positionLocal.mul(2).add(time.mul(0.5)));
+    m.positionNode = positionLocal.add(normalLocal.mul(n.mul(0.3)));
+    m.colorNode = mix(color("#ff7744"), color("#3355ff"), n.mul(0.5).add(0.5));
+    m.roughnessNode = float(0.35);
+    m.metalnessNode = n.mul(0.2).add(0.1);
+    m.emissiveNode = color("#220800");
+    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 8), m);
     const at = scene(mesh);
     at.scene.add(new THREE.DirectionalLight("#ffffff", 2));
     const part = materialOf(m, false, at);
     expect(part.type).toBe("ThreeShaderMaterial");
-    compiles(specOf(part.props));
+    expect((part.props.wgsl as { lit?: boolean }).lit).toBe(true);
+    const spec = specOf(part.props);
+    expect(spec.fragment).toContain("fn three_surface(in: ThreeVaryings, front: bool) -> ThreeSurface {");
+    expect(spec.fragment).toContain("return output;");
+    for (const f of ["base", "normal", "emissive", "world"]) expect(spec.fragment).toMatch(new RegExp(`output\\.${f} = `));
+    // the positionNode moves the vertex; three's lights are nowhere in the graph
+    expect(spec.vertex).toContain("mx_perlin_noise_float");
+    expect(spec.fragment).not.toMatch(/BRDF|directLight|DirectionalLight/i);
+    for (const s of [spec.vertex, spec.fragment]) expect(s).toMatch(/struct ThreeVaryings \{\s*@location\( \d+ \) @interpolate\( flat \) three_instance : u32,/);
+    compiles(spec);
+  });
+
+  test("a Lambert node material is a fully rough, unmetallic surface Bevy lights", () => {
+    const m = new MeshLambertNodeMaterial();
+    m.colorNode = mix(color("#ff0000"), color("#0000ff"), uv().x);
+    const part = materialOf(m, false, scene(new THREE.Mesh(new THREE.SphereGeometry(), m)));
+    expect((part.props.wgsl as { lit?: boolean }).lit).toBe(true);
+    expect(specOf(part.props).fragment).toMatch(/output\.normal = vec4<f32>\( \w+, 1\.0 \)/);
+    expect(specOf(part.props).fragment).toMatch(/output\.emissive = vec4<f32>\( \w+, 0\.0 \)/);
   });
 
   test("a graph raea can't carry is refused by name and drawn flat", () => {

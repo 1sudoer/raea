@@ -84,11 +84,13 @@ pub fn sounds_into<'a>(items: impl IntoIterator<Item = (&'a str, Option<&'a Map<
             continue;
         }
         let (key, bus) = SOUND_NAMES.with_borrow_mut(|n| (n.key(node, &file), props.get("data-bus").and_then(|v| v.as_str()).map(|b| n.bus(b))));
+        // raea's mix: dialogue at one level, gainDb an offset on it (raea-sys-mix level.rs)
+        let level = raea_sys_mix::level::gain(&file, num(props, "data-clip-from").unwrap_or(0.0), num(props, "data-clip-to"), props.get("data-bus").and_then(|v| v.as_str()));
         out.push(Sound {
             key,
             file,
             at,
-            volume: volume as f32,
+            volume: volume as f32 * level,
             rate: num(props, "data-playback-rate").unwrap_or(1.0),
             fade_in: num(props, "data-fade-in").unwrap_or(0.0),
             fade_out: num(props, "data-fade-out").unwrap_or(0.0),

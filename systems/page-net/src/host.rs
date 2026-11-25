@@ -1,6 +1,7 @@
 //! raea's window on the feed (docs/app.feature AP5/AP6): with RAEA_PAGE_HOST (the feed's Node host, http://127.0.0.1:PORT),
 //! the page's /host/* is that host's, and so is a /media/* that isn't on disk (a render the host made after the page
-//! loaded); everything else is page_fetch's.
+//! loaded); everything else is page_fetch's. What the page loads by itself (an <img>, a stylesheet's url(), a font)
+//! from its /host/* is the host's too (`load`).
 
 use base64::Engine as _;
 
@@ -21,6 +22,23 @@ pub fn fetch(args: &serde_json::Value) -> Option<serde_json::Value> {
         return Some(to_host(args, &u).unwrap_or(r));
     }
     Some(r)
+}
+
+/// A load the page makes by itself (an <img>'s src, a stylesheet's url(), a @font-face) of its own /host/*: the bytes
+/// the host answers, as its fetch has them. None for any other URL, without a host, or when the host doesn't answer
+/// 2xx. Before, FileNet looked for /host/* among the page's files, so an <img> of one drew nothing in raea's window
+/// (the feed's pictures attached to a note, a library's posters on Publish).
+pub fn load(u: &url::Url) -> Option<Vec<u8>> {
+    let own = u.scheme() == "http" && u.host_str() == Some("localhost") && u.port().is_none();
+    if !own || !u.path().starts_with("/host/") {
+        return None;
+    }
+    let r = to_host(&serde_json::json!({ "url": u.as_str(), "method": "GET" }), u)?;
+    let status = r["status"].as_u64()?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD.decode(r["body"].as_str()?).ok()
 }
 
 /// The request sent on to RAEA_PAGE_HOST (method, headers and body as the page gave them), its answer as `fetch` gives

@@ -7,6 +7,7 @@ publish = false
 description = "The `raea` verbs that run raea's model tools: sao, tokensynth, setup-audio, sounds, splat, song and gen"
 
 [dependencies]
+dunce = "1"
 raea-io-assets = { path = "../../io/assets" }
 # generation flows: made.app, fal, Replicate, OpenRouter, Modal, ComfyUI (`raea gen`)
 raea-io-gen = { path = "../../io/gen" }
@@ -16,3 +17,5 @@ serde_json = "1"
 # the verbs' flags read as a render reads its own
 raea-runtime-bundle = { path = "../../runtime/bundle" }
 raea-runtime-export = { path = "../../runtime/export" }
+# `raea motion` and `raea setup motion` (apps/motion), still reached as tools::motion
+raea-app-motion = { path = "../motion" }

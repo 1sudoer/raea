@@ -8,10 +8,11 @@ const [baseArg, out, ...only] = process.argv.slice(2);
 if (!baseArg || !out) throw new Error("usage: bun tools/shoot.ts BASE_URL|serve OUT_DIR [in-basic ...]");
 const served = baseArg === "serve" ? await serve() : undefined;
 const base = served?.url ?? baseArg;
-const cases = only.length ? only : ["in-basic", "in-lights", "in-things", "in-catch", "in-lettra", "in-lettrafx", "in-shader", "in-post", "in-drei", "in-approx", "in-glass", "out-basic", "out-tony", "out-lights", "out-bloom", "out-grade", "out-lens", "out-catch", "out-entities", "src-basic", "src-tony", "src-lights", "src-bloom", "src-grade", "src-lens", "src-catch", "src-entities"];
+const cases = only.length ? only : ["in-basic", "in-lights", "in-things", "in-catch", "in-lettra", "in-lettrafx", "in-shader", "in-post", "in-drei", "in-approx", "in-glass", "in-sky", "in-vanilla", "out-basic", "out-tony", "out-lights", "out-bloom", "out-grade", "out-lens", "out-catch", "out-entities", "src-basic", "src-tony", "src-lights", "src-bloom", "src-grade", "src-lens", "src-catch", "src-entities"];
 let failed = 0;
 for (const c of cases) {
-  const [dir, name] = c.split("-");
+  // the direction, then the case (a case name may hold dashes: in-tsl-lit)
+  const dir = c.slice(0, c.indexOf("-")), name = c.slice(c.indexOf("-") + 1);
   const page = await openChrome(`${base}/#/r3f?dir=${dir}&case=${name}`, 640, 400, { scale: 1, mobile: false });
   try {
     let note = "";

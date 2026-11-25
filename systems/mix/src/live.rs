@@ -24,6 +24,9 @@ use crate::score::Score;
 use crate::score::ToneOut;
 use crate::{RATE, Sound, ToneCue};
 
+/// a page's sounds, fired now off any timeline (docs/hardware.feature HW0)
+mod fire;
+
 /// past this a frame puts the timeline back in place; over DEADBAND its start moves by at most SLEW a frame
 const DRIFT: f64 = 0.040;
 const DEADBAND: f64 = 0.002;
@@ -252,7 +255,7 @@ impl Live {
             }
         }
         let origin = self.origin.unwrap();
-        if std::env::var_os("RAEA_MIXER_TRACE").is_some() {
+        if raea_io_trace::stat("RAEA_MIXER_TRACE") {
             eprintln!("raea mixer: frame {f} lag {:.2} ms clock {clock} due {due} origin {origin} drift {:.3} ms", lag * 1e3, self.drift_ms.last().copied().unwrap_or(0.0));
         }
         // the sounds by index into the kept list, not cloned (ZeroHeap)

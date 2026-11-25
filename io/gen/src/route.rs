@@ -3,7 +3,8 @@
 //! Tripo 3D: through the tripo CLI on the user's own key when this host has both (tripo.rs), else the same Tripo model on fal. text.generate goes to
 //! OpenRouter (RAEA_GEN_TEXT_MODEL, else Kimi). Otherwise: a `comfy` step on the ComfyUI server; a step with ComfyUI weights on the server too when
 //! the flow asks for the exact weights (`--exact`), else made's model for that op, which is noted as standing in for
-//! them; a local model when the host has one for the op (sao for effects); made for the rest.
+//! them; a local model when the host has one for the op (sao for effects); made for the rest. A picture step on a host
+//! with no made.app key goes to fal (nano-banana-2), else OpenRouter (Gemini's image model), when it has their key.
 
 use serde_json::{Map, Value as J, json};
 
@@ -86,6 +87,52 @@ pub struct Policy {
     pub comfy_on_replicate: bool,
     /// the tripo CLI and a key are on this host (tripo::available), so mesh steps run on Tripo itself
     pub tripo: bool,
+    /// which picture services this host has a key for
+    pub keys: Keys,
+}
+
+/// The picture services this host has a key for (MADE_API_KEY, FAL_KEY, OPENROUTER_API_KEY). With no made.app key, a
+/// picture step that names no model goes to fal, then OpenRouter (the app's Images and video offers all three; Shane
+/// 11-14: "maybe add openrouter and fal as other image options"). Default: made's, as before.
+#[derive(Clone, Debug)]
+pub struct Keys {
+    pub made: bool,
+    pub fal: bool,
+    pub openrouter: bool,
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Keys { made: true, fal: false, openrouter: false }
+    }
+}
+
+impl Keys {
+    /// what this host has, from the environment and raea's env file
+    pub fn here() -> Keys {
+        let has = |k: &str| crate::setting(k).is_some_and(|v| !v.trim().is_empty());
+        Keys { made: has("MADE_API_KEY"), fal: has("FAL_KEY"), openrouter: has("OPENROUTER_API_KEY") }
+    }
+}
+
+/// fal's and OpenRouter's picture models, for a picture step on a host with no made.app key
+pub const FAL_IMAGE: &str = "fal-ai/nano-banana-2";
+pub const FAL_IMAGE_EDIT: &str = "fal-ai/nano-banana-2/edit";
+pub const OPENROUTER_IMAGE: &str = "google/gemini-3.1-flash-image";
+
+/// A picture step where made.app has no key here: fal's nano-banana-2 (made's own default for pictures), else
+/// OpenRouter's Gemini image model; None for any other step, or with neither key.
+fn without_made(s: &Step, k: &Keys) -> Option<(Backend, Option<String>)> {
+    let edit = match s.op.as_str() {
+        "image.generate" => false,
+        "image.edit" => true,
+        _ => return None,
+    };
+    if k.fal {
+        let e = if edit { FAL_IMAGE_EDIT } else { FAL_IMAGE };
+        return Some((Backend::Fal(e.into()), Some(format!("no made.app key here: fal's {e}"))));
+    }
+    k.openrouter.then(|| (Backend::OpenRouter(OPENROUTER_IMAGE.into()), Some(format!("no made.app or fal key here: OpenRouter's {OPENROUTER_IMAGE}"))))
 }
 
 /// Where a step runs, and a note when it stands in for something it was asked for.
@@ -131,6 +178,11 @@ pub fn route(s: &Step, p: &Policy) -> Result<(Backend, Option<String>), String> 
     }
     if let Some(l) = local_default(s).filter(|l| p.local.iter().any(|x| x.as_str() == *l)) {
         return Ok((Backend::Local(l.into()), None));
+    }
+    if !p.keys.made {
+        if let Some(r) = without_made(s, &p.keys) {
+            return Ok(r);
+        }
     }
     let m = made_default(s).ok_or(format!("nothing runs {} yet: give it a model (made:<id>, fal:<endpoint>, comfy)", s.op))?;
     Ok((Backend::Made(m.into()), None))

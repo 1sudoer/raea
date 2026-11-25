@@ -1,6 +1,10 @@
 // The root, and React's default export.
-import { flush, ROOT_ID } from "../../node_modules/bevy-react/src/bridge";
+import { addEventListener, flush, ROOT_ID } from "../../node_modules/bevy-react/src/bridge";
 import { Children, Component, Fragment, Instance, Out, PRUNE_EVERY, ROOT_SLOT, S, children, cloneElement, createContext, createElement, effectsQueue, forwardRef, isValidElement, memo, prune, render, startTransition, sweep, unsee, useCallback, useContext, useDebugValue, useDeferredValue, useEffect, useId, useImperativeHandle, useInsertionEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, useTransition, version } from "./all";
+
+// the bridge's events for the SDK's own listeners: React's entry hands the SDK bevy-react's exports (sdk/raea
+// dom-reads.ts domReads), lite's hands it the nodes, so the SDK finds them here (a timeline's retimed sequences, TL13a)
+(globalThis as { __raeaListen?: typeof addEventListener }).__raeaListen = addEventListener;
 
 // ---- the root
 

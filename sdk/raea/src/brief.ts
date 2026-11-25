@@ -7,25 +7,31 @@
 //
 // The types are generated from the Rust schemas (core/brief, raea-core-brief) into brief.gen.ts, so what tsc checks is
 // what raea reads: `raea context` evaluates the module and Rust validates its default export again.
-import type { Brief, Controller, Field, Group, Plan, Script, Taste } from "./brief.gen";
+import type { Brief, Make, Parts, Script, Taste } from "./brief.gen";
 
 export type * from "./brief.gen";
+export { fingerprint } from "./fingerprint";
+export type { Applies, Axis, Fingerprint, Modality } from "./fingerprint";
 
-/** A field as written: its id is filled in from its label when left out. */
-export type FieldInput = Field extends infer F ? (F extends Field ? Omit<F, "id"> & { id?: string } : never) : never;
-/** A controller as written: ids are filled in from titles and labels when left out. */
-export type ControllerInput = Omit<Controller, "id" | "groups"> & {
-  id?: string;
-  groups: (Omit<Group, "id" | "fields"> & { id?: string; fields: FieldInput[] })[];
-};
-
-/** A project's brief (brief.ts): what to make, for whom, the one thing to believe, its deliverables and staged tasks. */
+/** A project's brief (brief.ts): what to make, for whom, the one thing to believe and its deliverables. Its tasks are
+ *  the project's plan.org (docs/plan.feature PL8a). */
 export const brief = (b: Brief): Brief => b;
 /** A storyboard or a screenplay (script.ts): scenes, beats, lines, camera and cut. */
 export const script = (s: Script): Script => s;
-/** Taste (taste.ts): standing rules, some with a check `raea check --taste` holds every export to. */
+/** Taste (taste.ts): standing rules, the person's, a workspace's or a project's. A rule raea can hold the work to
+ *  carries a check: one of six measured forms (`{ form: "text-above", value: 75 }`), one of raea's checks by name
+ *  (`"loudness"`), or the project's own by its path from this file (`"../checks/clear.ts"`), with its `values`.
+ *  `raea check` runs every one that applies. */
 export const taste = (t: Taste): Taste => t;
-/** An object's plan (plan.ts): its parts by name, levels, counts, materials. */
-export const plan = (p: Plan): Plan => p;
-/** A workspace's controller (controllers/<id>.ts): settings in groups of typed fields that every agent works to. */
-export const controller = (c: ControllerInput): ControllerInput => c;
+/** An object's parts (NAME.parts.ts), written before any geometry: each by name, its level, count and material. */
+export const parts = (p: Parts): Parts => p;
+
+/** A job made to a frozen plan and held to the review loop (docs/make.feature): `make: scene({...})` on brief.ts. Every
+ *  object has its real size and whether it came from the reference or was invented; `raea make status` decides when
+ *  it's done, and the agent's Stop hook holds it there. */
+export const scene = (m: Omit<Make, "kind">): Make => ({ kind: "scene", ...m });
+/** A kit: props in one style at real size (`style` is the paragraph every reference carries: era, palette, materials,
+ *  wear and one fictional maker). Done is a GLB, a LOD1 and a thumbnail per object, a lineup and kit.json. */
+export const kit = (m: Omit<Make, "kind">): Make => ({ kind: "kit", ...m });
+/** Shots of a built scene, each named for the file it lands as and described in a crew's words. */
+export const shot = (m: Omit<Make, "kind">): Make => ({ kind: "shot", ...m });

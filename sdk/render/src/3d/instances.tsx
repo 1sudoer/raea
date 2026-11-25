@@ -13,14 +13,18 @@ export interface Instance {
   rotation?: Vec3;
   /** its scale: one number, or x, y and z */
   scale?: number | Vec3;
+  /** this copy's colour, multiplied with the material's (as three's instanceColor): "#rrggbb", or linear [r, g, b].
+   * When any copy has one, a copy without is white */
+  color?: string | Vec3;
 }
 
 export interface InstancesProps {
   /** a glTF file drawn at every placement: staticFile("models/house.glb"). Without it, a geometry child (or `shape`)
    * and a material child draw a mesh at every placement */
   src?: string;
-  /** where each copy stands. Fixed for the shot: the first frame's list is drawn on every frame (move, turn, scale,
-   * hide or recolour the whole set by the Instances' own props) */
+  /** where each copy stands, this frame: a list that changes moves the copies with it (each distinct list is kept, so a
+   * set of thousands moving every frame costs a list a frame; moving the whole set by the Instances' own props costs
+   * nothing). How many copies is the first frame's: a frame with another count holds the list before it */
   at: Instance[];
   /** the entity's name, for picking, the inspector and world.* */
   name?: string;
@@ -45,31 +49,58 @@ export interface InstancesProps {
   children?: ReactNode;
 }
 
-/** The packed placements, 9 numbers a copy (position, rotation, scale), cached by the list, so a list made once (a
- * module's `scatter`) is packed once however many frames draw it. */
+/** The packed placements, 9 numbers a copy (position, rotation, scale), or 12 when any copy has a colour (its linear
+ * r, g, b after), cached by the list, so a list made once (a module's `scatter`) is packed once however many frames
+ * draw it. */
 const PACKED = new WeakMap<Instance[], number[]>();
 const r5 = (x: number) => Math.round(x * 1e5) / 1e5;
+/** "#rrggbb" (sRGB) as linear r, g, b */
+function linearOf(owner: string, i: number, c: string | Vec3): Vec3 {
+  if (Array.isArray(c)) {
+    checkVec(owner, `at[${i}].color`, c);
+    return c;
+  }
+  const m = typeof c === "string" ? /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c) : null;
+  if (!m) throw new TypeError(`${owner}: at[${i}].color is "#rrggbb" or linear [r, g, b], got ${JSON.stringify(c)}`);
+  return [m[1], m[2], m[3]].map((h) => {
+    const v = parseInt(h, 16) / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  }) as Vec3;
+}
 export function packInstances(owner: string, at: Instance[]): number[] {
   const hit = PACKED.get(at);
   if (hit) return hit;
-  const out: number[] = new Array(at.length * 9);
+  const tinted = at.some((it) => it !== null && typeof it === "object" && it.color !== undefined);
+  const stride = tinted ? 12 : 9;
+  const out: number[] = new Array(at.length * stride);
   at.forEach((it, i) => {
-    if (it === null || typeof it !== "object") throw new TypeError(`${owner}: at[${i}] must be { position, rotation?, scale? }, got ${JSON.stringify(it)}`);
+    if (it === null || typeof it !== "object") throw new TypeError(`${owner}: at[${i}] must be { position, rotation?, scale?, color? }, got ${JSON.stringify(it)}`);
     const { position, rotation = [0, 0, 0], scale = 1 } = it;
     checkVec(owner, `at[${i}].position`, position);
     checkVec(owner, `at[${i}].rotation`, rotation);
     const s: Vec3 = typeof scale === "number" ? [scale, scale, scale] : scale;
     checkVec(owner, `at[${i}].scale`, s);
     if (!s.every((v) => v > 0)) throw new RangeError(`${owner}: at[${i}].scale must be positive, got ${JSON.stringify(scale)}`);
-    const o = i * 9;
+    const o = i * stride;
     for (let k = 0; k < 3; k++) {
       out[o + k] = r5(position[k]);
       out[o + 3 + k] = r5(rotation[k]);
       out[o + 6 + k] = r5(s[k]);
     }
+    if (tinted) {
+      const c = it.color === undefined ? ([1, 1, 1] as Vec3) : linearOf(owner, i, it.color);
+      for (let k = 0; k < 3; k++) out[o + 9 + k] = r5(c[k]);
+    }
   });
   PACKED.set(at, out);
   return out;
+}
+
+/** An <Instances>' data-at: its packed placements, 9 numbers a copy as a list, or 12 (with the colour) as
+ * {"stride":12,"at":[...]} */
+function dataAt(owner: string, at: Instance[]): string {
+  const packed = packInstances(owner, at);
+  return packed.length === at.length * 12 && at.length > 0 ? `{"stride":12,"at":${JSON.stringify(packed)}}` : JSON.stringify(packed);
 }
 
 /** One glTF (or one mesh) drawn at many placements, loaded once and drawn by the GPU as instances: a meadow's grass
@@ -84,15 +115,17 @@ export function Instances(props: InstancesProps) {
   if (props.scale !== undefined && typeof props.scale !== "number") checkVec(owner, "scale", props.scale);
   for (const k of ["animation", "animations", "graph", "morphs"]) if (k in (props as object)) throw new TypeError(`${owner}: instances can't play a clip or set morphs; use a <Model> for an animated one`);
   checkPass(owner, props.pass);
-  const at = packInstances(owner, props.at);
   const { position = [0, 0, 0], rotation = [0, 0, 0], scale = 1 } = props;
-  if (props.src !== undefined) return node3d("Model", { ...props, shape: undefined, at, position, rotation, scale }, props.children);
+  // the placements in an attribute of their own, not data-props: the engine shares one list across frames while its text
+  // is the same, where a set whose other props change was parsed whole into each frame's props (#84)
+  const placed = { "data-at": dataAt(owner, props.at) };
+  if (props.src !== undefined) return node3d("Model", { ...props, shape: undefined, at: undefined, position, rotation, scale }, props.children, placed);
   const manifold = props.shape instanceof Solid ? props.shape.expr : props.shape ?? shapeFromChildren(props.children);
   if (manifold === undefined) throw new TypeError("Instances: give a glTF `src`, or a geometry child (<Cuboid />, <BufferMesh />, ...) or `shape`");
   let toon = false;
   Children.forEach(props.children, (c) => { if (isValidElement(c) && c.type === MeshToonMaterial) toon = true; });
   if (toon) throw new TypeError("Instances: the copies take a MeshStandardMaterial, MeshPhysicalMaterial or MeshBasicMaterial (a toon surface isn't instanced)");
-  return node3d("Mesh", { ...props, shape: undefined, at, position, rotation, scale }, props.children, { "data-shape": manifold as string });
+  return node3d("Mesh", { ...props, shape: undefined, at: undefined, position, rotation, scale }, props.children, { ...placed, "data-shape": manifold as string });
 }
 
 /** A box on the plan (x, z, metres): the room SDK's Footprint, or any { min, max }. */

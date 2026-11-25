@@ -110,7 +110,7 @@ impl Project {
     /// The real path with every link followed, refused if it leaves the project.
     fn follow(&self, v: &str, op: &str) -> R<PathBuf> {
         let p = self.real(v)?;
-        match p.canonicalize() {
+        match dunce::canonicalize(&p) {
             Ok(c) if c.starts_with(&self.root) => {
                 if c.strip_prefix(&self.root).ok().and_then(|r| r.components().next()).is_some_and(|c| c.as_os_str() == META) {
                     return Err(err("ENOENT", "no such file or directory", op, v));
@@ -128,7 +128,7 @@ impl Project {
     /// put in reach.
     fn follow_read(&self, v: &str, op: &str) -> R<PathBuf> {
         match self.follow(v, op) {
-            Err(e) if e.starts_with("EACCES") => self.real(v)?.canonicalize().map_err(|_| err("ENOENT", "no such file or directory", op, v)),
+            Err(e) if e.starts_with("EACCES") => dunce::canonicalize(&self.real(v)?).map_err(|_| err("ENOENT", "no such file or directory", op, v)),
             r => r,
         }
     }

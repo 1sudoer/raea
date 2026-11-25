@@ -761,7 +761,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2668,7 +2668,6 @@ dependencies = [
  "bevy_utils",
  "bitflags 2.13.2",
  "bytemuck",
- "ctt",
  "ddsfile",
  "futures-lite",
  "guillotiere",
@@ -3066,8 +3065,6 @@ dependencies = [
 [[package]]
 name = "bevy_pbr"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb760932d1e683e7c00011f5c99e4e1cc893646a3a7b7224da6daf9bfa94853d"
 dependencies = [
  "arrayvec",
  "bevy_app",
@@ -3439,8 +3436,6 @@ dependencies = [
 [[package]]
 name = "bevy_rich_text3d"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97b3cfe8f7187fb6f8e4889b8e7dcf39ff36bf7a84fcbd4f7b69f7d3b8a7bfe4"
 dependencies = [
  "bevy",
  "cosmic-text",
@@ -4165,6 +4160,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -4278,7 +4275,7 @@ dependencies = [
  "arrayvec",
  "cc",
  "cfg-if",
- "constant_time_eq",
+ "constant_time_eq 0.4.2",
  "cpufeatures 0.3.1",
 ]
 
@@ -4804,7 +4801,7 @@ checksum = "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a"
 dependencies = [
  "glob",
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -5073,6 +5070,15 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb6feb175df65d0a3ccd3e73484e940d0ac664e8034f0519fd49a93db3071d9"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "constgebra"
@@ -5557,100 +5563,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctt"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c119cc328a986d0bae3a1753941595f1dc6a0f2d938b5f49edf8937bd606fa9"
-dependencies = [
- "bytemuck",
- "ctt-astcenc",
- "ctt-bc7enc-rdo",
- "ctt-compressonator",
- "ctt-etcpak",
- "ctt-intel-texture-compressor",
- "ddsfile",
- "fast_image_resize",
- "flate2",
- "half",
- "ktx2",
- "log",
- "miniz_oxide 0.8.9",
- "profiling",
- "thiserror 2.0.21",
- "zstd",
-]
-
-[[package]]
-name = "ctt-astcenc"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24a806826f523401c1c8a9afded1c5625f005fd8e6567ceba2fe6254d8c59e3e"
-dependencies = [
- "bitflags 2.13.2",
- "cc",
- "paste",
-]
-
-[[package]]
-name = "ctt-bc7enc-rdo"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a4ad8fcbfcafc39a9e02bfb344fd517dd0bcd7adabcc25de19e9703eb3b99a3"
-dependencies = [
- "ctt-bc7enc-rdo-prebuilt",
- "ispc-build-utils",
-]
-
-[[package]]
-name = "ctt-bc7enc-rdo-prebuilt"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f27a2776bbafcc2d335c0621aa9dbd40ecfecdb02a636d3fcd2a2379f96f7472"
-dependencies = [
- "ispc-build-utils",
-]
-
-[[package]]
-name = "ctt-compressonator"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21eefd5a6f96023adc6bc8c95de1afccded8f958afdbf7e02fa98bf325c41058"
-dependencies = [
- "cc",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ctt-etcpak"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c6025bf0456c4a8c0a693c803eb7368f045f74709adc6b271223ca7f76898ab"
-dependencies = [
- "cc",
- "paste",
-]
-
-[[package]]
-name = "ctt-intel-texture-compressor"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "452985b4223f1a68da0722161ff9a7dbb33bcb32cd30f341b541fd980c58fb26"
-dependencies = [
- "cc",
- "ctt-intel-texture-compressor-prebuilt",
- "ispc-build-utils",
-]
-
-[[package]]
-name = "ctt-intel-texture-compressor-prebuilt"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa4031e53991b02e2b9fb903f3bb458ab9a2afcec99320800d4d4092dc43d33c"
-dependencies = [
- "ispc-build-utils",
-]
-
-[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5668,8 +5580,18 @@ version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
 dependencies = [
- "darling_core",
- "darling_macro",
+ "darling_core 0.20.11",
+ "darling_macro 0.20.11",
+]
+
+[[package]]
+name = "darling"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
+dependencies = [
+ "darling_core 0.24.1",
+ "darling_macro 0.24.1",
 ]
 
 [[package]]
@@ -5687,14 +5609,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling_core"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
+dependencies = [
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim 0.11.1",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "darling_macro"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
- "darling_core",
+ "darling_core 0.20.11",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
+dependencies = [
+ "darling_core 0.24.1",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -5849,7 +5795,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0df63c21a4383f94bd5388564829423f35c316aed85dc4f8427aded372c7c0d"
 dependencies = [
- "darling",
+ "darling 0.20.11",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6162,7 +6108,7 @@ version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
 dependencies = [
- "darling",
+ "darling 0.20.11",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6275,7 +6221,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -6792,18 +6738,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a044ed96eb57253e806d08b74260638af189687e583f04947a5e11e75e0b0d1"
 dependencies = [
  "arrayvec",
-]
-
-[[package]]
-name = "fast_image_resize"
-version = "6.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c50201dc184ba6553da1695aac20a042efffbe2d84542cee31917c86c3ab1e"
-dependencies = [
- "cfg-if",
- "document-features",
- "num-traits",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -8640,15 +8574,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
-name = "ispc-build-utils"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4cda913ddb107b9bb5c46769855e3849e62daa52fc7e70de0080ca4e6cfd030"
-dependencies = [
- "find-msvc-tools",
-]
-
-[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8850,7 +8775,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -9121,6 +9046,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -10109,6 +10044,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e20f57f9918e5bd7bc58c22cdd70a6afc7375d4dd9683af5f2b34bd3d2bba619"
 
 [[package]]
+name = "mach-sys"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48460c2e82a3a0de197152fdf8d2c2d5e43adc501501553e439bf2156e6f87c7"
+dependencies = [
+ "fastrand",
+]
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10404,6 +10348,66 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mlx-internal-macros"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f11a82b6a4730c2c3778469d186cc3ee9585a5b27a8ffcdfd3c96179b76a895d"
+dependencies = [
+ "darling 0.24.1",
+ "itertools 0.15.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "mlx-macros"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32fc73395b87b961f5556e10104e7c08ed72c500765f44d38e320a6ac83977ed"
+dependencies = [
+ "darling 0.24.1",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "mlx-rs"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f0d7721525b23f77bc38d7757e6c17ea7c925cd2b2889ce86965a17b5e85e86"
+dependencies = [
+ "dyn-clone",
+ "half",
+ "itertools 0.15.0",
+ "libc",
+ "mach-sys",
+ "mlx-internal-macros",
+ "mlx-macros",
+ "mlx-sys",
+ "num-complex",
+ "num-traits",
+ "num_enum",
+ "parking_lot",
+ "paste",
+ "smallvec",
+ "strum 0.28.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mlx-sys"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da965f83ce211b80f9b681d9bbd6fa625fe6bb2e659ba7bc55dd95eea8d3b028"
+dependencies = [
+ "bindgen",
+ "cc",
+ "cmake",
 ]
 
 [[package]]
@@ -11346,6 +11350,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32b0446e98cf4a784cc7a0177715ff317eeaa8463841c616cfc78aa4f953c4ea"
 dependencies = [
+ "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -11437,6 +11442,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-photos"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6ea9a706f18e32cf8a0723e99855af4f135282891e07259301bae9135ae3872"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-quartz-core"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11461,6 +11480,20 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
+]
+
+[[package]]
+name = "objc2-quick-look-thumbnailing"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac8e00da1ca87ffe3ea8d20981026f013df91072a140432f0f88da9a356d9b3c"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -11846,6 +11879,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4336a1e2b38848325241c72889086886004e589b7c74f335e60a8e8db5138a0b"
 dependencies = [
  "half",
+ "libloading 0.9.1",
  "ndarray 0.17.2",
  "ort-sys",
  "smallvec",
@@ -13206,6 +13240,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "primal-check"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13589,10 +13633,104 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "019b4b213425016d7d84a153c4c73afb0946fbb4840e4eece7ba8848b9d6da22"
 
 [[package]]
+name = "raea-app-ask"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-core-ask",
+ "raea-io-assets",
+ "raea-io-clef",
+ "raea-io-home",
+ "raea-io-trace",
+ "raea-sys-fingerprint",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "raea-app-capcut"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "image",
+ "raea-app-layers",
+ "raea-io-alpha",
+ "raea-io-capcut",
+ "raea-io-home",
+ "raea-io-media",
+ "raea-runtime-bundle",
+]
+
+[[package]]
 name = "raea-app-check"
 version = "0.1.0"
 dependencies = [
+ "raea-app-check-cause",
+ "raea-app-check-flash",
+ "raea-app-check-inbox",
+ "raea-app-check-make",
+ "raea-app-check-read",
+ "raea-app-check-text",
  "raea-core-brief",
+ "raea-core-facts",
+ "raea-io-ffmpeg",
+ "raea-io-home",
+ "raea-io-trace",
+ "raea-sys-measure",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-check-cause"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "raea-core-facts",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-check-flash"
+version = "0.1.0"
+
+[[package]]
+name = "raea-app-check-inbox"
+version = "0.1.0"
+dependencies = [
+ "raea-io-home",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-check-make"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-core-facts",
+ "raea-io-home",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-check-read"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "raea-app-media",
+ "raea-io-ffmpeg",
+ "raea-io-home",
+ "raea-io-media",
+ "raea-sys-measure",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-check-text"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-core-facts",
  "serde_json",
 ]
 
@@ -13606,11 +13744,82 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-app-direction"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "image",
+ "raea-app-check",
+ "raea-app-check-text",
+ "raea-app-notes",
+ "raea-app-registry",
+ "raea-core-brief",
+ "raea-core-facts",
+ "raea-io-home",
+ "raea-io-media",
+ "raea-io-trace",
+ "raea-runtime-bundle",
+ "raea-runtime-react",
+ "raea-runtime-world",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-double"
+version = "0.1.0"
+dependencies = [
+ "raea-app-ask",
+ "raea-core-ask",
+ "raea-io-assets",
+ "raea-io-clef",
+ "raea-sys-columns",
+ "raea-sys-fingerprint",
+ "raea-sys-fingerprint-use",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-engines"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-app-interchange",
+ "raea-app-tools",
+ "raea-io-home",
+ "raea-runtime-bundle",
+ "raea-runtime-calls",
+ "raea-runtime-export",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "raea-app-fingerprint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "fastrand",
+ "raea-app-check",
+ "raea-app-double",
+ "raea-io-home",
+ "raea-sys-columns",
+ "raea-sys-fingerprint",
+ "raea-sys-fingerprint-things",
+ "raea-sys-fingerprint-use",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-app-game"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
  "raea-gpu-device",
+ "raea-io-home",
  "raea-io-media",
  "raea-io-net",
  "raea-runtime-export",
@@ -13624,21 +13833,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-app-interchange"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-core-scene",
+ "raea-core-shape",
+ "raea-runtime-bundle",
+ "raea-runtime-export",
+ "raea-runtime-scene",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-app-judge"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
- "image",
+ "dunce",
+ "raea-core-ask",
+ "raea-core-facts",
+ "raea-io-clef",
  "raea-io-home",
  "raea-runtime-bundle",
  "serde_json",
- "ureq 2.12.1",
+]
+
+[[package]]
+name = "raea-app-layers"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-core-scene",
+ "raea-io-alpha",
+ "raea-io-media",
+ "raea-runtime-bundle",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-lightbake"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "libc",
+ "raea-io-home",
+ "raea-light",
+ "raea-runtime-bundle",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "raea-app-make"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "image",
+ "raea-app-judge",
+ "raea-core-ask",
+ "raea-core-brief",
+ "raea-core-facts",
+ "raea-core-review",
+ "raea-io-home",
+ "resvg 0.48.1",
+ "serde_json",
 ]
 
 [[package]]
 name = "raea-app-media"
 version = "0.1.0"
 dependencies = [
+ "meshopt",
  "raea-io-home",
  "raea-io-media",
  "raea-page",
@@ -13646,6 +13912,30 @@ dependencies = [
  "raea-runtime-encode",
  "raea-sys-frame",
  "serde_json",
+]
+
+[[package]]
+name = "raea-app-motion"
+version = "0.1.0"
+dependencies = [
+ "raea-io-home",
+ "raea-runtime-bundle",
+ "raea-sys-kimodo",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-notes"
+version = "0.1.0"
+dependencies = [
+ "raea-core-facts",
+ "raea-io-ffmpeg",
+ "raea-io-home",
+ "raea-io-trace",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -13666,10 +13956,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-app-registry"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "oxc",
+ "raea-core-facts",
+ "raea-io-home",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-app-scene"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "dunce",
+ "raea-core-facts",
+ "raea-core-scene",
+ "raea-runtime-bundle",
+ "raea-runtime-export",
+ "raea-sys-contact",
+ "raea-sys-light-meter",
+ "raea-sys-stage",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-app-solid"
 version = "0.1.0"
 dependencies = [
+ "dunce",
+ "raea-app-ask",
  "raea-app-judge",
+ "raea-app-make",
+ "raea-core-facts",
  "raea-core-meshcheck",
  "raea-core-shape",
  "raea-core-solidinfo",
@@ -13678,10 +13999,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-app-sound"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-io-media",
+ "raea-runtime-bundle",
+ "raea-runtime-export",
+ "raea-sys-mix",
+]
+
+[[package]]
 name = "raea-app-targets"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
  "raea-io-home",
  "raea-runtime-bundle",
  "serde_json",
@@ -13691,6 +14024,8 @@ dependencies = [
 name = "raea-app-tools"
 version = "0.1.0"
 dependencies = [
+ "dunce",
+ "raea-app-motion",
  "raea-io-assets",
  "raea-io-gen",
  "raea-io-home",
@@ -13701,10 +14036,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-app-voice"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal 0.15.3",
+ "ort",
+ "raea-sys-ml",
+ "raea-sys-speech",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-app-workspace"
 version = "0.1.0"
 dependencies = [
- "raea-core-brief",
+ "dunce",
+ "raea-app-check",
+ "raea-app-registry",
+ "raea-core-facts",
+ "raea-io-assets",
+ "raea-io-home",
  "serde_json",
 ]
 
@@ -13776,6 +14128,7 @@ dependencies = [
  "chacha20 0.10.2",
  "indexmap",
  "nonmax",
+ "raea-io-home",
  "raea-sys-parity",
  "rand 0.10.3",
 ]
@@ -13859,6 +14212,7 @@ name = "raea-bridge-bench"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "dunce",
  "image",
  "raea-core-alloc",
  "raea-core-wire",
@@ -13883,6 +14237,7 @@ name = "raea-bundle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dunce",
  "lightningcss",
  "oxc",
  "raea-io-home",
@@ -13918,25 +14273,40 @@ name = "raea-cli"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "dunce",
+ "raea-app-ask",
+ "raea-app-capcut",
  "raea-app-check",
  "raea-app-ci",
+ "raea-app-direction",
+ "raea-app-engines",
+ "raea-app-fingerprint",
  "raea-app-game",
  "raea-app-judge",
+ "raea-app-layers",
+ "raea-app-lightbake",
+ "raea-app-make",
  "raea-app-media",
+ "raea-app-notes",
  "raea-app-play",
+ "raea-app-scene",
  "raea-app-solid",
+ "raea-app-sound",
  "raea-app-targets",
  "raea-app-tools",
+ "raea-app-voice",
  "raea-app-workspace",
  "raea-bevy-plugins",
  "raea-core-alloc",
  "raea-core-animate",
  "raea-core-brief",
  "raea-core-program",
+ "raea-denoise-bench",
  "raea-io-home",
  "raea-io-media",
  "raea-io-npm",
  "raea-io-trace",
+ "raea-light",
  "raea-native",
  "raea-neural",
  "raea-render",
@@ -13946,6 +14316,9 @@ dependencies = [
  "raea-runtime-plugins",
  "raea-runtime-react",
  "raea-runtime-sound",
+ "raea-runtime-wear",
+ "raea-sys-fixes",
+ "raea-sys-index",
  "regex",
  "serde",
  "serde_json",
@@ -13964,6 +14337,16 @@ dependencies = [
  "raea-core-ease",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "raea-core-ask"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ts-rs",
 ]
 
 [[package]]
@@ -13988,6 +14371,17 @@ name = "raea-core-ease"
 version = "0.1.0"
 
 [[package]]
+name = "raea-core-facts"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-core-brief",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "raea-core-fonts"
 version = "0.1.0"
 dependencies = [
@@ -14009,6 +14403,15 @@ version = "0.1.0"
 name = "raea-core-meshcheck"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "raea-core-modelbox"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-core-scene",
  "serde_json",
 ]
 
@@ -14076,6 +14479,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-core-zfight"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "raea-denoise-bench"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "raea-light",
+ "raea-runtime-bundle",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-gpu-device"
 version = "0.1.0"
 dependencies = [
@@ -14088,6 +14508,33 @@ dependencies = [
  "vello",
  "vello_shaders",
  "wgpu",
+]
+
+[[package]]
+name = "raea-hands-audit"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+ "raea-sys-body",
+ "raea-sys-grab",
+]
+
+[[package]]
+name = "raea-io-alpha"
+version = "0.1.0"
+dependencies = [
+ "block2 0.6.2",
+ "image",
+ "objc2 0.6.5",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-video-toolbox",
+ "png 0.17.16",
+ "raea-io-apple",
+ "serde_json",
 ]
 
 [[package]]
@@ -14131,6 +14578,7 @@ dependencies = [
 name = "raea-io-assets"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "image",
  "raea-io-home",
  "ruzstd",
@@ -14150,6 +14598,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-io-capcut"
+version = "0.1.0"
+dependencies = [
+ "raea-io-home",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-io-clef"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "raea-core-ask",
+ "raea-io-assets",
+ "raea-io-ffmpeg",
+ "raea-io-home",
+ "serde_json",
+ "sha2 0.10.9",
+ "ureq 2.12.1",
+]
+
+[[package]]
 name = "raea-io-codec"
 version = "0.1.0"
 dependencies = [
@@ -14166,6 +14636,7 @@ dependencies = [
 name = "raea-io-ffmpeg"
 version = "0.1.0"
 dependencies = [
+ "raea-io-assets",
  "raea-io-codec",
  "serde_json",
 ]
@@ -14174,10 +14645,11 @@ dependencies = [
 name = "raea-io-gen"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "image",
- "raea-core-meshcheck",
  "raea-io-gen-comfy",
  "raea-io-gen-core",
+ "raea-io-gen-fit",
  "raea-io-home",
  "serde_json",
 ]
@@ -14200,9 +14672,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-io-gen-fit"
+version = "0.1.0"
+dependencies = [
+ "raea-core-facts",
+ "raea-core-meshcheck",
+ "raea-io-gen-core",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-io-home"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "serde_json",
  "url",
 ]
@@ -14280,6 +14763,7 @@ dependencies = [
 name = "raea-io-shell"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "flate2",
  "htmd",
  "raea-core-calls",
@@ -14316,10 +14800,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-light"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "raea-io-home",
+ "raea-runtime-bundle",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-lightbench"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bytemuck",
+ "meshopt",
+ "wgpu",
+]
+
+[[package]]
 name = "raea-modules"
 version = "0.1.0"
 dependencies = [
  "deno_ast",
+ "dunce",
 ]
 
 [[package]]
@@ -14327,10 +14832,12 @@ name = "raea-native"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
  "flate2",
  "getrandom 0.3.4",
  "libc",
  "raea-core-calls",
+ "raea-io-home",
  "raea-io-shell",
  "raea-modules",
  "raea-runtime-jsengine",
@@ -14355,7 +14862,9 @@ dependencies = [
  "bevy",
  "blitz-dom",
  "blitz-html",
+ "dunce",
  "image",
+ "parley",
  "raea-core-wire",
  "raea-gpu-device",
  "raea-io-media",
@@ -14366,12 +14875,28 @@ dependencies = [
  "raea-runtime-plugins",
  "raea-runtime-twins",
  "raea-sys-fonts",
+ "raea-sys-layers",
  "raea-sys-page",
  "serde_json",
  "stylo",
  "url",
+ "usvg 0.48.1",
  "vello",
  "wgpu",
+]
+
+[[package]]
+name = "raea-page-ax"
+version = "0.1.0"
+dependencies = [
+ "accesskit 0.24.1",
+ "bevy",
+ "blitz-dom",
+ "raea-runtime-dom",
+ "raea-sys-a11y",
+ "raea-sys-page",
+ "serde_json",
+ "stylo",
 ]
 
 [[package]]
@@ -14381,12 +14906,18 @@ dependencies = [
  "base64 0.22.1",
  "bevy",
  "blitz-dom",
+ "blitz-html",
  "blitz-traits",
  "image",
+ "keyboard-types",
+ "raea-io-home",
  "raea-io-media",
  "raea-io-net-calls",
  "raea-io-os",
+ "raea-io-trace",
  "raea-page",
+ "raea-page-ax",
+ "raea-page-sound",
  "raea-page-stage",
  "raea-page-window",
  "raea-rune-slots",
@@ -14395,12 +14926,20 @@ dependencies = [
  "raea-runtime-js",
  "raea-runtime-plugins",
  "raea-runtime-view",
- "raea-sys-a11y",
  "raea-sys-fonts",
  "raea-sys-page",
  "serde_json",
- "stylo",
  "tiny_http",
+]
+
+[[package]]
+name = "raea-page-sound"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-runtime-js",
+ "raea-sys-mix",
+ "serde_json",
 ]
 
 [[package]]
@@ -14410,6 +14949,8 @@ dependencies = [
  "bevy",
  "blitz-dom",
  "raea-gpu-device",
+ "raea-io-home",
+ "raea-io-trace",
  "raea-runtime-bake",
  "raea-runtime-dom",
  "raea-runtime-js",
@@ -14427,13 +14968,17 @@ name = "raea-page-window"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "blitz-traits",
  "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "raea-io-os",
  "raea-runtime-js",
+ "raea-sys-page",
  "raw-window-handle",
  "serde_json",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -14456,6 +15001,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bytemuck",
+ "dunce",
  "image",
  "raea-core-program",
  "raea-core-shape",
@@ -14469,13 +15015,17 @@ dependencies = [
  "raea-runtime-view",
  "raea-sys-compose",
  "raea-sys-compute",
+ "raea-sys-engine-shaders",
  "raea-sys-environment",
  "raea-sys-fog",
  "raea-sys-fog-half",
  "raea-sys-frame",
  "raea-sys-framepass",
+ "raea-sys-gi",
  "raea-sys-grass",
  "raea-sys-grid",
+ "raea-sys-hold",
+ "raea-sys-lod",
  "raea-sys-look",
  "raea-sys-matchmove",
  "raea-sys-material",
@@ -14485,6 +15035,7 @@ dependencies = [
  "raea-sys-phase",
  "raea-sys-post",
  "raea-sys-procmat",
+ "raea-sys-rendermap",
  "raea-sys-rt",
  "raea-sys-sampler",
  "raea-sys-screen",
@@ -14493,8 +15044,8 @@ dependencies = [
  "raea-sys-sprite",
  "raea-sys-text3d",
  "raea-sys-three-shader",
+ "raea-sys-viewbox",
  "raea-sys-volume",
- "raea-sys-wear",
  "serde_json",
  "wgpu",
 ]
@@ -14507,7 +15058,20 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-metal 0.3.2",
  "objc2-metal-fx",
+ "raea-io-trace",
+ "raea-sys-engine-shaders",
+ "raea-sys-post",
+ "raea-sys-rt",
+ "serde_json",
  "wgpu",
+]
+
+[[package]]
+name = "raea-rerender-ios"
+version = "0.1.0"
+dependencies = [
+ "raea-runtime-export",
+ "raea-runtime-react",
 ]
 
 [[package]]
@@ -14515,6 +15079,7 @@ name = "raea-rune-bevy"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "raea-io-trace",
  "rune",
  "wgpu",
 ]
@@ -14619,11 +15184,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-runtime-appscreen"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "blitz-traits",
+ "keyboard-types",
+ "raea-io-home",
+ "raea-page",
+ "raea-runtime-bundle",
+ "raea-runtime-dom",
+ "raea-runtime-js",
+ "raea-runtime-jsengine",
+ "raea-sys-fonts",
+ "raea-sys-page",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-runtime-bake"
 version = "0.1.0"
 dependencies = [
  "bevy",
  "raea-io-home",
+ "raea-io-trace",
  "raea-modules",
  "raea-runtime-bundle",
  "raea-runtime-react",
@@ -14636,22 +15220,25 @@ version = "0.1.0"
 dependencies = [
  "dunce",
  "junction",
- "libc",
  "raea-core-scene",
  "raea-io-home",
  "raea-io-media",
+ "raea-io-trace",
  "raea-native",
  "raea-runtime-bundle-lib",
+ "raea-runtime-cssurls",
+ "raea-runtime-pid",
+ "raea-sys-layers",
  "regex",
  "serde_json",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "raea-runtime-bundle-lib"
 version = "0.1.0"
 dependencies = [
- "libloading",
+ "dunce",
+ "libloading 0.8.9",
  "raea-io-home",
  "serde_json",
 ]
@@ -14670,13 +15257,35 @@ dependencies = [
  "raea-core-shape",
  "raea-io-media",
  "raea-io-net",
+ "raea-io-trace",
  "raea-native",
  "raea-runtime-plugins",
+ "raea-runtime-wear",
  "raea-sys-fonts",
+ "raea-sys-grab",
  "raea-sys-mix",
  "raea-sys-ml",
  "raea-sys-speech",
  "serde_json",
+]
+
+[[package]]
+name = "raea-runtime-canvas"
+version = "0.1.0"
+dependencies = [
+ "blitz-dom",
+ "raea-native",
+ "raea-sys-canvas",
+ "raea-sys-fonts",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-runtime-cssurls"
+version = "0.1.0"
+dependencies = [
+ "raea-core-scene",
+ "raea-io-home",
 ]
 
 [[package]]
@@ -14689,14 +15298,29 @@ dependencies = [
  "keyboard-types",
  "raea-core-wire",
  "raea-io-net",
+ "raea-io-trace",
+ "raea-runtime-dom-media",
  "raea-runtime-js",
  "raea-runtime-twins",
  "raea-sys-canvas",
- "raea-sys-image",
  "raea-sys-page",
  "serde_json",
  "stylo",
  "url",
+]
+
+[[package]]
+name = "raea-runtime-dom-media"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "blitz-dom",
+ "raea-io-net",
+ "raea-io-trace",
+ "raea-runtime-js",
+ "raea-sys-image",
+ "raea-sys-page",
+ "serde_json",
  "vello",
 ]
 
@@ -14724,6 +15348,7 @@ dependencies = [
  "raea-io-net",
  "raea-page",
  "raea-render",
+ "raea-runtime-segments",
  "raea-runtime-view",
  "raea-sys-frame",
  "raea-sys-k",
@@ -14733,34 +15358,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-runtime-endchecks"
+version = "0.1.0"
+dependencies = [
+ "raea-core-facts",
+ "raea-core-scene",
+ "raea-sys-contact",
+ "raea-sys-stage",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-runtime-export"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "dunce",
  "image",
+ "raea-core-facts",
  "raea-core-program",
  "raea-core-review",
  "raea-core-scene",
  "raea-gpu-device",
+ "raea-io-alpha",
  "raea-io-assets",
  "raea-io-media",
  "raea-io-net",
+ "raea-io-trace",
  "raea-page",
  "raea-render",
  "raea-runtime-bake",
  "raea-runtime-encode",
+ "raea-runtime-endchecks",
  "raea-runtime-page",
+ "raea-runtime-pagestore",
  "raea-runtime-react",
  "raea-runtime-scene",
  "raea-runtime-scene3d",
  "raea-runtime-sound",
  "raea-runtime-view",
  "raea-sys-contact",
+ "raea-sys-frame",
+ "raea-sys-layers",
  "raea-sys-light-meter",
  "raea-sys-mix",
  "raea-sys-page",
+ "raea-sys-rt",
+ "raea-sys-stage",
  "serde_json",
- "twox-hash",
  "wgpu",
 ]
 
@@ -14773,6 +15418,7 @@ dependencies = [
  "raea-core-k",
  "raea-core-program",
  "raea-gpu-device",
+ "raea-io-trace",
  "raea-runtime-view",
  "raea-sys-frame",
  "raea-sys-k",
@@ -14801,6 +15447,8 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bevy",
+ "cpal 0.15.3",
+ "dunce",
  "raea-bevy-world",
  "raea-core-wire",
  "raea-io-home",
@@ -14808,6 +15456,7 @@ dependencies = [
  "raea-io-net",
  "raea-io-net-calls",
  "raea-io-os",
+ "raea-io-trace",
  "raea-runtime-bundle",
  "raea-runtime-jsengine",
  "serde",
@@ -14818,7 +15467,11 @@ dependencies = [
 name = "raea-runtime-jsengine"
 version = "0.1.0"
 dependencies = [
+ "iana-time-zone",
+ "miniz_oxide 0.8.9",
  "objc2 0.6.5",
+ "raea-io-home",
+ "raea-io-trace",
  "rquickjs",
 ]
 
@@ -14828,6 +15481,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "cpal 0.15.3",
+ "dunce",
  "image",
  "raea-core-program",
  "raea-gpu-device",
@@ -14838,7 +15492,10 @@ dependencies = [
  "raea-runtime-export",
  "raea-runtime-page",
  "raea-runtime-react",
+ "raea-runtime-scene",
  "raea-runtime-sound",
+ "raea-sys-frame",
+ "raea-sys-hold",
  "raea-sys-mix",
  "serde_json",
  "twox-hash",
@@ -14871,6 +15528,7 @@ dependencies = [
  "raea-io-net",
  "raea-page",
  "raea-render",
+ "raea-runtime-appscreen",
  "raea-runtime-input",
  "raea-runtime-react",
  "raea-runtime-twins",
@@ -14886,6 +15544,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-runtime-pagestore"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "twox-hash",
+]
+
+[[package]]
+name = "raea-runtime-pid"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "raea-runtime-plugins"
 version = "0.1.0"
 dependencies = [
@@ -14893,6 +15567,7 @@ dependencies = [
  "raea-bevy-world",
  "raea-core-program",
  "raea-core-shape",
+ "raea-io-trace",
  "raea-sys-frame",
  "raea-sys-material",
  "raea-sys-shader",
@@ -14919,11 +15594,14 @@ dependencies = [
  "raea-render",
  "raea-runtime-bundle",
  "raea-runtime-calls",
+ "raea-runtime-canvas",
  "raea-runtime-input",
  "raea-runtime-jsengine",
  "raea-runtime-plugins",
  "raea-runtime-scene",
  "raea-runtime-shared",
+ "raea-runtime-shots",
+ "raea-runtime-track",
  "raea-runtime-twins",
  "raea-runtime-view",
  "raea-sys-animate",
@@ -14944,8 +15622,9 @@ dependencies = [
  "raea-core-scene",
  "raea-runtime-look",
  "raea-runtime-scene2d",
+ "raea-sys-frame",
+ "raea-sys-layers",
  "raea-sys-procmat",
- "raea-sys-wear",
  "serde_json",
 ]
 
@@ -14965,9 +15644,10 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "raea-core-program",
+ "raea-io-trace",
  "raea-runtime-plugins",
- "raea-sys-compose",
  "raea-sys-compute",
+ "raea-sys-copies",
  "raea-sys-fog",
  "raea-sys-fog-half",
  "raea-sys-frame",
@@ -14977,7 +15657,19 @@ dependencies = [
  "raea-sys-post",
  "raea-sys-sampler",
  "raea-sys-shader",
+ "raea-sys-share",
  "serde_json",
+]
+
+[[package]]
+name = "raea-runtime-segments"
+version = "0.1.0"
+dependencies = [
+ "muxide",
+ "raea-io-codec",
+ "raea-io-media",
+ "raea-io-trace",
+ "re_mp4",
 ]
 
 [[package]]
@@ -14992,15 +15684,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-runtime-shots"
+version = "0.1.0"
+dependencies = [
+ "raea-io-assets",
+ "raea-native",
+ "raea-runtime-calls",
+ "raea-sys-bake",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-runtime-sound"
 version = "0.1.0"
 dependencies = [
  "bevy",
  "raea-io-assets",
+ "raea-io-trace",
  "raea-runtime-calls",
  "raea-runtime-react",
  "raea-seedling",
  "raea-sys-mix",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-runtime-track"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "raea-io-assets",
+ "raea-native",
+ "raea-runtime-bundle",
+ "raea-runtime-calls",
+ "raea-sys-bake",
  "serde_json",
 ]
 
@@ -15037,11 +15754,46 @@ dependencies = [
  "raea-gpu-device",
  "raea-io-home",
  "raea-io-media",
+ "raea-io-trace",
  "raea-page",
  "raea-sys-frame",
  "raea-sys-k",
  "serde_json",
  "wgpu",
+]
+
+[[package]]
+name = "raea-runtime-wear"
+version = "0.1.0"
+dependencies = [
+ "raea-io-assets",
+ "raea-native",
+ "raea-sys-bake",
+ "raea-sys-glb",
+ "raea-sys-weathering",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-runtime-world"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "dunce",
+ "image",
+ "raea-core-facts",
+ "raea-core-scene",
+ "raea-io-media",
+ "raea-runtime-bake",
+ "raea-runtime-bundle",
+ "raea-runtime-page",
+ "raea-runtime-react",
+ "raea-runtime-scene",
+ "raea-sys-layers",
+ "raea-sys-measure",
+ "raea-sys-vision",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -15057,6 +15809,7 @@ dependencies = [
  "bevy_seedling",
  "firewheel",
  "raea-io-media",
+ "raea-io-trace",
  "raea-sys-mix",
  "raea-sys-tone",
  "serde_json",
@@ -15088,14 +15841,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-atlas"
+version = "0.1.0"
+dependencies = [
+ "parry3d",
+ "raea-core-meshcheck",
+ "raea-sys-glb",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-sys-bake"
 version = "0.1.0"
 dependencies = [
  "image",
+ "raea-io-assets",
+ "raea-io-home",
  "rapier3d",
  "serde_json",
  "sha2 0.10.9",
  "simba",
+]
+
+[[package]]
+name = "raea-sys-body"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+ "serde_json",
 ]
 
 [[package]]
@@ -15114,15 +15888,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-columns"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fastrand",
+ "half",
+ "image",
+ "ort",
+ "raea-io-home",
+ "raea-io-media",
+ "raea-sys-ml",
+ "rustfft",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokenizers",
+]
+
+[[package]]
 name = "raea-sys-compose"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bytemuck",
  "indexmap",
  "raea-core-program",
+ "raea-io-trace",
  "raea-sys-frame",
  "raea-sys-rt",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]
@@ -15142,9 +15938,43 @@ name = "raea-sys-contact"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "raea-core-facts",
  "raea-core-meshcheck",
+ "raea-core-modelbox",
  "raea-core-scene",
  "raea-core-shape",
+ "raea-core-zfight",
+ "raea-io-trace",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-sys-copies"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-sys-material",
+ "raea-sys-shader",
+]
+
+[[package]]
+name = "raea-sys-damage"
+version = "0.1.0"
+dependencies = [
+ "parry3d",
+ "raea-core-ease",
+ "raea-sys-touch",
+ "rayon",
+]
+
+[[package]]
+name = "raea-sys-engine-shaders"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-core-program",
+ "raea-io-trace",
+ "raea-sys-frame",
  "serde_json",
 ]
 
@@ -15160,6 +15990,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-exposure"
+version = "0.1.0"
+dependencies = [
+ "parry3d",
+]
+
+[[package]]
 name = "raea-sys-filters"
 version = "0.1.0"
 dependencies = [
@@ -15172,14 +16009,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-fingerprint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "raea-io-home",
+ "raea-sys-columns",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-sys-fingerprint-things"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fastrand",
+ "raea-sys-columns",
+ "raea-sys-fingerprint-use",
+ "raea-sys-layers",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-sys-fingerprint-use"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "fastrand",
+ "image",
+ "raea-io-ffmpeg",
+ "raea-sys-columns",
+ "raea-sys-fingerprint",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-sys-fixes"
+version = "0.1.0"
+dependencies = [
+ "raea-io-home",
+ "rusqlite",
+]
+
+[[package]]
 name = "raea-sys-fog"
 version = "0.1.0"
 dependencies = [
  "bevy",
  "bytemuck",
  "raea-core-program",
+ "raea-io-trace",
  "raea-sys-frame",
+ "raea-sys-rt",
  "raea-sys-volume",
+ "serde_json",
 ]
 
 [[package]]
@@ -15187,8 +16074,22 @@ name = "raea-sys-fog-half"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "raea-core-program",
+ "raea-sys-compose",
+ "raea-sys-fog",
  "raea-sys-frame",
  "wgpu",
+]
+
+[[package]]
+name = "raea-sys-foliage"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "parry3d",
+ "raea-core-ease",
+ "raea-sys-glb",
+ "serde_json",
 ]
 
 [[package]]
@@ -15212,7 +16113,9 @@ dependencies = [
 name = "raea-sys-footage"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "image",
+ "raea-io-home",
  "raea-io-media",
  "raea-sys-layout",
  "raea-sys-song",
@@ -15230,7 +16133,10 @@ dependencies = [
  "raea-core-program",
  "raea-core-scene",
  "raea-io-media",
+ "raea-sys-layers",
+ "raea-sys-shots",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]
@@ -15242,6 +16148,32 @@ dependencies = [
  "raea-sys-material",
  "raea-sys-sampler",
  "raea-sys-shader",
+ "serde_json",
+]
+
+[[package]]
+name = "raea-sys-gi"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-sys-compose",
+ "raea-sys-rt",
+ "wgpu",
+]
+
+[[package]]
+name = "raea-sys-glb"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "raea-sys-grab"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+ "raea-sys-body",
  "serde_json",
 ]
 
@@ -15266,10 +16198,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-hold"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-sys-frame",
+]
+
+[[package]]
 name = "raea-sys-image"
 version = "0.1.0"
 dependencies = [
  "bevy",
+]
+
+[[package]]
+name = "raea-sys-index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "block2 0.6.2",
+ "dunce",
+ "half",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-ml",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-image-io",
+ "objc2-photos",
+ "objc2-quick-look-thumbnailing",
+ "ort",
+ "raea-io-home",
+ "raea-sys-ml",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "walkdir",
 ]
 
 [[package]]
@@ -15282,6 +16253,33 @@ dependencies = [
  "raea-gpu-device",
  "serde_json",
  "wgpu",
+]
+
+[[package]]
+name = "raea-sys-kimodo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "mlx-rs",
+ "raea-io-home",
+ "raea-sys-ml",
+ "raea-sys-mlx",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
+name = "raea-sys-layers"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "blitz-dom",
+ "blitz-paint",
+ "flate2",
+ "glifo",
+ "serde_json",
+ "vello_cpu",
 ]
 
 [[package]]
@@ -15298,8 +16296,32 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "image",
+ "raea-core-facts",
  "raea-core-scene",
  "serde_json",
+]
+
+[[package]]
+name = "raea-sys-lightbake"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "parry3d",
+ "pollster 0.4.0",
+ "raea-gpu-device",
+ "raea-sys-atlas",
+ "rayon",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
+name = "raea-sys-lod"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-io-trace",
+ "raea-sys-frame",
 ]
 
 [[package]]
@@ -15334,12 +16356,17 @@ dependencies = [
  "raea-core-program",
  "raea-core-shape",
  "raea-io-net",
+ "raea-io-trace",
  "raea-sys-frame",
  "raea-sys-mesh",
  "raea-sys-sampler",
  "resvg 0.48.1",
  "serde_json",
 ]
+
+[[package]]
+name = "raea-sys-measure"
+version = "0.1.0"
 
 [[package]]
 name = "raea-sys-mesh"
@@ -15368,9 +16395,19 @@ dependencies = [
  "audioadapter-buffers",
  "cpal 0.15.3",
  "firewheel",
+ "raea-io-home",
  "raea-io-media",
+ "raea-io-trace",
+ "raea-sys-mix-level",
  "raea-sys-tone",
  "serde_json",
+]
+
+[[package]]
+name = "raea-sys-mix-level"
+version = "0.1.0"
+dependencies = [
+ "raea-io-media",
 ]
 
 [[package]]
@@ -15378,10 +16415,19 @@ name = "raea-sys-ml"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dunce",
  "half",
  "ort",
  "raea-io-home",
  "ureq 2.12.1",
+]
+
+[[package]]
+name = "raea-sys-mlx"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mlx-rs",
 ]
 
 [[package]]
@@ -15396,8 +16442,10 @@ dependencies = [
  "blitz-traits",
  "color",
  "parley",
+ "raea-core-facts",
  "raea-core-wire",
  "raea-gpu-device",
+ "raea-io-trace",
  "raea-sys-filters",
  "raea-sys-fonts",
  "raea-sys-image",
@@ -15416,6 +16464,7 @@ dependencies = [
  "bevy",
  "blitz-dom",
  "blitz-traits",
+ "dunce",
  "percent-encoding",
  "raea-io-net",
  "raea-sys-image",
@@ -15473,6 +16522,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "raea-core-program",
+ "raea-sys-compose",
  "raea-sys-frame",
 ]
 
@@ -15487,11 +16537,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-rendermap"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-sys-frame",
+]
+
+[[package]]
 name = "raea-sys-rt"
 version = "0.1.0"
 dependencies = [
  "bevy",
  "wgpu",
+]
+
+[[package]]
+name = "raea-sys-runoff"
+version = "0.1.0"
+dependencies = [
+ "parry3d",
+ "rayon",
 ]
 
 [[package]]
@@ -15539,6 +16605,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-share"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "raea-sys-shots"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-core-program",
+]
+
+[[package]]
 name = "raea-sys-song"
 version = "0.1.0"
 dependencies = [
@@ -15547,6 +16628,7 @@ dependencies = [
  "ort",
  "raea-io-home",
  "raea-io-media",
+ "raea-io-trace",
  "raea-sys-vision",
  "serde_json",
 ]
@@ -15557,6 +16639,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ort",
+ "raea-io-home",
  "raea-sys-ml",
  "serde_json",
  "tokenizers",
@@ -15586,6 +16669,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-stage"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-core-facts",
+ "raea-core-scene",
+ "raea-core-shape",
+ "serde_json",
+]
+
+[[package]]
 name = "raea-sys-text3d"
 version = "0.1.0"
 dependencies = [
@@ -15605,8 +16699,10 @@ dependencies = [
  "bevy",
  "image",
  "naga",
+ "raea-sys-frame",
  "raea-sys-material",
  "raea-sys-sampler",
+ "raea-sys-shader",
  "serde_json",
 ]
 
@@ -15620,11 +16716,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "raea-sys-touch"
+version = "0.1.0"
+dependencies = [
+ "parry3d",
+]
+
+[[package]]
 name = "raea-sys-tweak"
 version = "0.1.0"
 dependencies = [
  "oxc",
  "serde_json",
+]
+
+[[package]]
+name = "raea-sys-viewbox"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "raea-sys-frame",
 ]
 
 [[package]]
@@ -15639,6 +16750,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-vision",
+ "raea-io-home",
  "raea-io-media",
  "raea-sys-layout",
  "serde",
@@ -15651,17 +16763,26 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "raea-core-program",
+ "raea-io-trace",
  "raea-sys-frame",
  "serde_json",
 ]
 
 [[package]]
-name = "raea-sys-wear"
+name = "raea-sys-weathering"
 version = "0.1.0"
 dependencies = [
- "bevy",
- "raea-core-program",
+ "image",
+ "parry3d",
+ "raea-sys-atlas",
+ "raea-sys-damage",
+ "raea-sys-exposure",
+ "raea-sys-glb",
+ "raea-sys-runoff",
+ "raea-sys-touch",
+ "rayon",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -17085,7 +18206,7 @@ dependencies = [
  "image",
  "js-sys",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "objc2 0.5.3",
  "objc2 0.6.5",
  "objc2-app-kit 0.2.2",
@@ -18326,6 +19447,9 @@ name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros 0.28.0",
+]
 
 [[package]]
 name = "strum_macros"
@@ -18435,7 +19559,7 @@ version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ee5c550c2e00a0b3c046bef84a9ee217e04e7c014142eeb96f9e48781c5cfd3"
 dependencies = [
- "darling",
+ "darling 0.20.11",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -19622,7 +20746,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f8e91a023810fd2019648410d00eea13a71f21d849e71d6d9ed936fb8061174"
 dependencies = [
- "darling",
+ "darling 0.20.11",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -20248,6 +21372,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
+name = "typed-path"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
+
+[[package]]
 name = "typedmap"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20509,8 +21639,6 @@ dependencies = [
 [[package]]
 name = "usvg"
 version = "0.48.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
 dependencies = [
  "base64 0.23.1",
  "data-url 0.3.2",
@@ -21520,7 +22648,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",
@@ -22373,7 +23501,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.5",
  "x11rb-protocol",
@@ -22880,6 +24008,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "zip"
+version = "9.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3476fd497ac8af5b1ec7b51acab7bef380f7e8dd8e0487595bafd839417a302"
+dependencies = [
+ "constant_time_eq 0.6.1",
+ "crc32fast",
+ "flate2",
+ "getrandom 0.4.3",
+ "indexmap",
+ "libc",
+ "memchr",
+ "nix",
+ "typed-path",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22899,34 +24046,6 @@ checksum = "23ef5ed7d628cdf0af82f93dfe03330a8e37383bf7422a1d3d6eb72326680be5"
 dependencies = [
  "futures-core",
  "futures-io",
-]
-
-[[package]]
-name = "zstd"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
-dependencies = [
- "zstd-safe",
-]
-
-[[package]]
-name = "zstd-safe"
-version = "7.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
-dependencies = [
- "zstd-sys",
-]
-
-[[package]]
-name = "zstd-sys"
-version = "2.1.2+zstd.1.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
-dependencies = [
- "cc",
- "pkg-config",
 ]
 
 [[package]]

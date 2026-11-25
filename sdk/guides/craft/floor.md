@@ -25,8 +25,9 @@ Before you say a piece is done, every line here is true of the last render, not 
 - **Every name the voice says is on screen when it says it.** If the narration says "the brief", the brief is visible.
 - **Nothing stands still for three seconds** unless the stillness is the point. A held frame needs a reason the viewer
   can feel.
-- **Reading time.** About 0.3 s a word, and at least a second for anything that has to be read. A number gets time
-  to land before the next thing replaces it.
+- **Reading time.** About 0.3 s a word, and at least a second for anything that has to be read, counted while it can
+  be read: faded, covered or lost against its ground doesn't count, and `raea check` says which frames were lost. A
+  number gets time to land before the next thing replaces it.
 - **The mix.** -14 LUFS integrated (±1), true peak at or below -1 dBTP, and the voice clear over everything.
   Changing the target needs the person's say-so.
 - **Names are spelled right.** People, products and places are spelled as the brief has them, never as the
@@ -45,6 +46,13 @@ direction asks for it by name, and the direction then says why in a line.
 
 - **Close-ups with no reason.** A cut to a detail has to answer something the viewer just wondered about.
 - **Wide, empty shots.** Frame close or medium on a subject: a person, a product, the thing that's happening.
+- **Labels written into the 3D.** Words that name or point at a part are a `Label`: page type over the scene, sized in
+  pixels of the frame, placed through the shot's camera. Words in the world are only what's really there (a sign, a page in a book), and `raea render` fails on
+  any it can't read: too small, turned past 50°, behind a part or never fully revealed (`bevy` rule 9). A part a
+  `Label` names is what the shot is about, so it fails when the frame's edge cuts that part (`subject-cut`).
+- **A 3D film rendered a shot at a time.** Render the film whole. A frame looks the same however it's reached, and
+  `raea render` renders a sample of a film's frames again alone and fails on one that differs (`frame-pure`). A shot a
+  process works round an engine fault; when one shows, report it with `raea bug` instead of building round it.
 - **Cameras that ease from A to B and stop.** A camera keeps moving at the start and end of a shot, so cuts join
   motion to motion. Stop only when following a subject that stops.
 - **Cutting to a constant tempo.** Cut to the song's map (its beats, downbeats, builds and drops), never to a BPM
@@ -60,6 +68,8 @@ direction asks for it by name, and the direction then says why in a line.
 - **Template captions.** White bold text with one yellow word, an emoji pop, a zoom on every sentence, a whoosh on
   every entrance.
 - **The same move everywhere.** One entrance, one zoom or one sound on every beat makes every beat weaker.
+- **Music by default.** A bed under every second, or a held pad and drone standing in for a score. Decide what each
+  scene is heard as, and compose what it needs (`motion/music`).
 - **Copy that sounds like an ad.** Buzzwords, "Not X. Y." cadences, aphorisms, a label above every headline.
 
 ## Never

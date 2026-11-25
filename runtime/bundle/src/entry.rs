@@ -4,14 +4,24 @@ pub fn entry(file: &str, o: &CompOpts) -> String {
     let (comp, w, h, fps, frames) = (o.composition.as_deref(), o.w, o.h, o.fps, o.frames);
     let js = |v: &Option<Value>| v.as_ref().map(Value::to_string).unwrap_or("null".into());
     let (words, perception, input) = (js(&o.words), js(&o.perception), js(&o.input));
+    let given = serde_json::to_string(&o.given).unwrap_or("[]".into());
+    let props = format!("{} x{} hold {:?}", js(&o.props), o.scale.unwrap_or(1.0), o.hold);
     // the composition's element made once, so a frame re-renders only what reads the frame (its clock, through
     // useCurrentFrame), not every part (docs/control.feature FC1b). A frame is already pure (a still renders any
     // frame alone), so a part drawing Math.random or Date in render without reading the frame breaks either way.
     // RAEA_STILL_TREE=0 makes it each frame, as before. In the entry's text, so the bundle cache tells the two apart
     let still = std::env::var("RAEA_STILL_TREE").map_or(true, |v| v != "0");
     format!(
-        r#"import {{ pureAgain, pureFrame, pureSession, seedOf }} from "./motion/pure";
-import {{ mount, addEventListener }} from "bevy-react";
+        r#"import "./props"; // --props, set before the edit's modules run: {props}
+import {{ frameCallbacks, pureAgain, pureFrame, pureSession, seedOf }} from "./motion/pure";
+import {{ canvas2d }} from "./motion/canvas2d";
+import * as BevyReact from "bevy-react";
+import {{ mount, addEventListener, BevyCanvasElement }} from "bevy-react";
+canvas2d(BevyCanvasElement); // a <canvas> ref's getContext("2d") is the web's (motion canvas2d.ts, #55)
+// a ref has the DOM a web component reads (getBoundingClientRect, offsetWidth, children, querySelector ...):
+// on bevy-react's BevyElement, which raea's patch adds (a bridge without it keeps plain handles; layout-reads LR1, LR3, LR4)
+import {{ domReads }} from "./motion/dom-reads";
+domReads(BevyReact as any);
 import {{ Component, useEffect, useMemo, useState }} from "react";
 import * as M from "./src/{file}";
 import {{ Clock, getCompositions, tickClocks }} from "./motion";
@@ -25,7 +35,9 @@ if (!C) throw new Error("{file} exports no component and registers no compositio
 // durationInFrames}}` (score's SDK backend writes it); its positive numbers win over the CLI's settings
 const MC: any = (M as any).config ?? {{}};
 const pos = (v: any, d: number) => (typeof v === "number" && v > 0 ? v : d);
-const cfg = reg ?? {{ id: "main", width: pos(MC.width, {w}), height: pos(MC.height, {h}), fps: pos(MC.fps, {fps}), durationInFrames: pos(MC.durationInFrames, {frames}), defaultProps: {{}} }};
+const cfg = reg ?? {{ id: "main", width: pos(MC.width, {w}), height: pos(MC.height, {h}), fps: pos(MC.fps, {fps}), durationInFrames: pos(MC.durationInFrames, {frames}), defaultProps: (globalThis as any).__raea_input_props ?? {{}} }};
+if (!reg && (globalThis as any).__raea_scale !== undefined) console.warn("NOT APPLIED  --scale: it draws a <Composition> at a fraction of its size; this file registers none (--w and --h size it)");
+for (const [k, key, v] of {given} as [string, string, number][]) if ((cfg as any)[key] !== v) console.warn(`NOT APPLIED  ${{k}} ${{v}}: the composition says its ${{key}} is ${{(cfg as any)[key]}}; ${{k}} only sizes a file with no <Composition> or config`);
 // the Clock's words (frames {{text, from, to}}, or seconds {{text, start, end}} / {{text, start_ms, end_ms}}), perception
 // (one for every frame, or by frame: the latest at or before it) and input (a timeline, or inputs.rrl's step keys)
 const RAW_WORDS: any[] | null = {words};
@@ -74,6 +86,13 @@ if (HOST && HOST.op_flush && !HOST.__pure) {{
   HOST.op_flush = (...a: any[]) => {{ const r = flush(...a); pureAgain(); return r; }};
   HOST.__pure = true;
 }}
+// the composition's settings as its marker carries them: its size, rate and length, and the controls it declares with
+// the props they tune (docs/realtime.feature RT4b: what the stage answers in stage.status); props JSON can't write (a
+// cycle, a BigInt) are left out rather than failing the composition
+const CONF = (() => {{
+  const base = {{ width: cfg.width, height: cfg.height, fps: cfg.fps, frames: cfg.durationInFrames }};
+  try {{ return JSON.stringify({{ ...base, props: cfg.defaultProps, controls: (cfg as any).controls ?? {{}} }}); }} catch {{ return JSON.stringify(base); }}
+}})();
 // a throw while rendering the composition, caught and put where Rust reads it (settle), with its message (JSC's stack
 // leaves it out) and React's component stack, so the render says what went wrong instead of waiting 20 s for a frame that never commits
 class Catch extends Component<{{ children?: any }}, {{ err: string | null }}> {{
@@ -87,7 +106,7 @@ class Catch extends Component<{{ children?: any }}, {{ err: string | null }}> {{
 const LIVE: any = {{}};
 let live = false;
 function Root() {{
-  const [f, setF0] = useState(-1); const setF = (n: number) => {{ tickClocks(); setF0(n); }}; // the Clocks' frame readers told in the same batch (motion clock.tsx tickClocks)
+  const [f, setF0] = useState(-1); const setF = (n: number) => {{ tickClocks(); frameCallbacks(n, cfg.fps); setF0(n); }}; // the Clocks' frame readers told in the same batch (motion clock.tsx tickClocks), and requestAnimationFrame's callbacks (motion frame-globals.ts)
   // the stage's size, for a composition that lays out from useVideoConfig (raea-size)
   const [size, setSize] = useState<{{ w: number; h: number }} | null>(null);
   useEffect(() => addEventListener("raea-size", (v: any) => setSize(v)), []);
@@ -106,18 +125,23 @@ function Root() {{
   useEffect(() => addEventListener("raea-frames", (v: any) => {{ setTo(v.to); setF(v.from); }}), []);
   // the composition, made again only when what Root passes it changes (by default never, RAEA_STILL_TREE=0 each frame; its parts re-render
   // when what they read changes, the frame through the Clock's context)
-  const body = useMemo(() => <Catch><C {{...cfg.defaultProps}} />{{(() => {{ const T = (globalThis as any).__raeaToneOut; return T ? <T /> : null; }})()}}</Catch>, {still} ? [] : [f, size, to]);
+  // props set from outside while it plays (raea-props: a preview's controls, docs/preview.feature PV4b), over its defaults;
+  // each one counted (pn), so the marker says which has landed (docs/realtime.feature RT4e: a paused stage waits for it)
+  const [over, setOver] = useState<any>(null); const [pn, setPn] = useState(0);
+  useEffect(() => addEventListener("raea-props", (v: any) => {{ setOver(v); setPn((n: number) => n + 1); }}), []);
+  // the props it's drawn with, which useVideoConfig().defaultProps and useControl read (RT4c), one object while they hold
+  const props = useMemo(() => (over ? {{ ...cfg.defaultProps, ...over }} : cfg.defaultProps), [over]);
+  const body = useMemo(() => <Catch><C {{...props}} />{{(() => {{ const T = (globalThis as any).__raeaToneOut; return T ? <T /> : null; }})()}}</Catch>, {still} ? [props] : [f, size, to, props]);
   // the frame's Math.random and Date (motion/pure.ts): reseeded as the frame starts rendering, so every component
   // under it draws the same numbers each time this frame is drawn
   if (f >= 0) pureFrame(f, cfg.fps);
-  const conf = JSON.stringify({{ width: cfg.width, height: cfg.height, fps: cfg.fps, frames: cfg.durationInFrames }});
-  if (f < 0) return <div data-raea-frame={{-1}} data-raea-config={{conf}} />;
+  if (f < 0) return <div data-raea-frame={{-1}} data-raea-config={{CONF}} data-raea-props={{0}} />;
   return (
     <>
-      <Clock frame={{f}} fps={{cfg.fps}} width={{size ? size.w : cfg.width}} height={{size ? size.h : cfg.height}} durationInFrames={{live || REPLAYS_LIVE ? 1000000000 : cfg.durationInFrames}} id={{cfg.id}} defaultProps={{cfg.defaultProps}} words={{WORDS}} perception={{percAt(f)}} input={{live ? LIVE : INPUT}}>
+      <Clock frame={{f}} fps={{cfg.fps}} width={{size ? size.w : cfg.width}} height={{size ? size.h : cfg.height}} durationInFrames={{live || REPLAYS_LIVE ? 1000000000 : cfg.durationInFrames}} id={{cfg.id}} defaultProps={{props}} words={{WORDS}} perception={{percAt(f)}} input={{live ? LIVE : INPUT}}>
         {{body}}
       </Clock>
-      <Marker f={{f}} to={{to}} conf={{conf}} next={{setF}} />
+      <Marker f={{f}} to={{to}} conf={{CONF}} next={{setF}} pn={{pn}} />
     </>
   );
 }}
@@ -125,9 +149,11 @@ function Root() {{
 // marks it, and Rust takes the frame the moment that mark lands (settle), with no waiting for quiet. The mark is this
 // component's state, not Root's: marking it in Root rendered the whole composition a second time each frame
 // (many_cubes' 10 000 parts, docs/control.feature FC1a)
-function Marker({{ f, to, conf, next }}: {{ f: number; to: number; conf: string; next: (f: number) => void }}) {{
+// The props' pass is marked the same way: data-raea-props is the last raea-props whose commit and effects have run.
+function Marker({{ f, to, conf, next, pn }}: {{ f: number; to: number; conf: string; next: (f: number) => void; pn: number }}) {{
   const [done, setDone] = useState(-1);
   const [woke, setWoke] = useState(0);
+  const [landed, setLanded] = useState(0);
   useEffect(() => {{ const w = () => setWoke((n: number) => n + 1); HOLD.wake.add(w); return () => void HOLD.wake.delete(w); }}, []);
   useEffect(() => {{
     if (f >= 0 && HOLD.n === 0) setDone(f);
@@ -135,9 +161,10 @@ function Marker({{ f, to, conf, next }}: {{ f: number; to: number; conf: string;
   useEffect(() => {{
     if (f >= 0 && done === f && f + 1 < to) next(f + 1);
   }}, [done]);
-  return <div data-raea-frame={{f}} data-raea-done={{done}} data-raea-config={{conf}} />;
+  useEffect(() => setLanded(pn), [pn]);
+  return <div data-raea-frame={{f}} data-raea-done={{done}} data-raea-config={{conf}} data-raea-props={{landed}} />;
 }}
-mount(<surface id="motion" w={{1}} px={{cfg.width}} pxH={{cfg.height}}><Root /></surface>);
+mount(<surface id="motion" w={{1}} px={{cfg.width}} pxH={{cfg.height}}><Root /></surface>).catch((globalThis as any).__raea_loop_died);
 "#,
         comp = comp.map(|c| format!("{c:?}")).unwrap_or("null".into())
     )
@@ -152,17 +179,31 @@ pub fn entry_lite(file: &str, o: &CompOpts) -> String {
     let start = full.find("import * as M").expect("entry's imports");
     let end = full.find("// a throw while rendering the composition").expect("entry's Root");
     let bridge = raea_io_home::home().join("sdk/react/js/node_modules/bevy-react/src/bridge.ts");
+    let nodes = raea_io_home::home().join("sdk/react/js/node_modules/bevy-react/src/nodes.ts");
+    let canvas = raea_io_home::home().join("sdk/react/js/node_modules/bevy-react/src/canvas.ts");
     format!(
-        r#"import {{ pureAgain, pureFrame, pureSession, seedOf }} from "./motion/pure";
+        r#"import {{ frameCallbacks, pureAgain, pureFrame, pureSession, seedOf }} from "./motion/pure";
 import {{ addEventListener, reset, runEventLoop }} from {bridge:?};
+// a ref has the DOM a web component reads, as under React's entry: lite's hosts keep the same nodes (sdk/react/js/lite
+// hosts.ts), and a <canvas> ref's getContext("2d") is the web's (layout-reads LR2; #55)
+import {{ canvas2d }} from "./motion/canvas2d";
+import {{ domReads }} from "./motion/dom-reads";
+import * as BevyNodes from {nodes:?};
+import {{ BevyCanvasElement }} from {canvas:?};
+canvas2d(BevyCanvasElement);
+domReads(BevyNodes as any);
 import {{ renderRoot, takeRendered }} from "react";
 {preamble}const LIVE: any = {{}};
 let live = false;
 let f = -1;
 let size: {{ w: number; h: number }} | null = null;
-const conf = JSON.stringify({{ width: cfg.width, height: cfg.height, fps: cfg.fps, frames: cfg.durationInFrames }});
+const conf = CONF;
+// the props it's drawn with (raea-props over its defaults; useVideoConfig().defaultProps and useControl read them), and
+// how many raea-props have come, which the marker carries once drawn (docs/realtime.feature RT4e)
+let PROPS: any = cfg.defaultProps;
+let PN = 0;
 // the composition's element and the Tone graph's output, made once (each frame made them again: lightspeed Z3)
-const COMP = <C {{...cfg.defaultProps}} />;
+let COMP = <C {{...PROPS}} />;
 let toneEl: any = null;
 function toneOut() {{
   const T = (globalThis as any).__raeaToneOut;
@@ -171,12 +212,12 @@ function toneOut() {{
   return toneEl;
 }}
 function tree() {{
-  // the frame's Math.random and Date (motion/pure.ts)
-  if (f >= 0) pureFrame(f, cfg.fps);
-  if (f < 0) return <surface id="motion" w={{1}} px={{cfg.width}} pxH={{cfg.height}}><div data-raea-frame={{-1}} data-raea-config={{conf}} /></surface>;
+  // the frame's Math.random and Date, and requestAnimationFrame's callbacks (motion/pure.ts)
+  if (f >= 0) {{ frameCallbacks(f, cfg.fps); pureFrame(f, cfg.fps); }}
+  if (f < 0) return <surface id="motion" w={{1}} px={{cfg.width}} pxH={{cfg.height}}><div data-raea-frame={{-1}} data-raea-config={{conf}} data-raea-props={{PN}} /></surface>;
   return (
     <surface id="motion" w={{1}} px={{cfg.width}} pxH={{cfg.height}}>
-      <Clock frame={{f}} fps={{cfg.fps}} width={{size ? size.w : cfg.width}} height={{size ? size.h : cfg.height}} durationInFrames={{live || REPLAYS_LIVE ? 1000000000 : cfg.durationInFrames}} id={{cfg.id}} defaultProps={{cfg.defaultProps}} words={{WORDS}} perception={{percAt(f)}} input={{live ? LIVE : INPUT}}>
+      <Clock frame={{f}} fps={{cfg.fps}} width={{size ? size.w : cfg.width}} height={{size ? size.h : cfg.height}} durationInFrames={{live || REPLAYS_LIVE ? 1000000000 : cfg.durationInFrames}} id={{cfg.id}} defaultProps={{PROPS}} words={{WORDS}} perception={{percAt(f)}} input={{live ? LIVE : INPUT}}>
         {{COMP}}{{toneOut()}}
       </Clock>
       {marker}
@@ -185,7 +226,7 @@ function tree() {{
 }}
 // --comps (a bake): the marker rendered last, carrying the code of every component this frame rendered
 function Marker(p: any) {{
-  return <div data-raea-frame={{p.f}} data-raea-done={{HOLD.n ? -3 : p.f}} data-raea-config={{conf}} data-raea-comps={{takeRendered()}} />;
+  return <div data-raea-frame={{p.f}} data-raea-done={{HOLD.n ? -3 : p.f}} data-raea-config={{conf}} data-raea-props={{PN}} data-raea-comps={{takeRendered()}} />;
 }}
 HOLD.wake.add(() => {{ if (f >= 0) draw(); }});
 // a throw while rendering is put where Rust reads it (settle), as React's entry's Catch did
@@ -197,6 +238,7 @@ function draw() {{
   }}
 }}
 addEventListener("raea-size", (v: any) => {{ size = v; if (f >= 0) draw(); }});
+addEventListener("raea-props", (v: any) => {{ PN++; PROPS = v ? {{ ...cfg.defaultProps, ...v }} : cfg.defaultProps; COMP = <C {{...PROPS}} />; if (f >= 0) draw(); }});
 // a range of frames, rendered back to back, each its own commit (a bake: lightspeed T3); between frames the effects'
 // state changes render, as between two raea-frame events
 addEventListener("raea-frames", async (v: any) => {{
@@ -219,9 +261,9 @@ addEventListener("raea-frame", (v: any) => {{
 // render sends its own ops)
 reset();
 draw();
-runEventLoop();
+runEventLoop().catch((globalThis as any).__raea_loop_died);
 "#,
         preamble = &full[start..end],
-        marker = if o.comps { "<Marker f={f} />" } else { "<div data-raea-frame={f} data-raea-done={HOLD.n ? -3 : f} data-raea-config={conf} />" },
+        marker = if o.comps { "<Marker f={f} />" } else { "<div data-raea-frame={f} data-raea-done={HOLD.n ? -3 : f} data-raea-config={conf} data-raea-props={PN} />" },
     )
 }

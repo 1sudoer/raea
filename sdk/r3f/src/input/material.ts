@@ -1,13 +1,14 @@
 // A three.js material as raea's: the component that draws it the same way and its props. Standard and physical are
 // Bevy's StandardMaterial on both sides; basic is unlit; Lambert is the standard surface with no gloss; Phong's
 // shininess becomes a roughness (Blinn-Phong's exponent as a GGX roughness); toon is raea's toon surface with a band per
-// step of its gradient map; normal, matcap, depth and distance materials are drawn as the unlit colour each puts on
-// screen most (their per-pixel looks need three's shaders). A ShaderMaterial's GLSL doesn't run in Bevy: it is drawn
-// with its `color` (or diffuse) uniform, unlit, and named once, with raea's <SurfaceShader> (WESL) as its port.
+// step of its gradient map; normal and matcap run three's own programs; depth and distance materials are drawn as the
+// unlit grey of three's passes. A ShaderMaterial's GLSL runs in raea's engine (shader.ts), and a standard or physical
+// material patched by onBeforeCompile runs its patched program, lit by Bevy (patched.ts).
 import * as THREE from "three";
 import { placementOf, srcOf } from "./texture";
 import { classicOf, nodeMaterialOf, type NodeAt } from "./tsl";
-import { builtinPart, isShader, shaderPart } from "./shader";
+import { builtinPart, farPlane, isShader, shaderPart } from "./shader";
+import { drawsPatched, patchedPart } from "./patched";
 
 export type Props = Record<string, unknown>;
 export interface Part {
@@ -19,16 +20,21 @@ export interface Part {
   normals?: boolean;
   /** a ShadowMaterial: the mesh shows only the shadows falling on it (raea's shadow="catch") */
   catchShadow?: boolean;
+  /** a node material compiled for copies (an InstancedMesh, docs/r3f.feature R3F22): the attributes it reads a copy
+   *  at a time, each one of its own (tsl-instances.ts puts them on the copies) */
+  copies?: { name: string; attribute: THREE.BufferAttribute }[];
 }
 
 const hex = (c: THREE.Color) => "#" + c.getHexString();
+/** three draws an opacity outside [0, 1] clamped (an easing that overshoots gives 1.03); raea's materials refuse it */
+const unit = (v: number) => Math.min(1, Math.max(0, v));
 const side = (s: THREE.Side) => (s === THREE.BackSide ? "back" : s === THREE.DoubleSide ? "double" : undefined);
 
 /** the props every surface shares: colour, opacity and blending, side, fog */
 function drawn(m: THREE.Material & { color?: THREE.Color; map?: THREE.Texture | null }, p: Props) {
   if (m.color) p.color = hex(m.color);
   if (m.opacity < 1 || m.transparent) {
-    p.opacity = m.opacity;
+    p.opacity = unit(m.opacity);
     p.transparent = true;
   }
   if (m.blending === THREE.AdditiveBlending) p.alphaMode = "add";
@@ -117,6 +123,8 @@ function warnOnce(type: string, why: string) {
 export function materialOf(m: THREE.Material, vertexColors: boolean, at?: NodeAt): Part {
   const p: Props = {};
   const t = m.type;
+  // a lit material patched by onBeforeCompile: three's own program with the patch applied (R3F24)
+  if (drawsPatched(m)) return patchedPart(m as THREE.MeshStandardMaterial);
   switch (t) {
     case "MeshPhysicalMaterial":
       physical(m as THREE.MeshPhysicalMaterial, p);
@@ -161,6 +169,9 @@ export function materialOf(m: THREE.Material, vertexColors: boolean, at?: NodeAt
       return { type: "MeshToonMaterial", props: p };
     }
     case "MeshBasicMaterial":
+      // drawn without the depth test (a face's decals on its shell): three's own program, which can be (IR5)
+      if (!m.depthTest) return builtinPart(m as THREE.MeshBasicMaterial);
+    // falls through
     case "SpriteMaterial":
     case "PointsMaterial":
     case "LineBasicMaterial":
@@ -177,7 +188,7 @@ export function materialOf(m: THREE.Material, vertexColors: boolean, at?: NodeAt
       return { type: "MeshBasicMaterial", props: { color: "#808080" } };
     case "ShadowMaterial": {
       const s = m as THREE.ShadowMaterial;
-      return { type: "MeshBasicMaterial", props: { color: hex(s.color), opacity: s.opacity, transparent: true }, catchShadow: true } as Part;
+      return { type: "MeshBasicMaterial", props: { color: hex(s.color), opacity: unit(s.opacity), transparent: true }, catchShadow: true } as Part;
     }
     default: {
       // a TSL node material (three/webgpu): one with no node of its own is its classic material; one with a graph is
@@ -187,7 +198,12 @@ export function materialOf(m: THREE.Material, vertexColors: boolean, at?: NodeAt
         // (its `type` is three's accessor: defined on a view of it, not assigned)
         if (classic) return materialOf(Object.defineProperties(Object.create(m) as THREE.Material, { type: { value: classic }, isNodeMaterial: { value: false } }), vertexColors, at);
         const shader = at && nodeMaterialOf(m, at);
-        if (shader) return shader;
+        if (shader) {
+          // a TSL SkyMesh's `position.z.assign(position.w)` onto reverse-Z's far plane, as a GLSL sky's is (R3F17)
+          const wgsl = shader.props.wgsl as { vertex?: string } | undefined;
+          if (wgsl?.vertex) wgsl.vertex = farPlane(wgsl.vertex);
+          return shader;
+        }
       }
       // a ShaderMaterial or RawShaderMaterial: its GLSL run by raea's engine as three would run it (shader.ts)
       if (isShader(m)) return shaderPart(m);

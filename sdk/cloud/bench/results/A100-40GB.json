@@ -1,0 +1,104 @@
+{
+ "kind": "A100-40GB",
+ "raea_version": "0.1.6",
+ "blender_version": "5.3.0",
+ "start": 3.1,
+ "device": "NVIDIA A100-SXM4-40GB, 40960 MiB, 610.57.04",
+ "raea": {
+  "vulkan": [
+   "NVIDIA A100-SXM4-40GB",
+   "NVIDIA A100-SXM4-40GB",
+   "llvmpipe (LLVM 19.1.7, 256 bits)"
+  ],
+  "edit": {
+   "ok": true,
+   "s": 119.27,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-1.mp4 (1263.9 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 85969 ms"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 188.63,
+    "sync": 100.05,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.07
+   }
+  },
+  "edit-noclip": {
+   "ok": true,
+   "s": 28.5,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-0.mp4 (292.4 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 189.02,
+    "sync": 85.74,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.07
+   }
+  },
+  "solari": {
+   "ok": true,
+   "s": 7.41,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-1.mp4 (34.3 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 611 ms"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 9.97,
+    "sync": 19.5,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.02
+   }
+  },
+  "solari-noclip": {
+   "ok": true,
+   "s": 5.28,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-0.mp4 (25.3 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 10.15,
+    "sync": 14.36,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.02
+   }
+  }
+ },
+ "blender": {
+  "device": "NVIDIA A100-SXM4-40GB",
+  "s": 357.16,
+  "samples_per_minute": {
+   "monster": 1225.0,
+   "junkshop": 1227.0,
+   "classroom": 977.9
+  },
+  "out": null
+ },
+ "frame": {
+  "ok": false,
+  "samples": null,
+  "load_s": null,
+  "render_s": null,
+  "total_s": 0.67,
+  "out": "00:00.094  system.path      | WARNING Could not get a list of mounted file-systems\n00:00.434  reports          | ERROR File format is not supported in file \"/root/.cache/blender-benchmark-launcher/scenes/936f0a528f03eba291c67ea87743a0ebde58938fb87471b262721b89b46b875d/classroom/assets/officeSupplies/._officeSupplies.blend\"\nBlender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:31:18)\n\nBlender quit\n"
+ },
+ "s": 524.1,
+ "usd": 0.4001
+}

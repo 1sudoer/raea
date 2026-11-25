@@ -126,6 +126,7 @@
         "bevy": {
           "crate": "bevy",
           "builtin": true,
+          "catalog": false,
           "versions": {
             "0.19": "=0.19.1",
             "0.20": "=0.20.0"
@@ -166,7 +167,6 @@
               "qoi",
               "pnm",
               "tiff",
-              "compressed_image_saver",
               "picking",
               "bevy_picking",
               "mesh_picking",
@@ -253,7 +253,6 @@
               "qoi",
               "pnm",
               "tiff",
-              "compressed_image_saver",
               "picking",
               "bevy_picking",
               "mesh_picking",

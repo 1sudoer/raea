@@ -15,6 +15,8 @@ use std::rc::Rc;
 pub mod jsc;
 #[cfg(any(feature = "portable", not(target_vendor = "apple")))]
 mod quickjs;
+mod upkeep;
+pub use upkeep::{Upkeep, inspect};
 
 /// An argument to a global function.
 pub enum Arg<'a> {
@@ -36,11 +38,21 @@ pub type Native = Box<dyn Fn(&[String]) -> Result<Ret, String>>;
 
 thread_local! {
     static T0: std::time::Instant = std::time::Instant::now();
+    static HELD: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
 }
 
-/// ms since this thread first asked: the clock a host's JS timers run on.
+/// ms since this thread first asked: the clock a host's JS timers run on (or the time `at_clock` holds it at).
 pub fn now_ms() -> f64 {
-    T0.with(|t| t.elapsed().as_secs_f64() * 1e3)
+    HELD.with(|h| h.get()).unwrap_or_else(|| T0.with(|t| t.elapsed().as_secs_f64() * 1e3))
+}
+
+/// `f` run with this thread's JS clock held at `ms`: a root stepped on a composition's frames (an app screen, frame
+/// over fps) sees the same timers and performance.now in a render and its play, so the render repeats.
+pub fn at_clock<T>(ms: f64, f: impl FnOnce() -> T) -> T {
+    let was = HELD.with(|h| h.replace(Some(ms)));
+    let out = f();
+    HELD.with(|h| h.set(was));
+    out
 }
 
 /// A native answering `now_ms()`, a host's `now` for its JS.
@@ -87,6 +99,11 @@ pub trait JsEngine {
     }
     /// Between frames: the engine's own upkeep (JavaScriptCore's GC timers live on the thread's run loop).
     fn idle(&mut self) {}
+    /// What its heap holds now, as one JSON object, for the heap log (Upkeep): JavaScriptCore's statistics (its size and
+    /// objects counted by type), QuickJS's memory usage. None where the engine can't say.
+    fn heap(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Whether `error` is a run stopped by its time limit (JavaScriptCore's watchdog, QuickJS's interrupt).
@@ -211,6 +228,52 @@ mod tests {
         js.time_limit(std::time::Duration::from_millis(100));
         let e = js.eval("for (;;) {}", "spin").unwrap_err();
         assert!(stopped(&e), "{}: {e}", js.name());
+    }
+
+    /// What a composition formats, as JavaScriptCore formats it (#169: QuickJS had no Intl, so these threw on Windows
+    /// and Linux): numbers, money, percents and compact counts, dates in a zone, plural rules, relative times, lists,
+    /// and words sorted. Each case is [expression, JavaScriptCore's answer].
+    const INTL: [(&str, &str); 14] = [
+        ("(1234567.891).toLocaleString('en-US')", "1,234,567.891"),
+        ("(1234567.891).toLocaleString('de-DE')", "1.234.567,891"),
+        ("new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(12.5)", "$12.50"),
+        ("new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }).format(5000)", "\u{20ac}5,000.00"),
+        ("new Intl.NumberFormat('en', { notation: 'compact' }).format(1234567)", "1.2M"),
+        ("(0.256).toLocaleString('en-US', { style: 'percent' })", "26%"),
+        ("new Intl.NumberFormat('zh-TW').format(1234.5)", "1,234.5"),
+        ("new Intl.DateTimeFormat('en-GB', { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(2026, 10, 19)))", "19 November 2026"),
+        ("new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(2026, 10, 19)))", "jeudi 19 novembre"),
+        ("new Date(Date.UTC(2026, 10, 19, 15, 4)).toLocaleDateString('en-US', { timeZone: 'UTC' })", "11/19/2026"),
+        ("[new Intl.PluralRules('en-US').select(2), new Intl.PluralRules('ru').select(3)].join(' ')", "other few"),
+        ("new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(-1, 'day')", "yesterday"),
+        ("new Intl.ListFormat('en', { type: 'conjunction' }).format(['a', 'b', 'c'])", "a, b, and c"),
+        ("['b', 'a', 'B', '\\u00e1'].sort((x, y) => x.localeCompare(y)).join(',')", "a,\u{e1},b,B"),
+    ];
+
+    /// Each INTL case's answer on `engine`, or what it threw
+    fn intl(engine: Engine) -> Vec<String> {
+        let mut js = engine.start().unwrap();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        js.native("note", Box::new(move |a| {
+            s.borrow_mut().push(a.join("|"));
+            Ok(Ret::Undefined)
+        }))
+        .unwrap();
+        for (expr, _) in INTL {
+            js.eval(&format!("try {{ note({expr}) }} catch (e) {{ note('threw ' + e) }}"), "intl.js").unwrap();
+        }
+        seen.take()
+    }
+
+    #[cfg(any(feature = "portable", not(target_vendor = "apple")))]
+    #[test]
+    fn quickjs_formats_as_javascriptcore_does() {
+        let got = intl(Engine::QuickJs);
+        assert_eq!(got, INTL.map(|(_, want)| want.to_string()));
+        // and on a Mac, as the engine there does
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(got, intl(Engine::Jsc));
     }
 
     #[cfg(target_vendor = "apple")]

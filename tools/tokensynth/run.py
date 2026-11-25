@@ -3,7 +3,10 @@
 and keeps the bytes under their hash (sdk/react/docs/audio-stack.md, "Generated sources"). TokenSynth reads notes that end
 before 5.0 s; `seconds` is the note's held length, and the release rings on up to 1.5 s after it.
     run.py --timbre TEXT --midi N [--velocity 100] [--seconds 2] [--seed 1234] --wav OUT.wav [--weights DIR]
-           [--precision fp32|fp16|bf16|int8|coreml]
+           [--precision fp32|fp16|bf16|int8|coreml] [--device cpu|cuda]
+--device cuda runs the transformers and DAC's decoder on an NVIDIA GPU (Linux, Windows) with fp16, bf16 or fp32; the
+sampling stays on the CPU from the seed. A GPU's logits round differently from the CPU's, so its notes are their own
+samples, as each precision's are.
 --precision picks the runtime; all but fp32 read what convert.py made beside DIR (weights-fp16/, coreml/), skip
 laion_clap's audio tower and CLAP's 2.35 GB file, and stop generating once the frames cover the note and its release
 (TokenSynth otherwise runs its 450-step cap; the audio is the same, CLAP cosine 1.000 on the same tokens):
@@ -218,7 +221,10 @@ class Runtime:
     def __init__(self, precision, weights, device="cpu"):
         self.precision, self.W = precision, Path(weights)
         self.F, self.C = self.W.parent / "weights-fp16", self.W.parent / "coreml"
-        dev = torch.device(device)
+        dev = self.dev = torch.device(device)
+        # int8 is PyTorch's dynamic quantization (CPU kernels only) and coreml is the Mac's: neither runs on a GPU
+        if dev.type != "cpu" and precision in ("int8", "coreml"):
+            raise SystemExit(f"tokensynth: {precision} runs on the CPU only; fp16, bf16 or fp32 on {dev.type}")
         if precision != "fp32":
             _bare_package("tokensynth")
         from tokensynth import utils as ts_utils
@@ -237,7 +243,7 @@ class Runtime:
             if precision == "coreml":
                 missing += [f"../coreml/{p}" for p in ("dac_decoder.mlmodelc", "token_synth_step.mlmodelc") if not (self.C / p).exists()]
             if missing:
-                raise SystemExit(f"tokensynth: {precision} needs {', '.join(missing)} in {self.F} (tools/tokensynth/setup.sh runs convert.py)")
+                raise SystemExit(f"tokensynth: {precision} needs {', '.join(missing)} in {self.F} (tools/tokensynth/setup.py runs convert.py)")
             dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "coreml": torch.float16}.get(precision, torch.float32)
             synth = load_transformer(TokenSynth, self.F / "token_synth_aug.pt", dtype)
             uncond = load_transformer(TokenSynthUnconditional, self.F / "token_synth_unconditional.pt", dtype)
@@ -262,7 +268,8 @@ class Runtime:
             if precision == "coreml":
                 self.dac = ct.models.CompiledMLModel(str(self.C / "dac_decoder.mlmodelc"), compute_units=cu)
             else:
-                self.dac = load_dac(self.F)
+                # on a GPU the decoder goes there too: it's most of a note's time on the CPU
+                self.dac = load_dac(self.F).to(dev)
 
     def text(self, timbre):
         with torch.no_grad():
@@ -297,7 +304,7 @@ class Runtime:
                 pad[:, :, :min(n, frames)] = codes[:, :, :frames].numpy()
                 audio = self.dac.predict({"codes": pad})["audio"].reshape(-1)
                 return audio[: n * 512].astype(np.float32)
-            return self.dac(codes).float().numpy()
+            return self.dac(codes.to(self.dev)).float().cpu().numpy()
 
     def render(self, timbre, midi, velocity=100, seconds=2.0, seed=1234):
         held = max(0.05, min(seconds, 3.4))
@@ -327,12 +334,15 @@ def main():
     ap.add_argument("--wav", required=True)
     ap.add_argument("--weights", default=str(Path(__file__).resolve().parent / "weights"))
     ap.add_argument("--precision", choices=PRECISIONS, default=DEFAULT)
+    # cuda: the transformer and the decoder on an NVIDIA GPU (Linux, Windows), the sampling still on the CPU from the
+    # seed, so a note's draws match the CPU's while their logits do; mps stays refused by raea (DAC on long clips)
+    ap.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
     args = ap.parse_args()
     import soundfile as sf
-    rt = Runtime(args.precision, args.weights)
+    rt = Runtime(args.precision, args.weights, args.device)
     (audio, peak), _ = rt.render(args.timbre, args.midi, args.velocity, args.seconds, args.seed)
     sf.write(args.wav, np.stack([audio, audio], axis=1), SR, subtype="FLOAT")
-    print(f"tokensynth: midi {args.midi}, {len(audio) / SR:.2f} s, peak was {peak:.2f}, {args.precision}", file=sys.stderr)
+    print(f"tokensynth: midi {args.midi}, {len(audio) / SR:.2f} s, peak was {peak:.2f}, {args.precision} on {args.device}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -189,55 +189,9 @@ pub fn apply_json(f: &mut dyn bevy::reflect::PartialReflect, v: &serde_json::Val
     }
 }
 
-/// A mesh from its own vertex buffers (<BufferMesh>, or a Mesh handle given as {positions, ...}): JSON
-/// {positions: [x, y, z, ...], indices?: [i, ...], normals?: [x, y, z, ...], uvs?: [u, v, ...]}, a triangle list
-/// (indexed, or each three positions a triangle), as flat triangles; without normals each face's own. Its texture
-/// coordinates when it gave them.
-pub fn buffer_tris(json: &str) -> Result<(raea_core_shape::Tris, Option<Vec<[f32; 2]>>), String> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("a buffer mesh isn't JSON: {e}"))?;
-    let nums = |k: &str| -> Result<Option<Vec<f32>>, String> {
-        match v.get(k) {
-            None | Some(serde_json::Value::Null) => Ok(None),
-            Some(serde_json::Value::Array(a)) => a.iter().map(|x| x.as_f64().map(|f| f as f32).ok_or_else(|| format!("a buffer mesh's {k}: numbers, got {x}"))).collect::<Result<Vec<_>, _>>().map(Some),
-            Some(x) => Err(format!("a buffer mesh's {k}: an array of numbers, got {x}")),
-        }
-    };
-    let pos = nums("positions")?.ok_or("a buffer mesh needs positions: [x, y, z, ...]")?;
-    if pos.len() % 3 != 0 || pos.is_empty() {
-        return Err(format!("a buffer mesh's positions: x, y, z for each vertex, got {} numbers", pos.len()));
-    }
-    let n = pos.len() / 3;
-    let idx: Vec<usize> = match nums("indices")? {
-        Some(i) => i.iter().map(|x| *x as usize).collect(),
-        None => (0..n).collect(),
-    };
-    if idx.len() % 3 != 0 || idx.iter().any(|&i| i >= n) {
-        return Err(format!("a buffer mesh's indices: three a triangle, each under {n} (the vertices), got {}", idx.len()));
-    }
-    let normals = nums("normals")?;
-    let uvs = nums("uvs")?;
-    if normals.as_ref().is_some_and(|x| x.len() != pos.len()) || uvs.as_ref().is_some_and(|u| u.len() != n * 2) {
-        return Err("a buffer mesh's normals are x, y, z and its uvs u, v for each vertex".into());
-    }
-    let p3 = |i: usize| [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]];
-    let mut t = raea_core_shape::Tris { positions: Vec::with_capacity(idx.len()), normals: Vec::with_capacity(idx.len()) };
-    let mut uv = uvs.as_ref().map(|_| Vec::with_capacity(idx.len()));
-    for tri in idx.chunks(3) {
-        let (a, b, c) = (Vec3::from(p3(tri[0])), Vec3::from(p3(tri[1])), Vec3::from(p3(tri[2])));
-        let face = (b - a).cross(c - a).normalize_or_zero().to_array();
-        for &i in tri {
-            t.positions.push(p3(i));
-            t.normals.push(match &normals {
-                Some(nr) => [nr[i * 3], nr[i * 3 + 1], nr[i * 3 + 2]],
-                None => face,
-            });
-            if let (Some(out), Some(u)) = (uv.as_mut(), uvs.as_ref()) {
-                out.push([u[i * 2], u[i * 2 + 1]]);
-            }
-        }
-    }
-    Ok((t, uv))
-}
+/// A mesh from its own vertex buffers (<BufferMesh>, or a Mesh handle given as {positions, ...}) as flat triangles and
+/// its texture coordinates: raea-core-shape's, so contact and `raea scene export` read a buffer mesh as this draws it.
+pub use raea_core_shape::buffer_tris;
 
 /// A buffer mesh's triangle corners: the vertex each one is (its `indices`, or each of its `verts` vertices in turn).
 pub fn buffer_corners(v: &serde_json::Value, verts: usize) -> Vec<usize> {

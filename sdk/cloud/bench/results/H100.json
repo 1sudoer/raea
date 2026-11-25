@@ -1,0 +1,104 @@
+{
+ "kind": "H100",
+ "raea_version": "0.1.6",
+ "blender_version": "5.3.0",
+ "start": 3.0,
+ "device": "NVIDIA H100 80GB HBM3, 81559 MiB, 610.57.04",
+ "raea": {
+  "vulkan": [
+   "NVIDIA H100 80GB HBM3",
+   "NVIDIA H100 80GB HBM3",
+   "llvmpipe (LLVM 19.1.7, 256 bits)"
+  ],
+  "edit": {
+   "ok": true,
+   "s": 113.6,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-1.mp4 (1189.9 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 79664 ms"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 181.91,
+    "sync": 103.42,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.44
+   }
+  },
+  "edit-noclip": {
+   "ok": true,
+   "s": 25.08,
+   "out": [
+    "APPLIED  90 frames rendered to /tmp/edit-0.mp4 (250.7 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 90,
+    "react": 163.06,
+    "sync": 70.64,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.46
+   }
+  },
+  "solari": {
+   "ok": true,
+   "s": 8.24,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-1.mp4 (34.8 ms a frame, pages handed to raea-render on the GPU)",
+    "raea times: the clipping check 493 ms"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 10.68,
+    "sync": 20.04,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.04
+   }
+  },
+  "solari-noclip": {
+   "ok": true,
+   "s": 5.88,
+   "out": [
+    "APPLIED  150 frames rendered to /tmp/solari-0.mp4 (24.8 ms a frame, pages handed to raea-render on the GPU)"
+   ],
+   "frames": {
+    "frames": 150,
+    "react": 10.31,
+    "sync": 13.72,
+    "draw3d": 0.0,
+    "gpu3d": 0.0,
+    "page": 0.0,
+    "gpupage": 0.0,
+    "gpu": 0.03
+   }
+  }
+ },
+ "blender": {
+  "device": "NVIDIA H100 80GB HBM3",
+  "s": 405.14,
+  "samples_per_minute": {
+   "monster": 1971.0,
+   "junkshop": 2132.7,
+   "classroom": 1650.8
+  },
+  "out": null
+ },
+ "frame": {
+  "ok": true,
+  "samples": 300,
+  "load_s": 0.77,
+  "render_s": 18.43,
+  "total_s": 19.38,
+  "out": "ard.png\n00:01.835  render           | Fra: 1 | Mem: 66M | Updating Images | Loading radiator_AO.png\n00:01.836  render           | Fra: 1 | Mem: 66M | Updating Images | Loading ceilingAirVent_AO.png\n00:01.836  render           | Fra: 1 | Mem: 66M | Updating Images | Loading europeMap.png\n00:01.837  render           | Fra: 1 | Mem: 66M | Updating Images | Loading base_woodFloor.jpg\n00:01.838  render           | Fra: 1 | Mem: 66M | Updating Images | Loading base_brightWood.png\n00:01.838  render           | Fra: 1 | Mem: 66M | Updating Images | Loading pencil_glossyMask.png\n00:01.840  render           | Fra: 1 | Mem: 66M | Updating Images | Loading crinkledPaper_02.png\n00:01.943  render           | Fra: 1 | Mem: 292M | Updating Volume\n00:01.943  render           | Fra: 1 | Mem: 292M | Updating Camera Volume\n00:01.943  render           | Fra: 1 | Mem: 292M | Updating Lookup Tables\n00:01.943  render           | Fra: 1 | Mem: 292M | Updating Lights\n00:01.943  render           | Fra: 1 | Mem: 292M | Updating Lights | Computing distribution\n00:01.947  render           | Fra: 1 | Mem: 293M | Updating Integrator\n00:01.949  render           | Fra: 1 | Mem: 295M | Updating Film\n00:01.949  render           | Fra: 1 | Mem: 295M | Updating Lookup Tables\n00:01.950  render           | Fra: 1 | Mem: 295M | Updating Baking\n00:01.950  render           | Fra: 1 | Mem: 295M | Updating Device | Writing constant memory\n00:01.950  render           | Fra: 1 | Mem: 295M | Loading denoising kernels (may take a few minutes the first time)\n00:01.972  render           | Fra: 1 | Mem: 1830M | Sample 0/300\n00:02.024  render           | Fra: 1 | Remaining: 00:15.43 | Mem: 2241M | Sample 1/300\n00:15.776  render           | Fra: 1 | Mem: 2241M | Sample 300/300\n00:15.776  render           | Fra: 1 | Mem: 2241M | Finished\n00:19.071  render           | Saved: '/tmp/frame_0001.png'\n00:19.071  render           | Time: 00:18.43 (Saving: 00:03.06)\nRAEA_SAMPLES 300 RAEA_LOADED 1794935319.2765844\n\nBlender quit\n"
+ },
+ "s": 583.6,
+ "usd": 0.7466
+}
